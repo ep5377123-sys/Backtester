@@ -475,11 +475,16 @@ Verified after the partial work: `uv run pytest` = 158 passed; the Vault Break p
 - #5 rest: `ContractSpec.__post_init__` (finite positive point_value / tick_size); `to_mc_layout` rejects
   capital <= 0 before anything is written. `run` also notes bars with partial sub-bars (#13).
 
+### Done (part 4)
+- #8: bar caches carry a fingerprint in their Parquet schema metadata (source size + mtime_ns, timeframe, session
+  key/start/end, `resample.CACHE_VERSION`) and are rebuilt when it differs or the file is unreadable/malformed.
+  Caches and `1m.parquet` are written atomically (`guban/data/parquet.py`: temp sibling + fsync + `os.replace`).
+  Existing caches rebuild once on first use (Vault Break: identical results).
+- #9: `parse_grid` coerces by default type (bool: true/false only; str: token as written, no ranges; numbers
+  finite); direct-API grids/fixed values are checked against the defaults; `min_trades < 0` / `workers < 1`
+  rejected. `--set` now uses the same coercion (`--set flag=false` used to be the truthy string "false").
+
 ### Remaining (in this order)
-6. #8: cache fingerprint (source size + mtime_ns, timeframe, session start/end, CACHE_VERSION) in Parquet
-   schema metadata; atomic temp-file + `os.replace` writes for caches and `1m.parquet`; validate cached frame.
-7. #9: `_coerce` by default type (bool: true/false only; str: raw token; numbers finite); validate direct API
-   grids/fixed in `_setup`; reject `min_trades < 0`, `workers < 1`.
 8. #10/#11 prop-firm: strict typed TOML loading + `__post_init__` checks on Rules/Scenario/Setup; batch
    `bootstrap_ci` as `x[rng.integers(0, n, (b, n))]` (verified bit-identical to `rng.choice`); add
    methodology-assumption notes (entry-date attribution, fractional size, iid days, paths ignore DLL/min days).

@@ -20,9 +20,12 @@ import numpy as np
 import pandas as pd
 
 from guban.config import Session, get_session
+from guban.data.parquet import read_fingerprint, write_parquet
 
 TZ = "America/New_York"
 _NS_PER_MIN = 60_000_000_000
+# Bump when resample() output changes (new columns, aggregation rules, bug fixes): every bar cache is rebuilt.
+CACHE_VERSION = 1
 _AGG = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "bid_vol": "sum", "ask_vol": "sum"}
 
 
@@ -119,21 +122,49 @@ def load_bars(
     rebuild: bool = False,
     tz: str | None = None,
 ) -> pd.DataFrame:
-    """Bars for `symbol` at `timeframe`/`session`, from the Parquet cache when it is newer than 1m.parquet.
+    """Bars for `symbol` at `timeframe`/`session`, from the Parquet cache when it is current.
 
+    The cache is current when the fingerprint stored in it matches: the source 1m.parquet (size and modification
+    time), the timeframe, the session's start and end (config/sessions.toml), and CACHE_VERSION. Otherwise (or with
+    rebuild=True, or when the cached file is unreadable or malformed) it is rebuilt and replaced atomically.
     tz: chart time zone for the returned index (e.g. "America/Chicago" for an MC chart in CME exchange time).
     Sessions and bins are always built in Eastern time; this only relabels the same instants.
     """
     source = Path(data_dir) / symbol / "1m.parquet"
     if not source.exists():
         raise FileNotFoundError(f"{source} not found; run `guban import` first")
+    sess = get_session(session)
     cached = cache_path(symbol, timeframe, session, data_dir)
-    if not rebuild and cached.exists() and cached.stat().st_mtime >= source.stat().st_mtime:
-        bars = pd.read_parquet(cached)
-    else:
-        bars = resample(pd.read_parquet(source), timeframe, session)
-        bars.to_parquet(cached)
+    fp = cache_fingerprint(source, timeframe, sess)
+    bars = None
+    if not rebuild and read_fingerprint(cached) == fp:
+        try:
+            bars = _valid_cache(pd.read_parquet(cached))
+        except (OSError, ValueError):
+            bars = None
+    if bars is None:
+        bars = resample(pd.read_parquet(source), timeframe, sess)
+        write_parquet(bars, cached, fp)
     return bars.tz_convert(tz) if tz else bars
+
+
+def cache_fingerprint(source: Path, timeframe: str, session: Session) -> dict:
+    """What a bar cache was built from (JSON values, compared as stored)."""
+    st = Path(source).stat()
+    n = parse_timeframe(timeframe)
+    return {
+        "version": CACHE_VERSION,
+        "source": {"size": st.st_size, "mtime_ns": st.st_mtime_ns},
+        "timeframe": "1d" if n is None else f"{n}m",
+        "session": {"key": session.key, "start": session.start.strftime("%H:%M"), "end": session.end.strftime("%H:%M")},
+    }
+
+
+def _valid_cache(bars: pd.DataFrame) -> pd.DataFrame | None:
+    """`bars` when it looks like resample() output, else None."""
+    need = {"open", "high", "low", "close", "session_date"}
+    ok = need <= set(bars.columns) and isinstance(bars.index, pd.DatetimeIndex) and str(bars.index.tz) == TZ
+    return bars if ok and bars.index.is_monotonic_increasing else None
 
 
 def splice_history(bars: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:

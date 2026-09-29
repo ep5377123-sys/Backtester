@@ -248,6 +248,53 @@ def test_results_csv_ranked_first_then_filtered(tmp_path):
     assert df["combo"].tolist() == [2, 1, 3] and df["rank"].tolist()[:2] == [1, 2] and math.isnan(df["rank"].iat[2])
 
 
+class Kinds(Strategy):
+    inputs = dict(n=2, x=1.5, on=True, label="a", extra=None)
+
+    def on_bar(self):
+        pass
+
+
+def test_parse_grid_takes_the_type_of_each_default():
+    g = parse_grid(["on=true,False", "label=x,'y z',9:30", "x=1,2.5", "extra=None,3"], Kinds.inputs)
+    assert g == {"on": [True, False], "label": ["x", "y z", "9:30"], "x": [1.0, 2.5], "extra": [None, 3]}
+
+
+@pytest.mark.parametrize(
+    "spec, match",
+    [
+        ("on=not_bool", "not true or false"),  # FIX.md #9 repro: used to give ["not_bool"]
+        ("on=1", "not true or false"),
+        ("on=0:1", "not true or false"),
+        ("x=nan", "not a finite number"),
+        ("x=inf,1", "not a finite number"),
+        ("x=1e400", "not a finite number"),
+    ],
+)
+def test_parse_grid_rejects_values_of_the_wrong_type(spec, match):
+    with pytest.raises(ValueError, match=match):
+        parse_grid([spec], Kinds.inputs)
+    assert parse_grid(["label=123"], Kinds.inputs) == {"label": ["123"]}  # a str input keeps the token as text
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        (dict(grid={"on": ["yes"]}), "grid input on='yes' does not fit"),
+        (dict(grid={"n": [1.5]}), "grid input n=1.5 does not fit"),
+        (dict(grid={"x": [float("nan")]}), "grid input x=nan does not fit"),
+        (dict(grid={"n": 3}), "give a list"),
+        (dict(grid={"n": [1]}, fixed={"label": 5}), "fixed input label=5 does not fit"),
+        (dict(grid={"n": [1]}, min_trades=-1), "min_trades must be"),
+        (dict(grid={"n": [1]}, workers=0), "workers must be"),
+    ],
+)
+def test_direct_api_grids_and_counts_are_checked(kwargs, match):
+    bars, _ = market(days=1)
+    with pytest.raises(ValueError, match=match):
+        optimize(Kinds, spec=NQ, bars=bars, **kwargs)
+
+
 def test_decimal_values_never_leak():
     g = parse_grid(["stop_usd=1:2:0.5"], Momentum.inputs)
     assert not any(isinstance(v, Decimal) for v in g["stop_usd"])

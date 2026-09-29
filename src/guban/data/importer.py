@@ -24,6 +24,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from guban.data.parquet import write_parquet
+
 TZ = "America/New_York"
 
 RECORD = np.dtype(
@@ -206,9 +208,7 @@ def import_store(source: Path, symbol: str, out_dir: Path, roll: str = "volume",
     data = data.sort_index()
     data["contract"] = data["contract"].astype("category")
 
-    out = Path(out_dir) / symbol
-    out.mkdir(parents=True, exist_ok=True)
-    data.to_parquet(out / "1m.parquet")
+    write_parquet(data, Path(out_dir) / symbol / "1m.parquet")  # atomic: never a partial file under the final name
 
     rolls = [(s, c) for s, c, prev in zip(contracts.index, contracts, contracts.shift()) if c != prev]
     # Sessions are named by their 18:00 start date; Sun..Thu starts cover Mon..Fri trading days.

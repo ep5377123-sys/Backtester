@@ -1,9 +1,12 @@
 import os
+from datetime import time
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import guban.data.resample as rs
+from guban.config import Session
 from guban.data.resample import cache_path, load_bars, parse_timeframe, resample
 
 TZ = "America/New_York"
@@ -136,3 +139,44 @@ def test_load_bars_caches_and_rebuilds_when_source_changes(tmp_path):
     os.utime(src, (later, later))
     rebuilt = load_bars("NQ", "5m", "rth", tmp_path)
     assert (rebuilt.session_date == pd.Timestamp("2024-03-06")).all()
+
+
+def _source(tmp_path, start="2024-03-05 09:00", end="2024-03-05 16:30"):
+    src = tmp_path / "NQ" / "1m.parquet"
+    src.parent.mkdir(exist_ok=True)
+    one_minute(start, end).to_parquet(src)
+    return src
+
+
+def test_cache_rebuilds_when_the_session_definition_changes(tmp_path, monkeypatch):
+    # FIX.md #8: editing config/sessions.toml used to leave the old bars in the cache
+    _source(tmp_path)
+    assert load_bars("NQ", "5m", "rth", tmp_path).index[0] == pd.Timestamp("2024-03-05 09:35", tz=TZ)
+    monkeypatch.setattr(rs, "get_session", lambda key: Session("rth", "RTH", time(10, 0), time(16, 0)))
+    assert load_bars("NQ", "5m", "rth", tmp_path).index[0] == pd.Timestamp("2024-03-05 10:05", tz=TZ)
+
+
+def test_cache_rebuilds_on_a_new_cache_version_or_a_same_mtime_source_change(tmp_path, monkeypatch):
+    src = _source(tmp_path)
+    first = load_bars("NQ", "5m", "rth", tmp_path)
+    cached = cache_path("NQ", "5m", "rth", tmp_path)
+    old_version = rs.read_fingerprint(cached)["version"]
+    monkeypatch.setattr(rs, "CACHE_VERSION", old_version + 1)
+    pd.testing.assert_frame_equal(load_bars("NQ", "5m", "rth", tmp_path), first)
+    assert rs.read_fingerprint(cached)["version"] == old_version + 1  # rebuilt and re-stamped
+    # a rewritten source with its old modification time (a copy that kept timestamps) is still noticed by its size
+    st = src.stat()
+    one_minute("2024-03-06 09:00", "2024-03-06 12:00").to_parquet(src)
+    os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert (load_bars("NQ", "5m", "rth", tmp_path).session_date == pd.Timestamp("2024-03-06")).all()
+
+
+def test_corrupt_or_foreign_cache_is_rebuilt_and_writes_are_atomic(tmp_path):
+    _source(tmp_path)
+    cached = cache_path("NQ", "5m", "rth", tmp_path)
+    cached.write_bytes(b"not parquet")  # e.g. a write cut off by a crash under the old direct-write code
+    bars = load_bars("NQ", "5m", "rth", tmp_path)
+    assert len(bars) == 78 and rs.read_fingerprint(cached) is not None
+    pd.DataFrame({"x": [1]}).to_parquet(cached)  # a Parquet file without a fingerprint
+    assert len(load_bars("NQ", "5m", "rth", tmp_path)) == 78
+    assert not list(cached.parent.glob("*.tmp"))  # no temporary files left behind

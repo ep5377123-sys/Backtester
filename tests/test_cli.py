@@ -148,6 +148,7 @@ def test_strategy_frames_from_a_worker_process(tmp_path):
         (["run", "flip.py", "--symbol", "NQ", "--tz", "Mars/Base"], "unknown time zone 'Mars/Base'"),
         (["run", "flip.py", "--symbol", "NQ", "--fill-mode", "exact"], "'exact' is not one of"),
         (["run", "flip.py", "--symbol", "NQ", "--set", "nope=1"], "use name=value with one of ['hold']"),
+        (["run", "flip.py", "--symbol", "NQ", "--set", "hold=abc"], "'abc' is not a number"),
         (["run", "missing.py", "--symbol", "NQ"], "does not exist"),
         (["optimize", "flip.py", "--grid", "hold=1:3", "--symbol", "NQ", "--metric", "luck"], "--metric"),
         (["optimize", "flip.py", "--grid", "hold=1:6000", "--symbol", "NQ"], "Narrow it, or rerun with --yes"),

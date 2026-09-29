@@ -2,7 +2,9 @@
 
 Grid spec, one per input: name=start:stop[:step] (inclusive, step 1 when omitted), name=a,b,c, or name=value.
 Ranges are stepped in decimal, so 0.4:1.0:0.1 gives exactly 0.4, 0.5, ... 1.0. Values take the type of the
-input's default (an int input rejects 0.5; a float input turns 1 into 1.0).
+input's default: an int input rejects 0.5, a float input turns 1 into 1.0 (numbers must be finite), a bool input
+takes true / false only, and a str input takes each token as written (quotes optional; no ranges). Grids and fixed
+inputs passed to optimize() / walk_forward() directly are checked against the defaults the same way.
 
 Every combination is run in a process pool sized to the CPU cores. Each worker imports the strategy file and
 loads the bars once (pool initializer), then runs its share of combinations. Results come back in grid order
@@ -18,6 +20,7 @@ import ast
 import inspect
 import itertools
 import math
+import numbers
 import os
 import time
 from collections.abc import Callable
@@ -72,7 +75,8 @@ def parse_grid(specs: list[str], defaults: dict) -> dict[str, list]:
             raise ValueError(f"grid {spec!r}: use name=start:stop[:step], name=a,b,c or name=value with one of {sorted(defaults)}")
         if name in grid:
             raise ValueError(f"grid {spec!r}: {name} is given twice")
-        values = _range(raw, spec) if ":" in raw else [_literal(v) for v in raw.split(",")]
+        numeric = _is_number(defaults[name])
+        values = _range(raw, spec) if ":" in raw and numeric else raw.split(",")
         values = [_coerce(v, defaults[name], spec) for v in values]
         if len({repr(v) for v in values}) != len(values):
             raise ValueError(f"grid {spec!r}: repeated values {values}")
@@ -101,20 +105,44 @@ def _literal(raw: str):
         return raw
 
 
-def _coerce(v, default, spec: str):
-    if isinstance(default, bool) or not isinstance(default, (int, float)):
-        if isinstance(v, Decimal):
-            raise ValueError(f"grid {spec!r}: a range needs a numeric input (default {default!r})")
-        return v
-    if isinstance(v, Decimal):
-        v = int(v) if v == v.to_integral_value() else float(v)
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        raise ValueError(f"grid {spec!r}: {v!r} is not a number")
+def _is_number(v) -> bool:
+    return isinstance(v, numbers.Real) and not isinstance(v, (bool, np.bool_))
+
+
+def _coerce(v: str | Decimal, default, spec: str, what: str = "grid"):
+    """One grid value (a raw token, or a Decimal from a range) -> the type of the input's default."""
+    if isinstance(v, Decimal) and not _is_number(default):
+        raise ValueError(f"{what} {spec!r}: a range needs a numeric input (default {default!r})")
+    if isinstance(default, (bool, np.bool_)):
+        token = v.strip().lower()
+        if token not in ("true", "false"):
+            raise ValueError(f"{what} {spec!r}: {v.strip()!r} is not true or false (the default is {default!r})")
+        return token == "true"
+    if isinstance(default, str):
+        token = v.strip()
+        return token[1:-1] if len(token) >= 2 and token[0] == token[-1] and token[0] in "'\"" else token
+    if not _is_number(default):
+        return _literal(v)
+    raw_v = v.strip() if isinstance(v, str) else v
+    if isinstance(v, str):
+        try:
+            v = Decimal(v.strip())
+        except InvalidOperation:
+            raise ValueError(f"{what} {spec!r}: {v.strip()!r} is not a number") from None
+    if not v.is_finite():
+        raise ValueError(f"{what} {spec!r}: {v} is not a finite number")
+    v = int(v) if v == v.to_integral_value() else float(v)
     if isinstance(default, float):
-        return float(v)
+        try:
+            v = float(v)
+        except OverflowError:
+            v = math.inf
+        if not math.isfinite(v):
+            raise ValueError(f"{what} {spec!r}: {raw_v} is not a finite number")
+        return v
     if isinstance(v, float):
         if not v.is_integer():
-            raise ValueError(f"grid {spec!r}: {v!r} is not a whole number (the default is {default!r})")
+            raise ValueError(f"{what} {spec!r}: {v!r} is not a whole number (the default is {default!r})")
         v = int(v)
     return v
 
@@ -320,7 +348,8 @@ def optimize(
     workers: process count (default: CPU cores, capped at the number of combinations); 1 runs in this process.
     confirm: required when the grid has more than MAX_COMBINATIONS combinations.
     """
-    job, frames, combos = _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm)
+    job, frames, combos = _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm,
+                                 min_trades, workers)  # fmt: skip
     workers = pool_size(workers, len(combos))
     t0 = time.perf_counter()
     with _pool(job, frames, workers) as run:
@@ -338,8 +367,32 @@ def pool_size(workers: int | None, jobs: int) -> int:
     return max(1, min(workers or os.cpu_count() or 1, jobs))
 
 
-def _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm):
+def _check_value(what: str, name: str, v, default) -> None:
+    """A grid / fixed value passed directly must fit its input's default type (as parse_grid would make it)."""
+    if isinstance(default, (bool, np.bool_)):
+        ok = isinstance(v, (bool, np.bool_))
+    elif isinstance(default, numbers.Integral):
+        ok = isinstance(v, numbers.Integral) and not isinstance(v, (bool, np.bool_))
+    elif _is_number(default):
+        ok = _is_number(v) and math.isfinite(v)
+    elif isinstance(default, str):
+        ok = isinstance(v, str)
+    else:
+        ok = True
+    if not ok:
+        raise ValueError(f"{what} input {name}={v!r} does not fit its default {default!r} ({type(default).__name__})")
+
+
+def _check_counts(min_trades, workers) -> None:
+    if isinstance(min_trades, bool) or not isinstance(min_trades, numbers.Integral) or min_trades < 0:
+        raise ValueError(f"min_trades must be a whole number >= 0, got {min_trades!r}")
+    if workers is not None and (isinstance(workers, bool) or not isinstance(workers, numbers.Integral) or workers < 1):
+        raise ValueError(f"workers must be a whole number >= 1 (or omitted for all CPU cores), got {workers!r}")
+
+
+def _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm, min_trades=0, workers=None):
     """Check a grid run's arguments; return (job, frames for the workers or None, combinations)."""
+    _check_counts(min_trades, workers)
     if isinstance(strategy, (str, Path)):
         file, cls = str(strategy), load_strategy_class(strategy, class_name)
     else:
@@ -357,6 +410,13 @@ def _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, 
         raise ValueError(f"inputs {sorted(both)} are both fixed and in the grid")
     if not grid or any(not v for v in grid.values()):
         raise ValueError("the grid needs at least one input with at least one value")
+    for name, values in grid.items():
+        if isinstance(values, (str, bytes)) or not hasattr(values, "__iter__"):
+            raise ValueError(f"grid input {name}: give a list of values, got {values!r}")
+        for v in values:
+            _check_value("grid", name, v, cls.inputs[name])
+    for name, v in fixed.items():
+        _check_value("fixed", name, v, cls.inputs[name])
     if metric not in METRICS:
         raise ValueError(f"unknown metric {metric!r}; use one of {list(METRICS)}")
     combos = combinations(grid)

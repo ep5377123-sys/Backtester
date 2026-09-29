@@ -1,4 +1,3 @@
-import ast
 import functools
 import os
 import re
@@ -15,7 +14,7 @@ import typer
 
 from guban.data import import_store
 from guban.data.resample import cache_path, load_bars, parse_timeframe
-from guban.optimize import MAX_COMBINATIONS, DataSpec
+from guban.optimize import MAX_COMBINATIONS, DataSpec, _coerce
 
 REPORTS = Path("reports")
 
@@ -232,14 +231,10 @@ def _parse_inputs(pairs: list[str], defaults: dict) -> dict:
         key = key.strip()
         if not sep or key not in defaults:
             raise typer.BadParameter(f"{pair!r}: use name=value with one of {sorted(defaults)}", param_hint="--set")
-        try:
-            value = ast.literal_eval(raw.strip())
-        except (ValueError, SyntaxError):
-            value = raw.strip()
-        default = defaults[key]
-        if isinstance(default, float) and isinstance(value, int) and not isinstance(value, bool):
-            value = float(value)
-        out[key] = value
+        try:  # the input's default type decides: numbers must be numbers, bools true/false, strings stay text
+            out[key] = _coerce(raw, defaults[key], pair, what="--set")
+        except ValueError as e:
+            raise typer.BadParameter(str(e), param_hint="--set") from None
     return out
 
 

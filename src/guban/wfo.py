@@ -203,7 +203,8 @@ def walk_forward(
     Arguments as guban.optimize.optimize, plus the window layout (see make_windows). min_trades applies to the
     trades in each in-sample window. progress(done, total) reports the grid runs.
     """
-    job, frames, combos = _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm)
+    job, frames, combos = _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm,
+                                 min_trades, workers)  # fmt: skip
     t0 = time.perf_counter()
     frame = bars if bars is not None else data.load()[0]  # also builds missing bar caches before the workers read them
     sess = session_keys(frame.index, frame["session_date"] if "session_date" in frame.columns else None)
