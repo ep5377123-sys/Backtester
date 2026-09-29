@@ -237,7 +237,7 @@ class VaultBreak(Strategy):
       Done when: the IS/OOS no-overlap test passes, and the Vault Break WFO report shows stitched OOS equity and walk-forward efficiency.
       Steps: window generator (rolling and anchored); per-window optimize → OOS run; stitch the trades; WFO report section.
       Covers: R9, S5; checks: A9
-- [ ] Phase 9: Prop-firm Monte Carlo
+- [x] Phase 9: Prop-firm Monte Carlo (done 2026-09-29 — S6 met exactly, 0.00 pp; see Phase 9 results below)
       Done when: with the same trades, seed, and inputs, the pass rate is within ±1 pp of the notebook's.
       Steps: port notebook cells 4–9 to `guban/propfirm/`; move the rules into `config/propfirm/apex_50k_eod.toml`; add a size sweep and degradation scenarios; output HTML charts; flag the notebook's $25k-vs-50K discrepancy to the user.
       Covers: R10, S6; checks: A10
@@ -484,4 +484,49 @@ class VaultBreak(Strategy):
 - **Reproduce:**
   ```
   uv run guban wfo strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 vwap_exit_bars=1:4" --symbol MNQ --history-from NQ --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620
+  ```
+
+## Phase 9 results (2026-09-29)
+- **`guban propfirm --trades <trades.csv | MC export .csv/.xlsx> --rules apex_50k_eod`** writes five files to `reports/<trades>_<rules>/` (or `--out`):
+  - `propfirm.json`: rules, settings, trade statistics, the main run, degradation, sweep, best size, notes.
+  - `sweep.csv`, `degradation.csv`: one row per size / scenario (pass rate with Wilson 95% CI, failure mix, days, drawdown).
+  - `daily.csv`: the daily pool the simulation draws from.
+  - `propfirm.html`: the page.
+  - Flags override the rules file: `--size`, `--sims`, `--sweep-sims`, `--sweep 0.5,1,1.5` (empty: none), `--seed`, `--commission`, `--slippage`, `--risk`, `--open`.
+- **Code:** `guban/propfirm/sim.py` (literal port of notebook cells 4–11), `guban/propfirm/report.py`, `config/propfirm/apex_50k_eod.toml`.
+  - The rules file holds `[rules]` (target, drawdown, EOD trailing, daily loss limit, min/max days, account size), `[costs]`, `[simulation]` (sims, seed, size, sweep sizes, paths, bootstrap), `[[scenarios]]`, and `notes` shown in the report.
+  - `parity.load_mc_trades(..., tz=None)` now returns naive chart time. `propfirm.load_trades` uses it, so MC CSV/xlsx exports and guban `trades.csv` all load.
+  - Random draws happen in the notebook's exact order (`default_rng`; main = seed, degradation = seed+1000, sweep = seed+2000, paths = seed+5000). So results are bit-identical, not just statistically close.
+  - The notebook's funded-account payout cells (12–16) are outside this phase's scope (cells 4–9) and were not ported.
+- **S6 — verified by running the notebook's own cells 2–9** (Colab upload and matplotlib stubbed) side by side with `guban propfirm`:
+
+  | Trade file | Notebook pass rate | guban | Other figures |
+  |---|---|---|---|
+  | `Vault Break Funded.csv` (the file behind the notebook's saved outputs) | 24.2% (4,836 / 8,414 / 0 / 6,750) | 24.2%, identical | Every main-run statistic, all 20,000 max drawdowns and days-to-pass, all 5 degradation rows and all 14 sweep rows are identical, and match the notebook's recorded output. |
+  | `Vault Break MNQ.csv` | 35.8% (7,152 passed) | 35.8%, identical | All identical. |
+
+  - Run time: 2.6–3.4 s for the whole notebook (20k main + 5×5k degradation + 14×5k sweep + paths).
+- **Report** (`propfirm.html`, offline plotly, light/dark, checked in headless Edge):
+  - Tiles: pass rate with CI, the failure mix, days to pass, expected attempts, verdict.
+  - Charts: equity paths (pass / drawdown fail / time fail; target and limit lines), days-to-pass and max-drawdown distributions, degradation bars with CIs plus a table, size-sweep bars with CIs plus a table.
+  - Also: trade and daily-pool statistics, and cumulative pass probability.
+  - Two of the notebook's charts changed (dataviz rules): the outcome donut became tiles, and the degradation bars are one color instead of a position-based green→red ramp.
+- **Findings about the notebook, flagged to the user (A10 check).** All are ported as written, and all appear as notes in every report:
+  1. **"50K" vs $25k:** the rules are labeled Apex 50K but use a $25,000 account, $1,250 target and $1,000 drawdown. `account_size` is never used. The rule values need the user's review against the firm's current rules.
+  2. **Costs are double-counted:** $2.25 + $5.00 per contract is deducted from `profit_usd`, which in MC exports (and guban `trades.csv`) is already net of the backtest's costs. The rate is also per *NQ* contract but applied to the file's contracts, so a 5-MNQ file pays $36.25 per trade.
+     - On `Vault Break MNQ.csv`: 35.8% with the notebook's costs vs 43.2% with `--commission 0 --slippage 0`. Best size: 1.6× → 42.7% vs 1.9× → 51.5%.
+  3. **Size labels:** the sweep's "MNQ" labels (`int(size×10)`) assume a 1-NQ trade file. guban labels size as a multiplier of the file's size, with the contract count.
+  4. **Zero-trade weekdays are in the pool:** ~68% of Vault Break weekdays have no trades, so the 21-"trading-day" deadline is really 21 weekdays. Trades dated on a weekend are dropped (counted in a note; Vault Break has none).
+  5. **The drawdown never locks:** it trails the end-of-day high for the whole evaluation.
+  6. **Funded section inconsistencies (not ported):** the markdown says a 10-day window, a $2,500 drawdown and >$300 on 5 days; the code uses 20 days, the $1,000 challenge drawdown and >$100.
+- **Tests** (`tests/test_propfirm.py`, 28):
+  - The shipped rules equal the notebook's values.
+  - Rules lookup and overrides; quoted MC CSV loading; costs and R; daily pool (weekday fill, weekend drop).
+  - **`simulate` equals a verbatim copy of the notebook's `simulate_apex` / `apply_day_degradation`** across 16 combinations: EOD and non-EOD, daily limit, min days, sizes, degradation. Counts and per-simulation arrays match exactly.
+  - Hand-computed outcomes (pass day, drawdown at exactly the limit, daily limit, min days, time); the trailing high with a scripted draw order; degradation.
+  - Paths, Wilson CI (the notebook's 23.6–24.8%), verdicts, determinism, offline HTML, and the CLI.
+  - Full suite: 136 passed.
+- **Reproduce:**
+  ```
+  uv run guban propfirm --trades "D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv" --rules apex_50k_eod
   ```

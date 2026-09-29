@@ -33,15 +33,17 @@ MIN_PRICE_OK_RATE = 0.95
 MAX_NET_DIFF = 0.03
 
 
-def load_mc_trades(path: str | Path, tz: str = "America/Chicago") -> pd.DataFrame:
-    """Read an MC trade export (.csv or .xlsx) into MC_COLUMNS, times tz-aware in `tz`."""
+def load_mc_trades(path: str | Path, tz: str | None = "America/Chicago") -> pd.DataFrame:
+    """Read an MC trade export (.csv or .xlsx) into MC_COLUMNS, times tz-aware in `tz` (tz=None: naive chart time)."""
     path = Path(path)
     if path.suffix.lower() in (".xlsx", ".xlsm", ".xls"):
         out = _read_mc_xlsx(path)
     else:
         out = _read_mc_csv(path)
     for col in ("entry_time", "exit_time"):
-        out[col] = pd.to_datetime(out[col]).dt.round("1s").dt.tz_localize(tz, ambiguous="raise", nonexistent="raise")
+        out[col] = pd.to_datetime(out[col]).dt.round("1s")
+        if tz is not None:
+            out[col] = out[col].dt.tz_localize(tz, ambiguous="raise", nonexistent="raise")
     return out[MC_COLUMNS].sort_values("entry_time", kind="stable").reset_index(drop=True)
 
 

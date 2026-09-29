@@ -447,6 +447,107 @@ def wfo_cmd(
         webbrowser.open(html_path.resolve().as_uri())
 
 
+def _slug(text: str) -> str:
+    return "_".join("".join(ch if ch.isalnum() else " " for ch in text.lower()).split()) or "trades"
+
+
+def _floats(text: str | None, flag: str) -> tuple[float, ...] | None:
+    if text is None:
+        return None
+    try:
+        return tuple(float(v) for v in text.replace(",", " ").split())
+    except ValueError as e:
+        raise typer.BadParameter("use numbers separated by commas, e.g. 0.5,1,1.5", param_hint=flag) from e
+
+
+@app.command("propfirm")
+def propfirm_cmd(
+    trades: Path = typer.Option(..., "--trades", exists=True, dir_okay=False, help="Trade list: guban trades.csv, or an MC trade export (.csv / .xlsx)"),
+    rules: str = typer.Option("apex_50k_eod", "--rules", help="Rules name in config/propfirm/ (or a .toml path)"),
+    size: float = typer.Option(None, "--size", help="Multiplier on the trade file's daily P&L (rules file default: 1.0)"),
+    sims: int = typer.Option(None, "--sims", help="Simulations in the main run"),
+    sweep_sims: int = typer.Option(None, "--sweep-sims", help="Simulations per sweep size and per degradation scenario"),
+    sweep: str = typer.Option(None, "--sweep", help="Sizes to sweep, e.g. 0.5,1,1.5 (empty string: no sweep)"),
+    seed: int = typer.Option(None, "--seed", help="Random seed"),
+    commission: float = typer.Option(None, "--commission", help="USD per contract per trade, deducted on top of the file's (already net) profit"),
+    slippage: float = typer.Option(None, "--slippage", help="USD per contract per trade, deducted on top of the file's (already net) profit"),
+    risk: float = typer.Option(None, "--risk", help="1R in USD per contract, for R-multiples"),
+    out: Path = typer.Option(None, "--out", help="Output folder (default reports/<trades>_<rules>)"),
+    open_report: bool = typer.Option(False, "--open", help="Open propfirm.html in the browser when done"),
+) -> None:
+    """Prop-firm evaluation Monte Carlo on a trade list: pass rate, degradation scenarios and a size sweep."""
+    import json
+    import webbrowser
+
+    from guban.metrics import jsonable
+    from guban.propfirm import FAIL_DD, FAIL_TIME, load_setup, load_trades, run_propfirm
+    from guban.propfirm.report import write_propfirm_report
+
+    try:
+        setup = load_setup(rules)
+    except FileNotFoundError as e:
+        raise typer.BadParameter(str(e), param_hint="--rules") from e
+    setup = setup.with_overrides(size=size, sims=sims, sweep_sims=sweep_sims, sweep=_floats(sweep, "--sweep"), seed=seed,
+                                 commission=commission, slippage=slippage, risk_per_contract=risk)  # fmt: skip
+    try:
+        tr = load_trades(trades)
+        res = run_propfirm(tr, setup, progress=lambda msg: typer.echo(f"  {msg}"))
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+    stem = trades.parent.name if trades.stem == "trades" else trades.stem
+    out = out or Path("reports") / f"{_slug(stem)}_{setup.key}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    r, t, m, s = setup.rules, res.stats, res.main.summary(), res.summary()
+    res.daily.to_csv(out / "daily.csv", index=False, date_format="%Y-%m-%d")
+    res.scenario_table().to_csv(out / "degradation.csv", index=False)
+    res.sweep_table().to_csv(out / "sweep.csv", index=False)
+    (out / "propfirm.json").write_text(json.dumps(jsonable({"trades_file": str(trades), **res.to_json()}), indent=2, default=str) + "\n", encoding="utf-8")
+    c = t["contracts"]
+    meta = {
+        "title": f"Prop-firm Monte Carlo · {r.name}",
+        "subtitle": f"{trades.name} · {t['first']:%Y-%m-%d} → {t['last']:%Y-%m-%d} · {t['trades']:,} trades",
+        "details": {
+            "Rules": f"{setup.key}.toml",
+            "Profit target": f"${r.profit_target:,.0f}",
+            "Max drawdown": f"${r.max_drawdown:,.0f} ({'end-of-day trailing' if r.eod_trailing else 'trailing'})",
+            "Deadline": f"{r.max_trading_days} trading days" + (f", at least {r.min_trading_days}" if r.min_trading_days else ""),
+            "Daily loss limit": f"${r.daily_loss_limit:,.0f}" if r.daily_loss_limit > 0 else "none",
+            "Account size (not simulated)": f"${r.account_size:,.0f}",
+            "Size": f"{setup.size:g}× the file" + (f" ({setup.size * c:g} contract{'' if setup.size * c == 1 else 's'})" if c is not None else ""),
+            "Added costs (per contract, per trade)": f"commission ${setup.commission:g}, slippage ${setup.slippage:g}",
+            "Simulations": f"{setup.sims:,} main, {setup.sweep_sims:,} per scenario and sweep size, seed {setup.seed}",
+            "Run time": f"{res.seconds:,.1f} s",
+        },
+        "notes": res.notes,
+    }
+    html_path = write_propfirm_report(res, out / "propfirm.html", meta)
+
+    lo, hi = m["pass_rate_ci"]
+    typer.echo(f"{r.name} on {trades.name}: {t['trades']:,} trades, {len(res.daily):,} weekdays ({int(res.daily['is_trade_day'].sum()):,} with trades)")
+    typer.echo(f"  target ${r.profit_target:,.0f}  max drawdown ${r.max_drawdown:,.0f}  deadline {r.max_trading_days} days  size {setup.size:g}x  "
+               f"added costs ${setup.commission + setup.slippage:,.2f}/contract")  # fmt: skip
+    typer.echo(f"  win rate {t['win_rate_net']:.1%}  avg trade ${t['avg_trade_net']:,.2f}  EV {t['ev_r']:.4f} R  P(EV <= 0) {t['p_ev_usd_le_0']:.3f}")
+    typer.echo(f"  PASS RATE {m['pass_rate']:.1%} [95% CI {lo:.1%} - {hi:.1%}]  of {m['n_sims']:,}: passed {m['passed']:,}  fail DD {m['fail_dd']:,}  "
+               f"fail daily {m['fail_daily']:,}  fail time {m['fail_time']:,}")  # fmt: skip
+    if m["avg_days_to_pass"] is not None:
+        typer.echo(f"  days to pass avg {m['avg_days_to_pass']:.1f} median {m['median_days_to_pass']:.1f}  max DD avg ${m['avg_max_dd']:,.0f} "
+                   f"P95 ${m['p95_max_dd']:,.0f}  expected attempts {s['expected_attempts']:.1f}  verdict {s['verdict']}")  # fmt: skip
+    for sc, sr in res.scenarios:
+        typer.echo(f"  {sc.label:<32} pass {sr.pass_rate:6.1%}  fail DD {sr.rate(FAIL_DD):6.1%}")
+    if res.sweep:
+        typer.echo("  size  " + " ".join(f"{sr.size:>6g}" for sr in res.sweep))
+        typer.echo("  pass  " + " ".join(f"{sr.pass_rate:>6.1%}" for sr in res.sweep))
+        typer.echo("  DD    " + " ".join(f"{sr.rate(FAIL_DD):>6.1%}" for sr in res.sweep))
+        typer.echo("  time  " + " ".join(f"{sr.rate(FAIL_TIME):>6.1%}" for sr in res.sweep))
+        best = res.best_size
+        typer.echo(f"  best size: {best.size:g}x -> {best.pass_rate:.1%}" if best else "  best size: none passed")
+    typer.echo(f"  {res.seconds:,.1f} s")
+    typer.echo(f"Wrote {out / 'propfirm.json'}, {out / 'sweep.csv'}, {out / 'degradation.csv'}, {out / 'daily.csv'}, {html_path}")
+    if open_report:
+        webbrowser.open(html_path.resolve().as_uri())
+
+
 @app.command("compare")
 def compare_cmd(
     ours: Path = typer.Option(..., "--ours", exists=True, dir_okay=False, help="Our trades.csv"),

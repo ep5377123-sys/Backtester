@@ -1,0 +1,59 @@
+# Apex 50K EOD trailing-drawdown evaluation, with the values exactly as written in
+# "D:\Multi Charts\25k Prop Firm Accurate Rules.ipynb" (cells 2 and 6), so `guban propfirm` reproduces it (S6).
+# Review these against the firm's current rules before relying on the pass rates; see `notes`.
+
+notes = [
+  "Rules are the notebook's values as written. They are labeled \"50K\" but use a $25,000 account, a $1,250 profit target and a $1,000 drawdown — check them against the firm's current rules.",
+  "The drawdown trails the end-of-day equity high for the whole evaluation and never locks; account_size is not used by the simulation.",
+]
+
+[rules]
+name = "Apex 50k EOD"
+account_size = 25000       # informational only (the notebook never uses it)
+profit_target = 1250       # pass when end-of-day equity >= this
+max_drawdown = 1000        # fail when end-of-day equity is this far below its end-of-day high
+eod_trailing = true        # false: the high is updated before the drawdown check (notebook's non-EOD branch)
+daily_loss_limit = 0       # 0 = none; otherwise fail on a day losing at least this much
+min_trading_days = 0       # a pass needs at least this many simulated days
+max_trading_days = 21      # fail on time after this many simulated days
+
+[costs]
+# USD per contract in the trade file, per trade, deducted from profit_usd on top of whatever the backtest
+# already charged (MC exports and guban trades.csv are both net). The notebook's values are per NQ contract.
+commission = 2.25
+slippage = 5.0
+risk_per_contract = 1000.0  # 1R per contract, for R-multiples
+
+[simulation]
+sims = 20000               # main run
+sweep_sims = 5000          # per size-sweep point and per degradation scenario
+seed = 42                  # main run: seed; degradation: seed+1000; sweep: seed+2000; equity paths: seed+5000
+size = 1.0                 # multiplier on the trade file's daily P&L (the notebook's NUM_CONTRACTS)
+sweep = [0.3, 0.5, 0.7, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
+paths = 300                # equity paths drawn in the report
+bootstrap_sims = 10000     # trade-EV bootstrap confidence interval
+
+[[scenarios]]
+label = "Baseline (backtest as-is)"
+win_rate_adj = 0.0
+pnl_shrink = 0.0
+
+[[scenarios]]
+label = "WR −3 pp, PnL −10%"
+win_rate_adj = -0.03
+pnl_shrink = 0.10
+
+[[scenarios]]
+label = "WR −5 pp, PnL −15%"
+win_rate_adj = -0.05
+pnl_shrink = 0.15
+
+[[scenarios]]
+label = "WR −5 pp, PnL −25% (stress)"
+win_rate_adj = -0.05
+pnl_shrink = 0.25
+
+[[scenarios]]
+label = "WR −8 pp, PnL −30% (worst)"
+win_rate_adj = -0.08
+pnl_shrink = 0.30
