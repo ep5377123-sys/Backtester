@@ -229,7 +229,7 @@ class VaultBreak(Strategy):
       Done when: metrics tests pass on the hand-computed fixture, and the Vault Break `report.html` opens offline with equity, drawdown, trade list, and a price chart with trades.
       Steps: metrics module; MC-layout `trades.csv`; `metrics.json`; plotly self-contained HTML report.
       Covers: R6, S2
-- [ ] Phase 7: Parameter optimizer
+- [x] Phase 7: Parameter optimizer (done 2026-09-28 — see Phase 7 results below)
       Done when: the 2×2 grid equivalence test passes, and a Vault Break grid produces a ranked table plus a heatmap.
       Steps: grid spec parser; ProcessPoolExecutor, with data loaded once per worker; ranking and min-trades filter; heatmap; guard for grids over 5,000 combinations.
       Covers: R8, S4
@@ -379,3 +379,56 @@ class VaultBreak(Strategy):
   - Engine run-up/drawdown/`equity_low` are tested on synthetic bars, including the 0 floor and limit entries paying no slippage.
   - The report tests cover MC column values and the round-trip into compare, offline HTML with all sections, window encoding, and candle merging.
   - Full suite: 80 passed. `trades.csv` stays byte-identical across runs (R11), and Phase 5 parity is unchanged (S3 PASS, 300/302 matched, −0.23% net).
+
+## Phase 7 results (2026-09-28)
+- **`guban optimize <strategy.py> --grid ... [run's data/cost flags]`** writes three files to `reports/<strategy>_<symbol>_<tf>_<session>_opt/` (or `--out`):
+  - `results.csv`: every run, ranked runs first.
+  - `optimize.json`: run settings, the grid, and the best inputs with their metrics.
+  - `optimize.html`: KPI tiles, a heatmap, and the ranked table.
+  - New flags: `--metric` (default `net_profit`), `--min-trades` (default 30, my own choice), `--workers` (default: CPU cores), `--yes`, `--x/--y` (heatmap axes), `--top` (HTML table rows), `--open`. `--set` holds inputs fixed.
+- **Grid spec** (`guban/optimize.py` `parse_grid`), one per input:
+  - Forms: `name=start:stop[:step]` (inclusive; step 1 if omitted), `name=a,b,c`, or `name=v`.
+  - `--grid` repeats, and one flag can hold several specs separated by spaces, so the plan's `--grid "noise_mult=0.4:1.0:0.1 vwap_exit_bars=1:4"` works.
+  - Ranges are stepped in decimal, so 0.4:1.0:0.1 gives exactly 0.4 … 1.0.
+  - Values take the default's type: an int input rejects 0.5, and a float input turns 1 into 1.0.
+- **Execution:**
+  - `ProcessPoolExecutor` with one worker per core, capped at the number of combinations. `workers=1` runs in-process.
+  - A pool initializer loads the strategy file and the bars **once per worker**:
+    - From the CLI, each worker loads Parquet through `DataSpec.load()`. That function now also backs `guban run`: bars, 1-minute sub-bars, and the `--history-from` splice.
+    - The parent loads the data first, so a missing bar cache is built once, not raced by the workers.
+  - Results come back in grid order whatever the completion order, so the table is deterministic.
+  - A failing run raises an error naming its inputs.
+  - Grids over 5,000 combinations raise `TooManyCombinations`. The CLI exits with code 2 unless `--yes` is given.
+- **Loading strategies in workers:** workers re-import the strategy from its file, so the class must be defined at a file's top level. `load_strategy_class` moved from the CLI to `guban/engine/strategy.py` and now registers the module in `sys.modules`, so a class loaded from a file can also be passed to `optimize()`.
+- **Ranking** (`rank_results`):
+  - One metric, best first. Runs need at least `min_trades` trades and a defined metric value (a profit factor with no losing trades is ∞, which ranks top). Runs left out stay in the table unranked.
+  - The sort is stable, so ties keep grid order.
+  - Metrics (`RESULT_METRICS`): net profit, profit factor, trades, % profitable, avg trade, both max drawdowns, return on account, daily Sharpe, max consecutive losers, largest loss.
+  - Higher is better for all of them except max consecutive losers. Drawdowns and losses are ≤ 0, so the value nearest 0 wins.
+  - `metrics.backtest_metrics(result, bars)` is now shared by `run` and `optimize`.
+- **Heatmap** (`guban/optimize_report.py`):
+  - Axes are the first two inputs with more than one value, or `--x/--y`.
+  - Each cell holds the best value among runs that pass the min-trades filter, taken over every other grid input. Hover shows which values of the other inputs gave it.
+  - Blank cells have no eligible run. ○ marks the best cell. The metric can be switched in the page.
+  - With one varying input the chart is a line; with none, there is no chart.
+  - Colors come from the dataviz reference palette:
+    - Metrics that cross 0 use a diverging red–gray–blue scale centered on 0.
+    - Other metrics use a single blue ramp, reversed where lower is better.
+  - The page reuses the report's theme and inlined plotly.js.
+  - Checked in headless Edge, light and dark, for the Vault Break grid, a 3-input grid, and a synthetic grid whose profits cross zero.
+- **Vault Break grid** (S4): `noise_mult=0.4:1.0:0.1 × vwap_exit_bars=1:4` on the Phase 5 parity setup (MNQ + NQ history, ETH, Chicago, magnifier, $0.40/$0.04, 5 contracts, $500/$500, fitted ATR seed).
+  - 28 runs took 15.3 s on 6 workers, versus about 64 s serially (2.3 s per run).
+  - Every run had ≥ 30 trades.
+  - Best: noise_mult 0.6 / vwap_exit_bars 4, net 32,769.50, 737 trades, max drawdown −7,332.50.
+  - The whole noise_mult 0.6 column ranks 1–4. Profit falls off sharply above 0.7: 0.9 and 1.0 make about $8–9.6k.
+  - The (0.6, 2) cell is 30,891.70, exactly the single `guban run` result. The MC defaults sit 4th of 28. This is an in-sample optimum, and Phase 8 (walk-forward) is where that gets tested.
+- **Tests** (`tests/test_optimize.py`, 19):
+  - Grid parsing: 9 bad-spec cases plus types and decimal steps.
+  - **The R8 2×2 equivalence**: a 2-worker pool in magnifier mode with 1-minute sub-bars gives every metric exactly equal to four separate `run_backtest` runs, and `workers=1` gives the identical table.
+  - Strategy loading: by file path and as a class loaded from a file.
+  - Input validation, worker errors naming their inputs, and the 5,041-combination guard.
+  - Ranking: the min-trades filter, NaN handling, stable ties, and lower-is-better.
+  - Heatmap aggregation over a third input and axis defaults.
+  - HTML: offline, heatmap, line and no-chart variants.
+  - `results.csv` order.
+  - Full suite: 99 passed. `guban run` for Vault Break still gives net 30,891.70 / 737 trades / max drawdown −7,182.50.

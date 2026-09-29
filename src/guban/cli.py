@@ -1,6 +1,4 @@
 import ast
-import importlib.util
-import inspect
 import time
 from pathlib import Path
 
@@ -8,7 +6,8 @@ import pandas as pd
 import typer
 
 from guban.data import import_store
-from guban.data.resample import cache_path, load_bars, parse_timeframe, splice_history
+from guban.data.resample import cache_path, load_bars, parse_timeframe
+from guban.optimize import MAX_COMBINATIONS, DataSpec
 
 app = typer.Typer(help="Guban Backtester — CME futures backtesting with MultiCharts parity.")
 
@@ -53,24 +52,12 @@ def bars_cmd(
 
 
 def _load_strategy_class(path: Path, class_name: str | None):
-    from guban.engine import Strategy
+    from guban.engine.strategy import load_strategy_class
 
-    spec = importlib.util.spec_from_file_location(f"guban_user_strategy_{path.stem}", path)
-    if spec is None or spec.loader is None:
-        raise typer.BadParameter(f"cannot import {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    found = {
-        name: obj for name, obj in vars(module).items()
-        if inspect.isclass(obj) and issubclass(obj, Strategy) and obj is not Strategy and obj.__module__ == module.__name__
-    }  # fmt: skip
-    if class_name:
-        if class_name not in found:
-            raise typer.BadParameter(f"{path} has no Strategy subclass {class_name!r}; found {sorted(found)}")
-        return found[class_name]
-    if len(found) != 1:
-        raise typer.BadParameter(f"{path} defines {len(found)} Strategy subclasses {sorted(found)}; pick one with --class")
-    return next(iter(found.values()))
+    try:
+        return load_strategy_class(path, class_name)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
 
 
 def _parse_inputs(pairs: list[str], defaults: dict) -> dict:
@@ -117,19 +104,14 @@ def run_cmd(
 
     from guban.config import get_contract
     from guban.engine import Costs, run_backtest
-    from guban.metrics import compute_metrics, jsonable
+    from guban.metrics import backtest_metrics, jsonable
     from guban.report import write_report
 
     t0 = time.perf_counter()
     cls = _load_strategy_class(strategy_file, class_name)
     strategy = cls(**_parse_inputs(inputs, cls.inputs))
     spec = get_contract(contract or symbol)
-    bars = load_bars(symbol, tf, session, data_dir, tz=tz)
-    sub = load_bars(symbol, "1m", session, data_dir, tz=tz) if fill_mode == "magnifier" else None
-    if history_from:
-        bars = splice_history(bars, load_bars(history_from, tf, session, data_dir, tz=tz))
-        if sub is not None:
-            sub = splice_history(sub, load_bars(history_from, "1m", session, data_dir, tz=tz))
+    bars, sub = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir)).load()
     t1 = time.perf_counter()
     res = run_backtest(strategy, bars, spec, Costs(commission=commission, slippage=slippage), sub_bars=sub, fill_mode=fill_mode)
     t2 = time.perf_counter()
@@ -137,8 +119,7 @@ def run_cmd(
     path = res.write_trades_csv(out / "trades.csv", capital)
     tr = res.trades
     pos = res.open_position
-    open_pnl = res.equity.iat[-1] - res.net_profit if pos is not None else 0.0
-    metrics = compute_metrics(tr, res.equity, res.equity_low, bars["session_date"], open_pnl)
+    metrics = backtest_metrics(res, bars)
 
     title = f"{cls.__name__} · {spec.symbol} {tf}"
     notes = []
@@ -191,6 +172,127 @@ def run_cmd(
     typer.echo(f"Wrote {path}, {out / 'metrics.json'}" + (f", {report_path}" if report_path else ""))
     if report_path and open_report:
         webbrowser.open(report_path.resolve().as_uri())
+
+
+@app.command("optimize")
+def optimize_cmd(
+    strategy_file: Path = typer.Argument(..., exists=True, dir_okay=False, help="Python file defining a Strategy subclass"),
+    grid_specs: list[str] = typer.Option(..., "--grid", help="Input range name=start:stop[:step], name=a,b,c or name=v (repeatable; several per flag, space-separated)"),
+    symbol: str = typer.Option(..., "--symbol", help="Imported data symbol, e.g. NQ"),
+    contract: str = typer.Option(None, "--contract", help="Contract spec for P&L (default: --symbol), e.g. MNQ"),
+    tf: str = typer.Option("5m", "--tf", help="Strategy timeframe"),
+    session: str = typer.Option("rth", "--session", help="Session template from config/sessions.toml"),
+    history_from: str = typer.Option(None, "--history-from", help="Prepend this symbol's bars from before --symbol's first bar"),
+    tz: str = typer.Option("America/New_York", "--tz", help="Chart time zone the strategy sees (MC exchange time: America/Chicago)"),
+    fill_mode: str = typer.Option("magnifier", "--fill-mode", help="magnifier (1-minute sub-bars) or ohlc"),
+    commission: float = typer.Option(0.0, "--commission", help="USD per contract per round trip"),
+    slippage: float = typer.Option(0.0, "--slippage", help="USD per contract per round trip (half per market/stop fill)"),
+    inputs: list[str] = typer.Option([], "--set", help="Fixed input override name=value (repeatable)"),
+    class_name: str = typer.Option(None, "--class", help="Strategy class, when the file defines several"),
+    metric: str = typer.Option("net_profit", "--metric", help="Rank by: net_profit, profit_factor, return_on_account, sharpe_daily, max_drawdown_intraday, ..."),
+    min_trades: int = typer.Option(30, "--min-trades", help="Rank only runs with at least this many trades"),
+    workers: int = typer.Option(None, "--workers", help="Worker processes (default: CPU cores)"),
+    yes: bool = typer.Option(False, "--yes", help=f"Run grids larger than {MAX_COMBINATIONS:,} combinations"),
+    x: str = typer.Option(None, "--x", help="Heatmap x input (default: first varying grid input)"),
+    y: str = typer.Option(None, "--y", help="Heatmap y input (default: second varying grid input)"),
+    top: int = typer.Option(50, "--top", help="Rows in the HTML ranked table (results.csv has every run)"),
+    out: Path = typer.Option(None, "--out", help="Output folder (default reports/<strategy>_<symbol>_<tf>_<session>_opt)"),
+    open_report: bool = typer.Option(False, "--open", help="Open optimize.html in the browser when done"),
+    data_dir: Path = typer.Option(Path("data"), "--data-dir"),
+) -> None:
+    """Grid-search strategy inputs on all CPU cores; write results.csv, optimize.json and optimize.html (heatmap)."""
+    import json
+    import webbrowser
+
+    from guban.config import get_contract
+    from guban.engine import Costs
+    from guban.metrics import jsonable
+    from guban.optimize import METRICS, TooManyCombinations, combinations, optimize, parse_grid
+    from guban.optimize_report import heatmap_axes, write_optimize_report
+    from guban.report import fmt_value
+
+    cls = _load_strategy_class(strategy_file, class_name)
+    fixed = _parse_inputs(inputs, cls.inputs)
+    try:
+        grid = parse_grid([s for spec in grid_specs for s in spec.split()], cls.inputs)
+    except ValueError as e:
+        raise typer.BadParameter(str(e), param_hint="--grid") from e
+    if metric not in METRICS:
+        raise typer.BadParameter(f"use one of {list(METRICS)}", param_hint="--metric")
+    both = set(grid) & set(fixed)
+    if both:
+        raise typer.BadParameter(f"{sorted(both)} are both in --grid and --set")
+    try:
+        heatmap_axes(grid, x, y)  # check --x / --y before the long run
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+    n = len(combinations(grid))
+    if n > MAX_COMBINATIONS and not yes:
+        typer.echo(f"The grid has {n:,} combinations (more than {MAX_COMBINATIONS:,}). Narrow it, or rerun with --yes.", err=True)
+        raise typer.Exit(2)
+    spec = get_contract(contract or symbol)
+    out = out or Path("reports") / f"{strategy_file.stem}_{symbol}_{tf}_{session}_opt"
+
+    t0 = time.perf_counter()
+    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir))
+    bars, _ = data.load()  # also builds any missing bar caches before the workers read them
+    typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz}): "
+               f"{n:,} combinations, {len(bars):,} bars")  # fmt: skip
+    step = max(1, n // 10)
+
+    def progress(done: int, total: int) -> None:
+        if done % step == 0 or done == total:
+            el = time.perf_counter() - t0
+            typer.echo(f"  {done:,}/{total:,} runs  {el:,.0f} s" + (f"  (~{el / done * (total - done):,.0f} s left)" if done < total else ""))
+
+    try:
+        opt = optimize(strategy_file, grid, spec, class_name=cls.__name__, costs= Costs(commission=commission, slippage=slippage), data=data, fixed=fixed,
+                       metric=metric, min_trades=min_trades, workers=workers, confirm=yes, progress=progress)  # fmt: skip
+    except TooManyCombinations as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(2) from e
+    csv_path = opt.write_csv(out / "results.csv")
+
+    label, kind, _ = METRICS[metric]
+    grid_text = " · ".join(f"{k}: {', '.join(map(str, v))}" for k, v in grid.items())
+    meta = {
+        "title": f"Optimization · {cls.__name__} · {spec.symbol} {tf}",
+        "subtitle": f"{bars.index[0]:%Y-%m-%d} → {bars.index[-1]:%Y-%m-%d} · {strategy_file.name}",
+        "details": {
+            "Data": f"{symbol} {tf}, {session} session" + (f" (+{history_from} history)" if history_from else ""),
+            "Contract spec": f"{spec.symbol}: ${spec.point_value:g}/pt, tick {spec.tick_size:g}",
+            "Chart time zone": tz,
+            "Fill mode": fill_mode,
+            "Costs (per contract, round trip)": f"commission ${commission:g}, slippage ${slippage:g}",
+            "Ranked by": f"{label}, runs with ≥ {min_trades:,} trades",
+            "Grid": grid_text,
+        },
+        "inputs": fixed,
+        "notes": ["Fixed inputs (--set) are shown as chips; every other input is at its default."] if fixed else [],
+    }
+    html_path = write_optimize_report(opt, out / "optimize.html", meta, x, y, top)
+    best = opt.results[opt.results["rank"] == 1]
+    summary = {
+        "run": {"strategy": cls.__name__, "file": str(strategy_file), "symbol": symbol, "contract": spec.symbol, "tf": tf,
+                "session": session, "tz": tz, "fill_mode": fill_mode, "history_from": history_from,
+                "commission": commission, "slippage": slippage, "fixed": fixed,
+                "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)},
+        "grid": grid, "metric": metric, "min_trades": min_trades, "combinations": n, "ranked": int(opt.results["rank"].notna().sum()),
+        "workers": opt.workers, "seconds": round(opt.seconds, 2),
+        "best": {"inputs": opt.best, **{k: best[k].iat[0] for k in METRICS}} if len(best) else None,
+    }  # fmt: skip
+    (out / "optimize.json").write_text(json.dumps(jsonable(summary), indent=2, default=str) + "\n", encoding="utf-8")
+
+    typer.echo(f"  {n:,} runs in {opt.seconds:,.1f} s on {opt.workers} workers; {summary['ranked']:,} with >= {min_trades:,} trades")
+    for _, row in opt.ranked().head(5).iterrows():
+        if pd.isna(row["rank"]):
+            break
+        ins = ", ".join(f"{k}={row[k]}" for k in grid)
+        typer.echo(f"  #{int(row['rank'])}  {ins}  {label.lower()} {fmt_value(row[metric], kind)}  trades {int(row['total_trades']):,}  "
+                   f"max drawdown {fmt_value(row['max_drawdown_intraday'], 'usd')}")  # fmt: skip
+    typer.echo(f"Wrote {csv_path}, {out / 'optimize.json'}, {html_path}")
+    if open_report:
+        webbrowser.open(html_path.resolve().as_uri())
 
 
 @app.command("compare")

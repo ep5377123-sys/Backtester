@@ -14,7 +14,11 @@
 
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import math
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -126,6 +130,28 @@ class Strategy:
     def current_bar(self) -> int:
         """1-based bar number (MC CurrentBar)."""
         return self._clock.i + 1
+
+
+def load_strategy_class(path: str | Path, class_name: str | None = None) -> type[Strategy]:
+    """Import a strategy file and return its Strategy subclass (`class_name` when the file defines several)."""
+    path = Path(path)
+    spec = importlib.util.spec_from_file_location(f"guban_user_strategy_{path.stem}", path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"cannot import {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # so inspect.getfile() finds the file (the optimizer re-imports from it)
+    spec.loader.exec_module(module)
+    found = {
+        name: obj for name, obj in vars(module).items()
+        if inspect.isclass(obj) and issubclass(obj, Strategy) and obj is not Strategy and obj.__module__ == module.__name__
+    }  # fmt: skip
+    if class_name:
+        if class_name not in found:
+            raise ValueError(f"{path} has no Strategy subclass {class_name!r}; found {sorted(found)}")
+        return found[class_name]
+    if len(found) != 1:
+        raise ValueError(f"{path} defines {len(found)} Strategy subclasses {sorted(found)}; pick one with --class")
+    return next(iter(found.values()))
 
 
 def _dollars(amount: float | None, what: str) -> float | None:

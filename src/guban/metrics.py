@@ -151,6 +151,13 @@ def compute_metrics(
     return out
 
 
+def backtest_metrics(result, bars: pd.DataFrame) -> dict:
+    """compute_metrics for a BacktestResult run on `bars` (the frame passed to run_backtest)."""
+    open_pnl = result.equity.iat[-1] - result.net_profit if result.open_position is not None else 0.0
+    sessions = bars["session_date"] if "session_date" in bars.columns else None
+    return compute_metrics(result.trades, result.equity, result.equity_low, sessions, open_pnl)
+
+
 def jsonable(obj):
     """Metrics (or any nested dict/list) -> JSON-safe values: inf/NaN -> None, timestamps -> ISO strings."""
     if isinstance(obj, dict):
