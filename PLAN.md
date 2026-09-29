@@ -233,7 +233,7 @@ class VaultBreak(Strategy):
       Done when: the 2×2 grid equivalence test passes, and a Vault Break grid produces a ranked table plus a heatmap.
       Steps: grid spec parser; ProcessPoolExecutor, with data loaded once per worker; ranking and min-trades filter; heatmap; guard for grids over 5,000 combinations.
       Covers: R8, S4
-- [ ] Phase 8: Walk-forward analysis
+- [x] Phase 8: Walk-forward analysis (done 2026-09-29 — see Phase 8 results below)
       Done when: the IS/OOS no-overlap test passes, and the Vault Break WFO report shows stitched OOS equity and walk-forward efficiency.
       Steps: window generator (rolling and anchored); per-window optimize → OOS run; stitch the trades; WFO report section.
       Covers: R9, S5; checks: A9
@@ -432,3 +432,56 @@ class VaultBreak(Strategy):
   - HTML: offline, heatmap, line and no-chart variants.
   - `results.csv` order.
   - Full suite: 99 passed. `guban run` for Vault Break still gives net 30,891.70 / 737 trades / max drawdown −7,182.50.
+
+## Phase 8 results (2026-09-29)
+- **`guban wfo <strategy.py> --grid ... [run's data/cost flags]`** writes five files to `reports/<strategy>_<symbol>_<tf>_<session>_wfo/` (or `--out`):
+  - `trades.csv`: the stitched out-of-sample trades, in MC layout.
+  - `windows.csv`: one row per window. It has the dates, the chosen combination and its inputs, IS and OOS net profit (total and per year), trades, WFE, and the chosen inputs' OOS rank.
+  - `results.csv`: every window × combination, with `is_*` and `oos_*` metrics and both ranks.
+  - `wfo.json`: settings, windows, efficiency, and the stitched OOS metrics.
+  - `wfo.html`: the page.
+  - Flags:
+    - Window layout: `--is 12 --oos 3 --step` (months; step defaults to `--oos`), `--rolling/--anchored`, `--start YYYY-MM-DD` (default: the first whole month of data).
+    - Otherwise as `optimize`: `--metric`, `--min-trades` (default 30, applied to trades entered in the IS window), `--workers`, `--yes`, `--capital`, `--open`.
+- **Windows** (`guban/wfo.py` `make_windows`, A9 defaults):
+  - Built on session dates, in whole months, with exclusive ends.
+  - Each OOS window directly follows its IS window. The last one is cut off at the data end and marked partial.
+  - `step < oos` is rejected, so no OOS day is in two windows. `step > oos` leaves gaps.
+  - Vault Break data (2022-12-28 → 2026-09-17) gives 11 windows: OOS 2024-01 → 2026-09, the last one partial.
+- **Warm-up (user decision, this session):** every run starts at the first bar of the data, so long-memory indicators (Vault Break's DailyATR) are warm in every window.
+  - The engine is causal: later bars never change earlier trades or equity. A test proves this in both fill modes.
+  - So a run through a window's end is the start of a run over all the data. Each combination is backtested **once** over all the data, and every IS and OOS window is scored from that run (`metrics.window_metrics`: trades by entry bar, equity rebased at the window start). A trade still open at a window's end counts whole in its entry window.
+  - Walk-forward costs one `optimize`, plus one re-run per distinct chosen input set. The re-runs rebuild the stitched equity curve.
+- **Selection and stitching:**
+  - Each IS window's winner is rank 1 by the metric among runs with ≥ `min_trades` IS trades (the same `rank_results` as `optimize`; ties keep grid order).
+  - If no combination qualifies, that OOS window sits out (flat).
+  - The stitched curve covers the OOS bars only. For each window it takes the chosen inputs' equity, rebased so the curve continues.
+  - `boundary_trades` counts trades that span a window edge where the inputs change. There, the curve switches inputs while the trade list keeps each whole trade. Intraday Vault Break has 0.
+- **Walk-forward efficiency (WFE)** = annualized OOS net ÷ annualized IS net of the chosen inputs (net per 365.25 calendar days of the window).
+  - Overall figure: pooled over the windows that traded.
+  - Undefined when IS profit is ≤ 0.
+- **Refactors:**
+  - `guban/optimize.py`: the pool became a shared `_pool` context manager, with `_setup`, `pool_size` and `_run_full`. `_Job.windows` makes workers return per-window metrics. `optimize()` behavior is unchanged.
+  - `guban/report.py` `write_report(..., sections=, bands=)` adds extra sections after the header and labeled, alternately shaded bands on the equity and drawdown charts. Sessions are aligned to the equity index, so a curve over part of the bars works.
+- **Report** (`guban/wfo_report.py`):
+  - A walk-forward section: layout and definitions; tiles for WFE, OOS and IS net per year, profitable OOS windows, and windows; the per-window table.
+  - Then the full standard report of the stitched OOS result: KPIs, equity and drawdown with W1…Wn bands, summary, monthly table, trade viewer, trade list.
+  - Checked in headless Edge, light and dark.
+- **Vault Break WFO (S5)**, on the Phase 5 parity setup with the Phase 7 grid (`noise_mult=0.4:1.0:0.1 × vwap_exit_bars=1:4`), rolling 12/3/3:
+  - 28 runs + 4 re-runs in 23.5 s on 6 workers.
+  - Chosen inputs drift across windows: 0.4/1 → 0.6/4 → 0.6/1 → 0.5/1 → 0.4/1.
+  - Stitched OOS 2024-01-01 → 2026-09-17: 674 trades, net 19,877.60 (equal to the sum of the per-window OOS nets), PF 1.14, max drawdown −7,136.70, Sharpe 0.92.
+  - OOS 7,326/yr vs IS 10,247/yr → **WFE 71.5%**. 8 of 11 OOS windows profitable. The chosen inputs' OOS rank ranged from 3/28 to 25/28.
+  - For comparison, the fixed MC defaults (0.6/2) earned 30,891.70 over the full 2022-12 → 2026-09 span.
+- **Tests** (`tests/test_wfo.py`, 9):
+  - Window layout, including the R9 check that no OOS window overlaps its IS window and OOS windows tile the span. Anchored windows, gaps, and error cases.
+  - Causality, in magnifier and OHLC modes.
+  - **Walk-forward equals runs truncated at each window end.** For every window: IS winner, IS/OOS net and trade counts, and the stitched trades frame, against independent `run_backtest` calls on bars through the IS end and the OOS end. On a seed where the choice changes between windows.
+  - Every OOS trade lies in its OOS window and outside its IS span.
+  - Stitched equity covers the OOS bars only and ends at the trade total. The WFE formula holds, pooled and per window.
+  - `workers=1` equals `workers=2`. Sat-out windows. Boundary-trade counting. The HTML opens offline, and the CSVs are checked.
+  - Full suite: 108 passed. `guban run` for Vault Break still gives net 30,891.70 / 737 trades / max drawdown −7,182.50.
+- **Reproduce:**
+  ```
+  uv run guban wfo strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 vwap_exit_bars=1:4" --symbol MNQ --history-from NQ --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620
+  ```

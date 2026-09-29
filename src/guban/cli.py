@@ -295,6 +295,158 @@ def optimize_cmd(
         webbrowser.open(html_path.resolve().as_uri())
 
 
+@app.command("wfo")
+def wfo_cmd(
+    strategy_file: Path = typer.Argument(..., exists=True, dir_okay=False, help="Python file defining a Strategy subclass"),
+    grid_specs: list[str] = typer.Option(..., "--grid", help="Input range name=start:stop[:step], name=a,b,c or name=v (repeatable; several per flag, space-separated)"),
+    symbol: str = typer.Option(..., "--symbol", help="Imported data symbol, e.g. NQ"),
+    contract: str = typer.Option(None, "--contract", help="Contract spec for P&L (default: --symbol), e.g. MNQ"),
+    tf: str = typer.Option("5m", "--tf", help="Strategy timeframe"),
+    session: str = typer.Option("rth", "--session", help="Session template from config/sessions.toml"),
+    history_from: str = typer.Option(None, "--history-from", help="Prepend this symbol's bars from before --symbol's first bar"),
+    tz: str = typer.Option("America/New_York", "--tz", help="Chart time zone the strategy sees (MC exchange time: America/Chicago)"),
+    fill_mode: str = typer.Option("magnifier", "--fill-mode", help="magnifier (1-minute sub-bars) or ohlc"),
+    commission: float = typer.Option(0.0, "--commission", help="USD per contract per round trip"),
+    slippage: float = typer.Option(0.0, "--slippage", help="USD per contract per round trip (half per market/stop fill)"),
+    inputs: list[str] = typer.Option([], "--set", help="Fixed input override name=value (repeatable)"),
+    class_name: str = typer.Option(None, "--class", help="Strategy class, when the file defines several"),
+    is_months: int = typer.Option(12, "--is", help="In-sample window, months"),
+    oos_months: int = typer.Option(3, "--oos", help="Out-of-sample window, months"),
+    step_months: int = typer.Option(None, "--step", help="Months between windows (default: --oos)"),
+    anchored: bool = typer.Option(False, "--anchored/--rolling", help="Anchored: every in-sample window starts at --start and grows"),
+    start: str = typer.Option(None, "--start", help="First in-sample day, YYYY-MM-DD session date (default: first whole month of data)"),
+    metric: str = typer.Option("net_profit", "--metric", help="Pick each in-sample winner by: net_profit, profit_factor, return_on_account, sharpe_daily, ..."),
+    min_trades: int = typer.Option(30, "--min-trades", help="Only runs with at least this many trades in the in-sample window can win it"),
+    workers: int = typer.Option(None, "--workers", help="Worker processes (default: CPU cores)"),
+    yes: bool = typer.Option(False, "--yes", help=f"Run grids larger than {MAX_COMBINATIONS:,} combinations"),
+    capital: float = typer.Option(1_000_000.0, "--capital", help="Initial capital, for trades.csv cum_profit_pct"),
+    out: Path = typer.Option(None, "--out", help="Output folder (default reports/<strategy>_<symbol>_<tf>_<session>_wfo)"),
+    open_report: bool = typer.Option(False, "--open", help="Open wfo.html in the browser when done"),
+    data_dir: Path = typer.Option(Path("data"), "--data-dir"),
+) -> None:
+    """Walk-forward: optimize each in-sample window, trade the winner out of sample; write the stitched result."""
+    import json
+    import webbrowser
+
+    from guban.config import get_contract
+    from guban.engine import Costs
+    from guban.metrics import jsonable
+    from guban.optimize import METRICS, TooManyCombinations, combinations, parse_grid
+    from guban.report import fmt_value
+    from guban.wfo import walk_forward
+    from guban.wfo_report import write_wfo_report
+
+    cls = _load_strategy_class(strategy_file, class_name)
+    fixed = _parse_inputs(inputs, cls.inputs)
+    try:
+        grid = parse_grid([s for spec in grid_specs for s in spec.split()], cls.inputs)
+    except ValueError as e:
+        raise typer.BadParameter(str(e), param_hint="--grid") from e
+    if metric not in METRICS:
+        raise typer.BadParameter(f"use one of {list(METRICS)}", param_hint="--metric")
+    both = set(grid) & set(fixed)
+    if both:
+        raise typer.BadParameter(f"{sorted(both)} are both in --grid and --set")
+    n = len(combinations(grid))
+    if n > MAX_COMBINATIONS and not yes:
+        typer.echo(f"The grid has {n:,} combinations (more than {MAX_COMBINATIONS:,}). Narrow it, or rerun with --yes.", err=True)
+        raise typer.Exit(2)
+    spec = get_contract(contract or symbol)
+    out = out or Path("reports") / f"{strategy_file.stem}_{symbol}_{tf}_{session}_wfo"
+    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir))
+    typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz}): "
+               f"{n:,} combinations, each run once over all the data")  # fmt: skip
+    t0 = time.perf_counter()
+    step = max(1, n // 10)
+
+    def progress(done: int, total: int) -> None:
+        if done % step == 0 or done == total:
+            el = time.perf_counter() - t0
+            typer.echo(f"  {done:,}/{total:,} runs  {el:,.0f} s" + (f"  (~{el / done * (total - done):,.0f} s left)" if done < total else ""))
+
+    try:
+        wf = walk_forward(strategy_file, grid, spec, Costs(commission=commission, slippage=slippage), data=data, fixed=fixed,
+                          class_name=cls.__name__, is_months=is_months, oos_months=oos_months, step_months=step_months,
+                          anchored=anchored, start=start, metric=metric, min_trades=min_trades, workers=workers, confirm=yes,
+                          progress=progress)  # fmt: skip
+    except TooManyCombinations as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(2) from e
+    except ValueError as e:  # window layout that does not fit the data
+        raise typer.BadParameter(str(e)) from e
+
+    bars, s, p = wf.bars, wf.summary, wf.pooled
+    trades_path = wf.oos_result().write_trades_csv(out / "trades.csv", capital)
+    csv_paths = wf.write_csvs(out)
+    label = METRICS[metric][0]
+    layout = f"{'anchored' if anchored else 'rolling'}, {is_months} m in-sample / {oos_months} m out-of-sample, step {wf.step_months} m"
+    notes = []
+    if history_from:
+        notes.append(f"{history_from} bars stand in for {symbol} before {symbol}'s first bar.")
+    if wf.boundary_trades:
+        notes.append(f"{wf.boundary_trades} trade(s) were open across an out-of-sample window boundary where the inputs change: each counts "
+                     "whole in its entry window's trades, but the equity curve switches to the next window's inputs at the boundary.")  # fmt: skip
+    if s["combo"].isna().any():
+        notes.append(f"{int(s['combo'].isna().sum())} window(s) had no combination with ≥ {min_trades:,} in-sample trades and sat out (flat).")
+    tr = wf.trades
+    if len(tr) and tr["ambiguous"].any():
+        notes.append(f"{int(tr['ambiguous'].sum())} out-of-sample trade(s) have an ambiguous fill (OHLC path rule inside one sub-bar).")
+    notes.append("Fixed inputs (--set) are shown as chips; every other input not in the grid is at its default.")
+    meta = {
+        "title": f"Walk-forward · {cls.__name__} · {spec.symbol} {tf}",
+        "subtitle": f"Out of sample {s['oos_from'].iat[0]:%Y-%m-%d} → {s['oos_to'].iat[-1]:%Y-%m-%d} · {strategy_file.name}",
+        "details": {
+            "Data": f"{symbol} {tf}, {session} session" + (f" (+{history_from} history)" if history_from else ""),
+            "Contract spec": f"{spec.symbol}: ${spec.point_value:g}/pt, tick {spec.tick_size:g}",
+            "Chart time zone": tz,
+            "Fill mode": fill_mode,
+            "Costs (per contract, round trip)": f"commission ${commission:g}, slippage ${slippage:g}",
+            "Windows": layout,
+            "Chosen by": f"{label}, runs with ≥ {min_trades:,} in-sample trades",
+            "Grid": " · ".join(f"{k}: {', '.join(map(str, v))}" for k, v in grid.items()),
+            "Runs": f"{n:,} over {bars.index[0]:%Y-%m-%d} → {bars.index[-1]:%Y-%m-%d}, {wf.seconds:,.1f} s on {wf.workers} workers",
+        },
+        "inputs": fixed,
+        "notes": notes,
+    }
+    html_path = write_wfo_report(wf, out / "wfo.html", meta)
+    summary = {
+        "run": {"strategy": cls.__name__, "file": str(strategy_file), "symbol": symbol, "contract": spec.symbol, "tf": tf,
+                "session": session, "tz": tz, "fill_mode": fill_mode, "history_from": history_from,
+                "commission": commission, "slippage": slippage, "fixed": fixed, "capital": capital,
+                "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)},
+        "grid": grid, "metric": metric, "min_trades": min_trades, "combinations": n,
+        "layout": {"anchored": anchored, "is_months": is_months, "oos_months": oos_months, "step_months": wf.step_months, "start": s["is_from"].iat[0]},
+        "workers": wf.workers, "seconds": round(wf.seconds, 2),
+        "walk_forward_efficiency": p["wfe"], "is_net_per_year": p["is_net_per_year"], "oos_net_per_year": p["oos_net_per_year"],
+        "boundary_trades": wf.boundary_trades,
+        "windows": wf.summary_records(),
+        "oos": wf.metrics,
+    }  # fmt: skip
+    (out / "wfo.json").write_text(json.dumps(jsonable(summary), indent=2, default=str) + "\n", encoding="utf-8")
+
+    names = list(grid)
+    for _, r in s.iterrows():
+        head = f"  W{r['window']:<2} IS {r['is_from']:%Y-%m-%d}→{r['is_to']:%Y-%m-%d}  OOS {r['oos_from']:%Y-%m-%d}→{r['oos_to']:%Y-%m-%d}"
+        if pd.isna(r["combo"]):
+            typer.echo(f"{head}  sat out (no run with >= {min_trades:,} in-sample trades)")
+            continue
+        ins = ", ".join(f"{k}={r[k]}" for k in names)
+        wfe = "n/a" if pd.isna(r["wfe"]) else f"{r['wfe']:.0%}"
+        typer.echo(f"{head}  {ins}  IS/yr {fmt_value(r['is_net_per_year'], 'usd')}  OOS {fmt_value(r['oos_net_profit'], 'usd')} "
+                   f"({int(r['oos_trades'])} trades)  WFE {wfe}")  # fmt: skip
+    a, acc = wf.metrics["all"], wf.metrics["account"]
+    typer.echo(f"  out of sample: {a['total_trades']:,} trades  net {fmt_value(a['net_profit'], 'usd')}  "
+               f"max drawdown {fmt_value(acc['max_drawdown_intraday'], 'usd')}  net/yr {fmt_value(p['oos_net_per_year'], 'usd')}  "
+               f"(in sample {fmt_value(p['is_net_per_year'], 'usd')}/yr)")  # fmt: skip
+    typer.echo(f"  walk-forward efficiency: {'n/a' if p['wfe'] is None else format(p['wfe'], '.0%')}"
+               + (f"  boundary trades: {wf.boundary_trades}" if wf.boundary_trades else ""))  # fmt: skip
+    typer.echo(f"  {n:,} runs + {int(s['combo'].nunique())} re-runs in {wf.seconds:,.1f} s on {wf.workers} workers")
+    typer.echo(f"Wrote {trades_path}, {csv_paths[0]}, {csv_paths[1]}, {out / 'wfo.json'}, {html_path}")
+    if open_report:
+        webbrowser.open(html_path.resolve().as_uri())
+
+
 @app.command("compare")
 def compare_cmd(
     ours: Path = typer.Option(..., "--ours", exists=True, dir_okay=False, help="Our trades.csv"),

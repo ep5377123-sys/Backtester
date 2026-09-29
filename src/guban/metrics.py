@@ -158,6 +158,20 @@ def backtest_metrics(result, bars: pd.DataFrame) -> dict:
     return compute_metrics(result.trades, result.equity, result.equity_low, sessions, open_pnl)
 
 
+def window_metrics(result, bars: pd.DataFrame, lo: int, hi: int) -> dict:
+    """compute_metrics for bars [lo, hi) of a run on `bars`: the trades entered in those bars (whole trades, even
+    when they exit later), with equity rebased to 0 at the close of bar lo - 1. A backtest is causal (later bars
+    never change earlier ones), so this scores a walk-forward window from one run over all the data as a run
+    through the window's end would, except that a trade still open at the window's end is counted whole."""
+    tr = result.trades
+    tr = tr[(tr["entry_bar"] >= lo) & (tr["entry_bar"] < hi)].reset_index(drop=True)
+    tr = tr.assign(cum_net_pnl=tr["net_pnl"].cumsum())
+    base = float(result.equity.iat[lo - 1]) if lo > 0 else 0.0
+    low = result.equity_low.iloc[lo:hi] - base if result.equity_low is not None else None
+    sessions = bars["session_date"].iloc[lo:hi] if "session_date" in bars.columns else None
+    return compute_metrics(tr, result.equity.iloc[lo:hi] - base, low, sessions)
+
+
 def jsonable(obj):
     """Metrics (or any nested dict/list) -> JSON-safe values: inf/NaN -> None, timestamps -> ISO strings."""
     if isinstance(obj, dict):

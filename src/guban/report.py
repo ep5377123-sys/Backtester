@@ -27,15 +27,20 @@ MAX_CANDLES = 1500
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-def write_report(result, bars: pd.DataFrame, path: str | Path, metrics: dict, meta: dict) -> Path:
+def write_report(
+    result, bars: pd.DataFrame, path: str | Path, metrics: dict, meta: dict, sections: list[str] | None = None, bands: list[dict] | None = None
+) -> Path:
     """Write report.html for a BacktestResult run on `bars` (the frame passed to run_backtest).
 
     meta: {"title", "subtitle", "details": {label: value}, "inputs": {name: value}, "notes": [str]}.
+    result.equity may cover only some of the bars (a stitched walk-forward curve); trade bar numbers index `bars`.
+    sections: extra HTML sections placed after the header. bands: [{"x0", "x1", "xm": "YYYY-MM-DD", "label"}]
+    periods marked on the equity and drawdown charts (every other one shaded; x1 exclusive).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tr = result.trades
-    sessions = bars["session_date"] if "session_date" in bars.columns else None
+    sessions = bars["session_date"].reindex(result.equity.index) if "session_date" in bars.columns else None
     daily = daily_equity(result.equity, sessions)
     dd = intraday_drawdown(result.equity, result.equity_low)
     daily_dd = dd.groupby(session_keys(dd.index, sessions)).min()
@@ -44,8 +49,10 @@ def write_report(result, bars: pd.DataFrame, path: str | Path, metrics: dict, me
         "days": [d.strftime("%Y-%m-%d") for d in daily.index],
         "equity": _r(daily.to_numpy(), 2),
         "dd": _r(daily_dd.to_numpy(), 2),
+        "bands": bands or [],
         **_trade_windows(tr, bars, result.spec.tick_size if result.spec else 0.01),
     }
+    band_cap = " Labels and alternate shading mark the out-of-sample windows." if bands else ""
     parts = [
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
         "<meta name='viewport' content='width=device-width, initial-scale=1'>",
@@ -54,8 +61,9 @@ def write_report(result, bars: pd.DataFrame, path: str | Path, metrics: dict, me
         f"<script>{_plotly_js()}</script>",
         "</head><body><main>",
         _header(meta),
+        *(sections or []),
         _tiles(metrics),
-        "<section><h2>Equity</h2><p class='cap'>Closed net profit plus open profit at each session's last bar, USD.</p>"
+        f"<section><h2>Equity</h2><p class='cap'>Closed net profit plus open profit at each session's last bar, USD.{band_cap}</p>"
         "<div id='equity' class='chart'></div></section>",
         "<section><h2>Drawdown</h2><p class='cap'>Worst intraday drawdown each session, from the prior equity peak, USD.</p>"
         "<div id='drawdown' class='chart short'></div></section>",
@@ -310,11 +318,14 @@ _JS = r"""
   }, extra || {});
 
   function drawCurves() {
-    const c = css();
+    const c = css(), B = D.bands;
+    const shapes = B.filter((_, i) => i % 2 === 0).map(b => ({ type: 'rect', xref: 'x', yref: 'paper', x0: b.x0, x1: b.x1, y0: 0, y1: 1,
+      fillcolor: c.s1, opacity: 0.08, line: { width: 0 }, layer: 'below' }));
+    const labels = B.map(b => ({ x: b.xm, y: 1, xref: 'x', yref: 'paper', yanchor: 'bottom', text: b.label, showarrow: false, font: { size: 10, color: c.muted } }));
     Plotly.react('equity', [{ x: D.days, y: D.equity, type: 'scatter', mode: 'lines', line: { color: c.s1, width: 2 },
-      hovertemplate: '%{x}<br>Equity %{y:,.2f}<extra></extra>' }], layout(c), cfg);
+      hovertemplate: '%{x}<br>Equity %{y:,.2f}<extra></extra>' }], layout(c, B.length ? { shapes, annotations: labels, margin: { l: 64, r: 16, t: 22, b: 36 } } : {}), cfg);
     Plotly.react('drawdown', [{ x: D.days, y: D.dd, type: 'scatter', mode: 'lines', fill: 'tozeroy', line: { color: c.bad, width: 2 },
-      fillcolor: c.bad + '33', hovertemplate: '%{x}<br>Drawdown %{y:,.2f}<extra></extra>' }], layout(c), cfg);
+      fillcolor: c.bad + '33', hovertemplate: '%{x}<br>Drawdown %{y:,.2f}<extra></extra>' }], layout(c, { shapes }), cfg);
   }
 
   // --- trade viewer ---

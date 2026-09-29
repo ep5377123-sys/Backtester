@@ -22,6 +22,7 @@ import os
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -32,7 +33,7 @@ import pandas as pd
 from guban.config import ContractSpec
 from guban.engine import Costs, Strategy, run_backtest
 from guban.engine.strategy import load_strategy_class
-from guban.metrics import backtest_metrics
+from guban.metrics import backtest_metrics, window_metrics
 
 MAX_COMBINATIONS = 5000
 
@@ -161,6 +162,7 @@ class _Job:
     fill_mode: str | None
     fixed: dict
     data: DataSpec | None  # workers load bars from here, or get `frames` passed in
+    windows: tuple[tuple[int, int], ...] | None = None  # walk-forward: score these [lo, hi) bar ranges, not the whole run
 
 
 _WORKER: dict = {}
@@ -171,14 +173,54 @@ def _init_worker(job: _Job, frames: tuple[pd.DataFrame, pd.DataFrame | None] | N
     _WORKER.update(job=job, cls=load_strategy_class(job.strategy_file, job.class_name), bars=bars, sub=sub)
 
 
-def _run_one(params: dict) -> dict:
-    job, bars = _WORKER["job"], _WORKER["bars"]
+def _backtest(params: dict):
+    job = _WORKER["job"]
     try:
         strategy = _WORKER["cls"](**job.fixed, **params)
-        res = run_backtest(strategy, bars, job.spec, job.costs, sub_bars=_WORKER["sub"], fill_mode=job.fill_mode)
+        return run_backtest(strategy, _WORKER["bars"], job.spec, job.costs, sub_bars=_WORKER["sub"], fill_mode=job.fill_mode)
     except Exception as e:
         raise RuntimeError(f"run with inputs {params} failed: {e}") from e
-    return flatten_metrics(backtest_metrics(res, bars))
+
+
+def _run_one(params: dict) -> dict | list[dict]:
+    """Metrics of one run: of the whole run, or (walk-forward) one set per window in job.windows."""
+    job, bars = _WORKER["job"], _WORKER["bars"]
+    res = _backtest(params)
+    if job.windows is None:
+        return flatten_metrics(backtest_metrics(res, bars))
+    return [flatten_metrics(window_metrics(res, bars, lo, hi)) for lo, hi in job.windows]
+
+
+def _run_full(params: dict) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    """Trades, equity and equity_low of one run (walk-forward stitching)."""
+    res = _backtest(params)
+    return res.trades, res.equity.to_numpy(float), res.equity_low.to_numpy(float)
+
+
+@contextmanager
+def _pool(job: _Job, frames, workers: int):
+    """Yield run(fn, items, progress=None) -> list of fn(item) in item order, computed by `workers` processes that
+    each loaded the strategy and the bars once (workers=1: in this process)."""
+
+    def collect(results, total, progress):
+        out = []
+        for r in results:
+            out.append(r)
+            if progress:
+                progress(len(out), total)
+        return out
+
+    if workers == 1:
+        _init_worker(job, frames)
+        try:
+            yield lambda fn, items, progress=None: collect(map(fn, items), len(items), progress)
+        finally:
+            _WORKER.clear()
+    else:
+        with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(job, frames)) as ex:
+            yield lambda fn, items, progress=None: collect(
+                ex.map(fn, items, chunksize=max(1, len(items) // (workers * 4))), len(items), progress
+            )
 
 
 def flatten_metrics(m: dict) -> dict:
@@ -263,6 +305,26 @@ def optimize(
     workers: process count (default: CPU cores, capped at the number of combinations); 1 runs in this process.
     confirm: required when the grid has more than MAX_COMBINATIONS combinations.
     """
+    job, frames, combos = _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm)
+    workers = pool_size(workers, len(combos))
+    t0 = time.perf_counter()
+    with _pool(job, frames, workers) as run:
+        rows = run(_run_one, combos, progress)
+    seconds = time.perf_counter() - t0
+
+    results = pd.concat([pd.DataFrame(combos), pd.DataFrame(rows)], axis=1)
+    results.insert(0, "combo", np.arange(1, len(results) + 1))
+    results["rank"] = rank_results(results, metric, min_trades)
+    return OptimizeResult(grid, results, metric, min_trades, workers, seconds, job.fixed)
+
+
+def pool_size(workers: int | None, jobs: int) -> int:
+    """Worker processes: `workers` (default: CPU cores), capped at the number of jobs, at least 1."""
+    return max(1, min(workers or os.cpu_count() or 1, jobs))
+
+
+def _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm):
+    """Check a grid run's arguments; return (job, frames for the workers or None, combinations)."""
     if isinstance(strategy, (str, Path)):
         file, cls = str(strategy), load_strategy_class(strategy, class_name)
     else:
@@ -290,33 +352,7 @@ def optimize(
     if data is not None:
         fill_mode = fill_mode or data.fill_mode
     job = _Job(file, cls.__name__, spec, costs, fill_mode, fixed, data)
-    frames = None if data is not None else (bars, sub_bars)
-    workers = max(1, min(workers or os.cpu_count() or 1, len(combos)))
-
-    t0 = time.perf_counter()
-    rows = []
-    if workers == 1:
-        _init_worker(job, frames)
-        try:
-            for params in combos:
-                rows.append(_run_one(params))
-                if progress:
-                    progress(len(rows), len(combos))
-        finally:
-            _WORKER.clear()
-    else:
-        chunk = max(1, len(combos) // (workers * 4))
-        with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(job, frames)) as ex:
-            for row in ex.map(_run_one, combos, chunksize=chunk):
-                rows.append(row)
-                if progress:
-                    progress(len(rows), len(combos))
-    seconds = time.perf_counter() - t0
-
-    results = pd.concat([pd.DataFrame(combos), pd.DataFrame(rows)], axis=1)
-    results.insert(0, "combo", np.arange(1, len(results) + 1))
-    results["rank"] = rank_results(results, metric, min_trades)
-    return OptimizeResult(grid, results, metric, min_trades, workers, seconds, fixed)
+    return job, None if data is not None else (bars, sub_bars), combos
 
 
 # --- heatmap data --------------------------------------------------------------------------------
