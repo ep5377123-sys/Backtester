@@ -1,8 +1,11 @@
 """Strategy base class. Subclasses override on_bar() (and optionally on_start()), PowerLanguage style.
 
-- `inputs` holds defaults; constructor keyword arguments override them. Read them as self.p.<name>.
+- `inputs` holds defaults; constructor keyword arguments override them. Read them as self.p.<name>. Each
+  instance gets its own deep copy, so mutating a list or dict input never leaks into another run.
 - Bar series: open, high, low, close, volume, time (HHMM int, MC `Time`), date (calendar date of the bar
-  close, MC `Date`), session_date (trading date), timestamp (pd.Timestamp). All support [n] lookback.
+  close, MC `Date`), session_date (trading date), timestamp (pd.Timestamp), contract (the contract month of
+  an unadjusted continuous series, e.g. "202609", or None when the bars have no contract column; compare
+  contract[0] with contract[1] to see a roll coming and flatten before it). All support [n] lookback.
 - buy / sell / sell_short / buy_to_cover place orders for the NEXT bar: at="market" (the next bar's open),
   or at="stop" / at="limit" with a price (filled intrabar; see guban.engine.backtest). An order lives for
   one bar only; re-issue it on every bar you want it active.
@@ -10,13 +13,17 @@
   until changed or cleared with None, and apply to every position from its entry fill onward.
 - Plain instance attributes play the role of intrabarpersist variables; self.series() gives a variable
   with [n] lookback.
+- An instance runs one backtest: create a new one for each run (a second run_backtest with the same
+  instance raises, since its variables would carry the first run's state).
 """
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import inspect
 import math
+import numbers
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +38,10 @@ BUY, SELL, SELL_SHORT, BUY_TO_COVER = "buy", "sell", "sell_short", "buy_to_cover
 ORDER_KINDS = ("market", "stop", "limit")
 
 
+class StrategyError(RuntimeError):
+    """The strategy's own code raised (import, on_start or on_bar); the message says where."""
+
+
 class Strategy:
     inputs: ClassVar[dict[str, Any]] = {}
 
@@ -38,7 +49,7 @@ class Strategy:
         unknown = set(overrides) - set(self.inputs)
         if unknown:
             raise ValueError(f"{type(self).__name__}: unknown inputs {sorted(unknown)}; known: {sorted(self.inputs)}")
-        self.p = SimpleNamespace(**{**self.inputs, **overrides})
+        self.p = SimpleNamespace(**copy.deepcopy({**self.inputs, **overrides}))
         self._broker: Broker | None = None
         self._clock: Clock | None = None
         self._vars: list[VarSeries] = []
@@ -52,6 +63,11 @@ class Strategy:
 
     # --- wiring (called by the backtest) ------------------------------------------------------------
     def _bind(self, clock: Clock, columns: dict[str, list], broker: Broker) -> None:
+        if self._clock is not None:
+            raise RuntimeError(
+                f"this {type(self).__name__} instance has already run a backtest; its variables still hold that run's "
+                f"state, so create a new one ({type(self).__name__}(...)) for each run"
+            )
         self._clock, self._broker, self._n = clock, broker, len(columns["close"])
         for name, values in columns.items():
             setattr(self, name, Series(values, clock, name))
@@ -91,8 +107,12 @@ class Strategy:
                 raise ValueError("market orders take no price")
         elif price is None or not math.isfinite(price):
             raise ValueError(f"{at} orders need a finite price, got {price!r}")
-        if qty is not None and (not isinstance(qty, int) or qty <= 0):
-            raise ValueError(f"qty must be a positive int or None, got {qty!r}")
+        entry = action in (BUY, SELL_SHORT)
+        if qty is not None or entry:
+            if isinstance(qty, bool) or not isinstance(qty, numbers.Integral) or qty <= 0:
+                what = "a positive int" if entry else "a positive int or None (all contracts)"
+                raise ValueError(f"{action} qty must be {what}, got {qty!r}")
+            qty = int(qty)
         self._broker.submit(action, name, qty, at, self._clock.i, None if price is None else float(price))
 
     # --- per-position dollar exits (MC SetStopLoss / SetProfitTarget) --------------------------------
@@ -140,7 +160,10 @@ def load_strategy_class(path: str | Path, class_name: str | None = None) -> type
         raise ValueError(f"cannot import {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module  # so inspect.getfile() finds the file (the optimizer re-imports from it)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        raise StrategyError(f"importing {path.name} failed: {e!r}") from e
     found = {
         name: obj for name, obj in vars(module).items()
         if inspect.isclass(obj) and issubclass(obj, Strategy) and obj is not Strategy and obj.__module__ == module.__name__
