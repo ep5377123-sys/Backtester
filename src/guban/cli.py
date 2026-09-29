@@ -106,11 +106,19 @@ def run_cmd(
     inputs: list[str] = typer.Option([], "--set", help="Input override name=value (repeatable)"),
     class_name: str = typer.Option(None, "--class", help="Strategy class, when the file defines several"),
     out: Path = typer.Option(None, "--out", help="Output folder (default reports/<strategy>_<symbol>_<tf>_<session>)"),
+    capital: float = typer.Option(1_000_000.0, "--capital", help="Initial capital, for trades.csv cum_profit_pct (MC run: 1,000,000)"),
+    report: bool = typer.Option(True, "--report/--no-report", help="Write report.html"),
+    open_report: bool = typer.Option(False, "--open", help="Open report.html in the browser when done"),
     data_dir: Path = typer.Option(Path("data"), "--data-dir"),
 ) -> None:
-    """Backtest a strategy and write trades.csv (the HTML report arrives in Phase 6)."""
+    """Backtest a strategy; write trades.csv (MC layout), metrics.json and report.html."""
+    import json
+    import webbrowser
+
     from guban.config import get_contract
     from guban.engine import Costs, run_backtest
+    from guban.metrics import compute_metrics, jsonable
+    from guban.report import write_report
 
     t0 = time.perf_counter()
     cls = _load_strategy_class(strategy_file, class_name)
@@ -126,21 +134,63 @@ def run_cmd(
     res = run_backtest(strategy, bars, spec, Costs(commission=commission, slippage=slippage), sub_bars=sub, fill_mode=fill_mode)
     t2 = time.perf_counter()
     out = out or Path("reports") / f"{strategy_file.stem}_{symbol}_{tf}_{session}"
-    path = res.write_trades_csv(out / "trades.csv")
+    path = res.write_trades_csv(out / "trades.csv", capital)
     tr = res.trades
+    pos = res.open_position
+    open_pnl = res.equity.iat[-1] - res.net_profit if pos is not None else 0.0
+    metrics = compute_metrics(tr, res.equity, res.equity_low, bars["session_date"], open_pnl)
+
+    title = f"{cls.__name__} · {spec.symbol} {tf}"
+    notes = []
+    if history_from:
+        notes.append(f"{history_from} bars stand in for {symbol} before {symbol}'s first bar.")
+    if res.bars_without_sub_bars:
+        notes.append(f"{res.bars_without_sub_bars:,} bars had no 1-minute data and were filled from their own OHLC.")
+    if pos is not None:
+        notes.append(f"A position is still open at the end ({pos.direction:+d} x{pos.qty} from {pos.entry_time:%Y-%m-%d %H:%M}); it is not in the trade statistics.")
+    if len(tr) and tr["ambiguous"].any():
+        notes.append(f"{int(tr['ambiguous'].sum())} trade(s) have an ambiguous fill: the exit order inside one sub-bar came from the OHLC path rule, not the data.")
+    meta = {
+        "title": title,
+        "subtitle": f"{bars.index[0]:%Y-%m-%d} → {bars.index[-1]:%Y-%m-%d} · {strategy_file.name}",
+        "details": {
+            "Data": f"{symbol} {tf}, {session} session" + (f" (+{history_from} history)" if history_from else ""),
+            "Contract spec": f"{spec.symbol}: ${spec.point_value:g}/pt, tick {spec.tick_size:g}",
+            "Chart time zone": tz,
+            "Fill mode": fill_mode,
+            "Costs (per contract, round trip)": f"commission ${commission:g}, slippage ${slippage:g}",
+            "Bars": f"{len(bars):,}",
+            "First / last bar": f"{bars.index[0]:%Y-%m-%d %H:%M} / {bars.index[-1]:%Y-%m-%d %H:%M}",
+            "Backtest time": f"{t2 - t1:.1f} s",
+        },
+        "inputs": vars(strategy.p),
+        "notes": notes,
+    }
+    meta_json = {"strategy": cls.__name__, "file": str(strategy_file), "symbol": symbol, "contract": spec.symbol, "tf": tf,
+                 "session": session, "tz": tz, "fill_mode": fill_mode, "history_from": history_from,
+                 "commission": commission, "slippage": slippage, "capital": capital, "inputs": vars(strategy.p),
+                 "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)}  # fmt: skip
+    (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **metrics}), indent=2, default=str) + "\n", encoding="utf-8")
+    report_path = write_report(res, bars, out / "report.html", metrics, meta) if report else None
+    t3 = time.perf_counter()
+
     typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz})")
     typer.echo(f"  bars: {len(bars):,}  {bars.index[0]} -> {bars.index[-1]}" + (f"  ({history_from} before {symbol}'s first bar)" if history_from else ""))
     if len(tr):
-        amb = int(tr["ambiguous"].sum())
-        typer.echo(f"  trades: {len(tr):,}  net profit: {res.net_profit:,.2f}  ambiguous fills: {amb}")
+        a, acc = metrics["all"], metrics["account"]
+        pf = "inf" if a["profit_factor"] == float("inf") else f"{a['profit_factor'] or 0:.2f}"
+        typer.echo(f"  trades: {len(tr):,}  net profit: {res.net_profit:,.2f}  profit factor: {pf}  "
+                   f"max drawdown: {acc['max_drawdown_intraday']:,.2f}  ambiguous fills: {a['ambiguous_fills']}")  # fmt: skip
     else:
         typer.echo("  trades: 0")
     if res.bars_without_sub_bars:
         typer.echo(f"  bars without 1-minute data (OHLC fallback): {res.bars_without_sub_bars}")
-    if res.open_position is not None:
-        typer.echo(f"  open position at the end: {res.open_position.direction:+d} x{res.open_position.qty}")
-    typer.echo(f"  time: load {t1 - t0:.1f} s + backtest {t2 - t1:.1f} s = {t2 - t0:.1f} s")
-    typer.echo(f"Wrote {path}")
+    if pos is not None:
+        typer.echo(f"  open position at the end: {pos.direction:+d} x{pos.qty}")
+    typer.echo(f"  time: load {t1 - t0:.1f} s + backtest {t2 - t1:.1f} s + report {t3 - t2:.1f} s = {t3 - t0:.1f} s")
+    typer.echo(f"Wrote {path}, {out / 'metrics.json'}" + (f", {report_path}" if report_path else ""))
+    if report_path and open_report:
+        webbrowser.open(report_path.resolve().as_uri())
 
 
 @app.command("compare")

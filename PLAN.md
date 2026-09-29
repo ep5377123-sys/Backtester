@@ -225,7 +225,7 @@ class VaultBreak(Strategy):
       Done when: `guban compare` against `Vault Break MNQ.csv` meets S3, and the backtest time is ≤15 s.
       Steps: open `Vault Break MNQ 500$ risk.xlsx` to recover inputs, costs, and session (A7, A8); port `sc_Vaultc20Break.el` line by line to `strategies/vault_break.py`; implement `guban compare` and `diff.html`; iterate on engine semantics until the thresholds pass; time the run (A4).
       Covers: R7, S3; checks: A4, A7, A8
-- [ ] Phase 6: Metrics and HTML report
+- [x] Phase 6: Metrics and HTML report (done 2026-09-28 — see Phase 6 results below)
       Done when: metrics tests pass on the hand-computed fixture, and the Vault Break `report.html` opens offline with equity, drawdown, trade list, and a price chart with trades.
       Steps: metrics module; MC-layout `trades.csv`; `metrics.json`; plotly self-contained HTML report.
       Covers: R6, S2
@@ -338,3 +338,44 @@ class VaultBreak(Strategy):
   - S3 on the full 2021–2026 span needs MNQ 1-minute data for 2021-01 → 2025-06 exported from MC. That would also replace the fitted ATR seed with real history.
   - The other Vault Break exports (`Vault Break 1500.csv`, etc.) could cross-check the seed, if they came from the same chart.
 
+
+## Phase 6 results (2026-09-28)
+- **`guban run` now writes three files:** `trades.csv` (MC layout), `metrics.json`, and `report.html`.
+  - New flags: `--capital` (default 1,000,000), `--no-report`, `--open` (opens the report in the browser).
+  - Vault Break MNQ (263k bars) takes load 0.5 s + backtest 1.8 s + report 0.5 s = **2.8 s** (S2 ≤ 15 s). `report.html` is 5.5 MB, of which ~4.6 MB is the inlined plotly.js.
+- **`trades.csv` in MC's trade-export layout** (`guban/tradelist.py`). Conventions were read off `Vault Break MNQ.csv`:
+  - One row per trade. MC's 17 columns come first.
+  - `order_id` = 2 × trade − 1. `type` is `EntryLong`/`EntryShort`; `direction` is `LONG`/`SHORT`.
+  - `excel_date` = `excel_time` = the full Excel serial of the entry, in chart time.
+  - `profit_pct`, `runup_pct`, `drawdown_pct` divide by the entry notional (price × point value × contracts). `cum_profit_pct` divides by the initial capital; the MC run used $1,000,000.
+  - The engine's columns follow MC's: entry/exit ISO times, exit price and name, gross, commission, slippage, bars, and ambiguous.
+  - Lines are not wrapped in quotes, unlike MC's file. `parity.load_our_trades` reads both this layout and the old one, and `load_mc_trades` reads ours too.
+- **Run-up and drawdown per trade (new in the engine):**
+  - They are tracked along the same intrabar path as fills (1-minute magnifier or OHLC), from the entry fill to the exit fill.
+  - They are reported net of entry-side costs (half commission, plus half slippage on market or stop entries). Run-up is floored at 0.
+  - All three rules come from MC's export, e.g. a profit-target trade shows run-up 498.9 = 500 − 1.10, and a trade that never went green shows 0.
+  - **Check against MC:** on the 293 price-matched MNQ-window trades, run-up equals MC's to the cent on 99.7%, drawdown on 98.6%, both on 98.3%. The 5 misses are 1.5–19 points apart, which looks like the same MC-vs-our-data differences seen in Phase 5.
+- **Engine additions:**
+  - `BacktestResult.equity_low` is each bar's worst equity along the path (closed net + open gross at the adverse extreme, and closed net right after a fill). It feeds the intraday drawdown.
+  - `BacktestResult` now also carries `spec` and `costs`.
+- **Metrics** (`guban/metrics.py`, MC Strategy Performance Report core set; All / Long / Short):
+  - Trade figures: net, gross profit/loss (sums of net winners/losers, as MC does), profit factor, trade counts (win/loss/even), percent profitable, averages, win:loss ratio, largest win and loss, max consecutive winners and losers (an even trade ends a streak), average bars in trade, commission, slippage, ambiguous fills.
+  - Account figures:
+    - Max close-to-close drawdown, on closed-trade equity.
+    - Max intraday peak-to-valley drawdown: bar-close equity peak before the bar vs. the bar's `equity_low`.
+    - Return on account = net ÷ |intraday drawdown|.
+    - Daily Sharpe: session-end equity changes, √252, no risk-free rate.
+    - Trading days and open-position P/L.
+  - `metrics.json` = run metadata + these figures (inf → null).
+  - Vault Break MNQ: net 30,891.70, PF 1.20, 737 trades, 54.0% profitable, max intraday drawdown −7,182.50, close-to-close −7,081.10, ROA 430%, Sharpe 1.18.
+  - MC's report `.xlsx` has no analysis sheets (Phase 5), so these summary figures have no MC oracle yet. Only the per-trade columns were checked against MC.
+- **`report.html`:**
+  - Self-contained: plotly.js is inlined and there are no external requests. It follows the light/dark system setting.
+  - Sections: run details and inputs, KPI tiles, equity curve and intraday drawdown (one point per session), a performance summary table (All/Long/Short plus account figures), net profit by month, a price chart with trades, a paged and filterable trade list (click a row to show it on the chart), and notes (history splice, open position, ambiguous fills, bars without 1-minute data).
+  - The price chart is a trade viewer. It shows strategy-bar candles ±24 bars around each trade, with gaps closed. Nearby trades share a window of up to 600 bars; windows over 1,500 bars merge k bars per candle, so the size stays bounded.
+  - Checked by rendering in headless Edge (light and dark screenshots), with no console errors.
+- Tests: `tests/test_metrics.py` (7) and `tests/test_report.py` (4).
+  - Metrics are tested on a hand-computed 5-trade fixture: every figure, both drawdowns, ROA, Sharpe, and JSON safety.
+  - Engine run-up/drawdown/`equity_low` are tested on synthetic bars, including the 0 floor and limit entries paying no slippage.
+  - The report tests cover MC column values and the round-trip into compare, offline HTML with all sections, window encoding, and candle merging.
+  - Full suite: 80 passed. `trades.csv` stays byte-identical across runs (R11), and Phase 5 parity is unchanged (S3 PASS, 300/302 matched, −0.23% net).

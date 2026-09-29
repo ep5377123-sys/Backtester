@@ -24,7 +24,7 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
   `at="stop"|"limit", price=`; `set_stop_loss`/`set_profit_target` persist until set to None. Details in PLAN.md "Phase 4 results".
 - `data/` (Parquet) and `reports/` are generated and git-ignored.
 - MC charts for CME are in exchange time: run MC-parity backtests with `--session eth --tz America/Chicago` (MC Time/Date/input times are Central). Import with `--roll expiry` to match MC's continuous contract (rolls Wednesday of expiration week).
-- `guban run <strategy.py> ...` writes `reports/<run>/trades.csv`; `guban compare --ours ... --mc <MC csv|xlsx> --contract MNQ` prints S3 stats and writes `diff.html` (`guban/parity.py`). Vault Break parity command: PLAN.md "Phase 5 results".
+- `guban run <strategy.py> ...` writes `reports/<run>/trades.csv` (MC trade-export layout + engine columns, `guban/tradelist.py`), `metrics.json` (`guban/metrics.py`) and a self-contained `report.html` (`guban/report.py`; `--open`, `--no-report`); `guban compare --ours ... --mc <MC csv|xlsx> --contract MNQ` prints S3 stats and writes `diff.html` (`guban/parity.py`). Vault Break parity command: PLAN.md "Phase 5 results".
 - MC costs: `Costs(commission, slippage)` USD per contract per round trip; slippage is charged half per market/stop fill, none on limit fills (MC behavior).
 
 ## Data

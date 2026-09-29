@@ -99,8 +99,12 @@ def _combine(d, t) -> datetime:
 
 
 def load_our_trades(path: str | Path) -> pd.DataFrame:
-    """Read a trades.csv written by BacktestResult.write_trades_csv()."""
+    """Read a trades.csv written by BacktestResult.write_trades_csv() (MC layout, or the older engine layout)."""
+    from guban.tradelist import from_mc_layout
+
     df = pd.read_csv(path)
+    if "trade_id" in df.columns:
+        df = from_mc_layout(df)
     for col in ("entry_time", "exit_time"):
         df[col] = pd.to_datetime(df[col], utc=True)
     return df
