@@ -11,7 +11,16 @@ import pytest
 
 from guban.config import ContractSpec
 from guban.engine import Costs, Strategy, run_backtest
-from guban.metrics import backtest_metrics, compute_metrics, intraday_drawdown, jsonable, trade_stats
+from guban.metrics import (
+    backtest_metrics,
+    compute_metrics,
+    contract_rolls,
+    held_across_roll,
+    intraday_drawdown,
+    jsonable,
+    roll_summary,
+    trade_stats,
+)
 
 NQ = ContractSpec(symbol="NQ", name="E-mini Nasdaq-100", point_value=20.0, tick_size=0.25)
 IDX = pd.date_range("2024-01-02 09:35", periods=6, freq="5min", tz="America/New_York", name="time")
@@ -160,3 +169,16 @@ def test_max_drawdown_is_peak_to_valley_inside_one_bar():
     m = backtest_metrics(res, bars)
     assert m["account"]["max_drawdown_intraday"] == -20
     assert m["account"]["max_drawdown_intraday_time"] == bars.index[1]
+
+
+def test_trades_held_across_a_contract_roll_are_flagged():
+    # FIX.md #6: the series is unadjusted, so a position held through a roll takes the price gap as P&L
+    bars = bars_from([(100, 100, 100, 100), (100, 100, 100, 100), (110, 110, 110, 110), (110, 110, 110, 110)])
+    bars["contract"] = ["202403", "202403", "202406", "202406"]
+    res = run_backtest(Script(plan={0: [("buy", {})], 1: [("sell", {})], 2: [("buy", {})]}), bars, NQ)
+    # trade 1: bars 1 -> 2 (spans the roll at bar 2); trade 2 enters at bar 3 and is still open
+    assert contract_rolls(bars) == [(bars.index[2], "202403", "202406")]
+    assert held_across_roll(res.trades, bars).tolist() == [True]
+    r = roll_summary(res.trades, bars)
+    assert (r["count"], r["trades_held_across"], r["trade_nos"]) == (1, 1, [1])
+    assert roll_summary(res.trades, bars.drop(columns="contract"))["count"] == 0

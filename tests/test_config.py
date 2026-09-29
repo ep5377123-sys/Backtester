@@ -33,3 +33,12 @@ def test_sessions():
     rth, eth = get_session("rth"), get_session("ETH")
     assert (rth.start, rth.end, rth.overnight, rth.length_min) == (time(9, 30), time(16, 0), False, 390)
     assert (eth.overnight, eth.length_min) == (True, 1380)
+
+
+@pytest.mark.parametrize("field, bad", [("point_value", 0.0), ("point_value", -2.0), ("tick_size", float("nan")), ("tick_size", float("inf")), ("tick_size", True)])
+def test_contract_spec_rejects_invalid_point_value_and_tick(field, bad):
+    from guban.config import ContractSpec
+
+    kw = dict(symbol="X", name="x", point_value=2.0, tick_size=0.25) | {field: bad}
+    with pytest.raises(ValueError, match=field):
+        ContractSpec(**kw)

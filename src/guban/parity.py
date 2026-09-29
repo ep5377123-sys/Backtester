@@ -8,9 +8,17 @@ MC exports come in two layouts, both read by load_mc_trades():
 MC times are chart wall-clock time with no zone; `tz` says which zone the chart used (exchange time for CME
 is America/Chicago).
 
-Matching: each MC trade is paired with the unmatched trade of ours in the same direction whose entry time is
-nearest, within one strategy bar. For a CSV export the MC exit price is implied from its net profit and the
-matched trade's costs, so it is only as good as the cost model.
+Scoring window: both sides are counted over the same window [start, end] of entry times (default: the span both
+lists cover; when one list is empty, the other's span). Trade counts, net profit, and the unmatched lists use
+exactly that window on both sides.
+
+Matching: MC trades are paired one-to-one with our trades of the same direction whose entry is within one
+strategy bar. Candidates may lie up to one bar outside the scoring window (so a trade one bar off at the edge
+still finds its partner), but only pairs whose MC trade is inside the window count as matched. The pairing is
+optimal, not greedy: the most pairs possible, and among those the smallest total entry-time difference. Such a
+pairing never needs two pairs to cross in time, so it is found by an order-preserving dynamic program over each
+cluster of trades that lie within a bar of each other. For a CSV export the MC exit price is implied from its net
+profit and the matched trade's costs, so it is only as good as the cost model.
 """
 
 from __future__ import annotations
@@ -137,7 +145,10 @@ class Comparison:
 
     @property
     def net_diff(self) -> float:
-        return (self.net_ours - self.net_mc) / abs(self.net_mc) if self.net_mc else float("inf")
+        """(ours - MC) / |MC| net profit; 0 when both are 0, inf when only MC's is 0."""
+        if self.net_mc:
+            return (self.net_ours - self.net_mc) / abs(self.net_mc)
+        return 0.0 if abs(self.net_ours) < 0.005 else float("inf")
 
     @property
     def checks(self) -> dict[str, bool]:
@@ -184,36 +195,46 @@ def compare_trades(
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
 ) -> Comparison:
-    """Match MC trades to ours (same direction, entry within one `bar`) over a common window.
+    """Match MC trades to ours (same direction, entry within one `bar`) and score both over one window.
 
-    The window defaults to the span both lists cover: from the later first entry to the earlier last entry.
+    The window defaults to the span both lists cover: from the later first entry to the earlier last entry (the
+    non-empty list's span when the other is empty). entry_time / exit_time must be tz-aware datetime columns.
     """
-    ours = ours.copy()
-    mc = mc.copy()
-    ours["entry_time"] = ours["entry_time"].dt.tz_convert("UTC")
-    ours["exit_time"] = ours["exit_time"].dt.tz_convert("UTC")
-    mc["entry_time"] = mc["entry_time"].dt.tz_convert("UTC")
-    mc["exit_time"] = mc["exit_time"].dt.tz_convert("UTC")
+    ours, mc = _check_trades(ours, "ours"), _check_trades(mc, "MC")
+    if bar <= pd.Timedelta(0):
+        raise ValueError(f"bar must be a positive duration, got {bar}")
+    spans = [(t["entry_time"].min(), t["entry_time"].max()) for t in (ours, mc) if len(t)]
+    if (start is None or end is None) and not spans:
+        raise ValueError("both trade lists are empty: nothing to compare (pass --start and --end to score an empty window)")
     if start is None:
-        start = max(ours["entry_time"].min(), mc["entry_time"].min())
+        start = max(a for a, _ in spans)
     if end is None:
-        end = min(ours["entry_time"].max(), mc["entry_time"].max())
+        end = min(b for _, b in spans)
     start, end = _utc(start), _utc(end)
-    # Our side gets one bar of slack so a trade one bar off an MC trade at the window edge can still match.
-    ours = ours[(ours["entry_time"] >= start - bar) & (ours["entry_time"] <= end + bar)]
-    mc = mc[(mc["entry_time"] >= start) & (mc["entry_time"] <= end)]
-    ours = ours.sort_values("entry_time", kind="stable").reset_index(drop=True)
-    mc = mc.sort_values("entry_time", kind="stable").reset_index(drop=True)
+    if end < start:
+        raise ValueError(f"the comparison window is empty ({start} > {end}): the two trade lists do not overlap in time; "
+                         "pass --start / --end")  # fmt: skip
 
-    pairs = _match(ours, mc, bar)
-    implied = bool(mc["exit_price"].isna().all())
+    def near(t: pd.DataFrame) -> pd.DataFrame:  # candidates: the window plus one bar either side
+        t = t[(t["entry_time"] >= start - bar) & (t["entry_time"] <= end + bar)]
+        return t.sort_values("entry_time", kind="stable").reset_index(drop=True)
+
+    ours, mc = near(ours), near(mc)
+    ours_in = ((ours["entry_time"] >= start) & (ours["entry_time"] <= end)).to_numpy()
+    mc_in = ((mc["entry_time"] >= start) & (mc["entry_time"] <= end)).to_numpy()
+    every = _match(ours, mc, bar)
+    pairs = [(i, j) for i, j in every if mc_in[i]]  # matched = pairs whose MC trade is in the window
+    partnered = {j for _, j in every}  # our trades with a partner (even one just outside the window)
+    mc_scored = mc[mc_in]
+    ours_scored = ours[ours_in]
+    implied = bool(mc_scored["exit_price"].isna().all()) if len(mc_scored) else False
     rows = []
     for i_mc, i_ours in pairs:
         a, b = mc.loc[i_mc], ours.loc[i_ours]
         d = 1 if b["direction"] == "long" else -1
         costs = float(b.get("commission", 0.0)) + float(b.get("slippage", 0.0))
         mc_exit = a["exit_price"]
-        if implied:
+        if pd.isna(mc_exit):
             mc_exit = round(a["entry_price"] + d * (a["net_pnl"] + costs) / (point_value * a["qty"]), 6)
         rows.append({
             "mc_trade": int(a["trade_no"]), "our_trade": int(b["trade_no"]), "direction": b["direction"],
@@ -236,19 +257,42 @@ def compare_trades(
     m["exit_time_ok"] = m["mc_exit_time"].isna() | (m["mc_exit_time"] == m["our_exit_time"])
     m["price_ok"] = m["entry_ok"] & m["exit_ok"] & (m["mc_qty"] == m["our_qty"])
 
-    matched_mc = {p[0] for p in pairs}
-    matched_ours = {p[1] for p in pairs}
+    matched_mc = {i for i, _ in pairs}
     notes = []
-    if len(mc) and (mc["qty"] != mc["qty"].iloc[0]).any():
+    if len(mc_scored) and (mc_scored["qty"] != mc_scored["qty"].iloc[0]).any():
         notes.append("note: MC trade sizes vary")
+    if not len(mc_scored):
+        notes.append("note: MC has no trades in the window")
+    if not len(ours_scored):
+        notes.append("note: we have no trades in the window")
     return Comparison(
         matched=m,
-        mc_only=mc[~mc.index.isin(matched_mc)],
-        ours_only=ours[~ours.index.isin(matched_ours)],
-        start=start, end=end, n_mc=len(mc), n_ours=len(ours),
-        net_mc=float(mc["net_pnl"].sum()), net_ours=float(ours["net_pnl"].sum()),
+        mc_only=mc_scored[~mc_scored.index.isin(matched_mc)],
+        ours_only=ours_scored[~ours_scored.index.isin(partnered)],
+        start=start, end=end, n_mc=len(mc_scored), n_ours=len(ours_scored),
+        net_mc=float(mc_scored["net_pnl"].sum()), net_ours=float(ours_scored["net_pnl"].sum()),
         implied_exits=implied, tick=tick, notes=notes,
     )  # fmt: skip
+
+
+def _check_trades(df: pd.DataFrame, who: str) -> pd.DataFrame:
+    """A copy with entry/exit times in UTC; raises unless they are tz-aware datetime columns."""
+    need = {"trade_no", "direction", "qty", "entry_time", "entry_price", "exit_time", "exit_price", "net_pnl"}
+    missing = need - set(df.columns)
+    if missing:
+        raise ValueError(f"{who} trades are missing columns {sorted(missing)}")
+    df = df.copy()
+    for col in ("entry_time", "exit_time"):
+        dt = df[col].dtype
+        if not isinstance(dt, pd.DatetimeTZDtype):
+            raise ValueError(f"{who} trades: {col} must be a tz-aware datetime column, got {dt} (localize it to the chart's zone)")
+        df[col] = df[col].dt.tz_convert("UTC")
+    if df["entry_time"].isna().any():
+        raise ValueError(f"{who} trades: {int(df['entry_time'].isna().sum())} trade(s) have no entry time")
+    bad = ~df["direction"].isin(["long", "short"])
+    if bad.any():
+        raise ValueError(f"{who} trades: direction must be 'long' or 'short', got {sorted(set(df.loc[bad, 'direction'].astype(str)))}")
+    return df
 
 
 def _utc(t) -> pd.Timestamp:
@@ -257,25 +301,57 @@ def _utc(t) -> pd.Timestamp:
 
 
 def _match(ours: pd.DataFrame, mc: pd.DataFrame, bar: pd.Timedelta) -> list[tuple[int, int]]:
-    """Greedy one-to-one pairing in MC order: nearest unmatched same-direction entry within `bar`."""
-    t_ours = ours["entry_time"].to_numpy("datetime64[ns]")
-    used = np.zeros(len(ours), bool)
-    tol = np.timedelta64(int(bar.total_seconds() * 1e9), "ns")
+    """Optimal one-to-one pairing (MC row, our row), same direction, entries within `bar`: the most pairs, then the
+    smallest total entry-time difference. Both frames must be sorted by entry_time.
+
+    Some optimal pairing never crosses (if a1 < a2 and b1 < b2 and both crossed pairs are within `bar`, so are
+    (a1, b1) and (a2, b2), with no larger total difference), so an order-preserving DP finds it. Trades farther than
+    `bar` from every other trade split the timeline into independent clusters, which keeps the DP small."""
+    tol = int(bar.total_seconds() * 1e9)
     pairs = []
-    for i, (t, d) in enumerate(zip(mc["entry_time"].to_numpy("datetime64[ns]"), mc["direction"])):
-        lo = np.searchsorted(t_ours, t - tol, "left")
-        hi = np.searchsorted(t_ours, t + tol, "right")
-        best, best_dt = None, None
-        for k in range(lo, hi):
-            if used[k] or ours.at[k, "direction"] != d:
-                continue
-            dt = abs(t_ours[k] - t)
-            if best is None or dt < best_dt:
-                best, best_dt = k, dt
-        if best is not None:
-            used[best] = True
-            pairs.append((i, best))
-    return pairs
+    for d in ("long", "short"):
+        ia = np.flatnonzero(mc["direction"].to_numpy() == d)
+        ib = np.flatnonzero(ours["direction"].to_numpy() == d)
+        ta = mc["entry_time"].to_numpy("datetime64[ns]").astype(np.int64)[ia]
+        tb = ours["entry_time"].to_numpy("datetime64[ns]").astype(np.int64)[ib]
+        events = sorted([(t, 0, k) for k, t in enumerate(ta)] + [(t, 1, k) for k, t in enumerate(tb)])
+        cluster: list[tuple] = []
+        for ev in events + [None]:
+            if cluster and (ev is None or ev[0] - cluster[-1][0] > tol):
+                a = [k for _, side, k in cluster if side == 0]
+                b = [k for _, side, k in cluster if side == 1]
+                pairs += [(int(ia[x]), int(ib[y])) for x, y in _match_cluster(ta[a], tb[b], tol, a, b)]
+                cluster = []
+            if ev is not None:
+                cluster.append(ev)
+    return sorted(pairs)
+
+
+def _match_cluster(ta: np.ndarray, tb: np.ndarray, tol: int, a: list[int], b: list[int]) -> list[tuple[int, int]]:
+    """Order-preserving DP: best[i][j] = (pairs, -total |dt|) over the first i of `ta` and the first j of `tb`."""
+    n, m = len(ta), len(tb)
+    if not n or not m:
+        return []
+    best = [[(0, 0)] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        row, prev = best[i], best[i - 1]
+        for j in range(1, m + 1):
+            v = max(prev[j], row[j - 1])
+            dt = abs(int(ta[i - 1]) - int(tb[j - 1]))
+            if dt <= tol:
+                c, cost = prev[j - 1]
+                v = max(v, (c + 1, cost - dt))
+            row[j] = v
+    out, i, j = [], n, m
+    while i and j:
+        if best[i][j] == best[i - 1][j]:
+            i -= 1
+        elif best[i][j] == best[i][j - 1]:
+            j -= 1
+        else:
+            out.append((a[i - 1], b[j - 1]))
+            i, j = i - 1, j - 1
+    return out[::-1]
 
 
 # --- diff report -------------------------------------------------------------------------------------

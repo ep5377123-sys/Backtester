@@ -462,13 +462,20 @@ Verified after the partial work: `uv run pytest` = 158 passed; the Vault Break p
   flatten_at_end=True)` runs; Momentum boundary-crossing test; both FIX repros. Vault Break WFO: 164 s (was 23.5 s),
   675 OOS trades, net 19,777.90, WFE 71%, 1 boundary trade (the position open at the end of the data).
 
+### Done (part 3)
+- #4 parity: exact scoring window for counts/net/unmatched lists on both sides, ±1-bar candidate window for
+  matching only; optimal order-preserving DP matching per direction and per cluster (checked against exhaustive
+  search on 300 random cases); empty inputs handled (one side empty → the other's span; both empty → error unless
+  a window is given; non-overlapping lists → error); `net_diff` = 0 when both nets are 0; tz-aware time columns
+  validated. Vault Break S3 unchanged (300/302 matched, −0.23%).
+- #6: `choose_contracts` (volume roll) decides each session from the previous session's volumes (first session =
+  front month). `metrics.contract_rolls` / `held_across_roll` / `roll_summary`: `run` and `wfo` note trades held
+  across a roll and write `contract_rolls` to metrics.json / wfo.json. Unadjusted series kept for MC parity.
+  Existing `data/<SYM>/1m.parquet` files built with `--roll volume` keep the old (hindsight) rolls until re-imported.
+- #5 rest: `ContractSpec.__post_init__` (finite positive point_value / tick_size); `to_mc_layout` rejects
+  capital <= 0 before anything is written. `run` also notes bars with partial sub-bars (#13).
+
 ### Remaining (in this order)
-3. #4 parity: separate exact scoring window from the ±1-bar matching window; order-preserving banded DP for
-   max-cardinality/min-|dt| matching per direction (uncrossing is always feasible on a line); handle empty
-   inputs; `net_diff` = 0 when both nets are 0; validate tz-aware time columns.
-4. #6: `choose_contracts` uses the prior session's volume (first session = front month); report rolls and
-   trades held across a roll in `run`/`wfo` notes and metrics.json (unadjusted series kept for MC parity).
-5. #5 rest: `ContractSpec.__post_init__` (finite positive point_value / tick_size); `to_mc_layout` capital > 0.
 6. #8: cache fingerprint (source size + mtime_ns, timeframe, session start/end, CACHE_VERSION) in Parquet
    schema metadata; atomic temp-file + `os.replace` writes for caches and `1m.parquet`; validate cached frame.
 7. #9: `_coerce` by default type (bool: true/false only; str: raw token; numbers finite); validate direct API

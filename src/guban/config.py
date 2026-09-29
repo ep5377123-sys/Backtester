@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import numbers
 import tomllib
 from dataclasses import dataclass
 from datetime import time
@@ -24,6 +26,12 @@ class ContractSpec:
     name: str
     point_value: float  # USD per 1.0 point per contract
     tick_size: float
+
+    def __post_init__(self) -> None:
+        for name in ("point_value", "tick_size"):
+            v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, numbers.Real) or not math.isfinite(v) or v <= 0:
+                raise ValueError(f"contract {self.symbol}: {name} must be a finite number > 0, got {v!r} (check config/contracts.toml)")
 
     @property
     def tick_value(self) -> float:

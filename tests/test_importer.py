@@ -47,12 +47,24 @@ def test_read_session_file_decodes_field_order_and_close_time_labels(tmp_path):
     assert (second.open, second.high, second.low, second.close) == (101.0, 103.0, 99.0, 102.0)
 
 
-def test_choose_contracts_rolls_on_volume_and_never_back():
+def test_choose_contracts_rolls_on_the_previous_sessions_volume_and_never_back():
     vol = pd.DataFrame(
-        {"202312": [100, 90, 40, 60], "202403": [10, 50, 80, 55]},
-        index=["20231211", "20231212", "20231213", "20231214"],
+        {"202312": [100, 90, 40, 60, 70], "202403": [10, 50, 80, 55, 30]},
+        index=["20231211", "20231212", "20231213", "20231214", "20231215"],
     )
-    assert list(choose_contracts(vol)) == ["202312", "202312", "202403", "202403"]
+    # 202403 out-trades 202312 on the 13th; that is known at the 14th's open, so the roll lands on the 14th
+    assert list(choose_contracts(vol)) == ["202312", "202312", "202312", "202403", "202403"]
+
+
+def test_choose_contracts_never_uses_the_sessions_own_volume():
+    # FIX.md #6: the first session takes the front month even when the next contract trades more that day
+    vol = pd.DataFrame({"202312": [5, 5], "202403": [100, 100]}, index=["20231211", "20231212"])
+    assert list(choose_contracts(vol)) == ["202312", "202403"]
+    # changing a session's own volume never changes its own choice
+    for k in range(len(vol)):
+        bumped = vol.copy()
+        bumped.iloc[k] = [1000, 1]
+        assert choose_contracts(bumped).iloc[k] == choose_contracts(vol).iloc[k]
 
 
 def test_import_store_builds_continuous_series(tmp_path):
@@ -61,11 +73,13 @@ def test_import_store_builds_continuous_series(tmp_path):
     _write(src / "202403/Minute/20231211.data", [("2023-12-11 18:00", 2, 2, 2, 2, 5)])
     _write(src / "202312/Minute/20231212.data", [("2023-12-12 18:00", 1, 1, 1, 1, 5)])
     _write(src / "202403/Minute/20231212.data", [("2023-12-12 18:00", 2, 2, 2, 2, 100)])
+    _write(src / "202312/Minute/20231213.data", [("2023-12-13 18:00", 1, 1, 1, 1, 5)])
+    _write(src / "202403/Minute/20231213.data", [("2023-12-13 18:00", 2, 2, 2, 2, 100)])
     summary = import_store(src, "NQ", tmp_path / "data")
     out = pd.read_parquet(tmp_path / "data/NQ/1m.parquet")
-    assert list(out["contract"].astype(str)) == ["202312", "202403"]
-    assert list(out["close"]) == [1, 2]
-    assert summary.rolls == [("20231211", "202312"), ("20231212", "202403")]
+    assert list(out["contract"].astype(str)) == ["202312", "202312", "202403"]  # rolls the session after the crossover
+    assert list(out["close"]) == [1, 1, 2]
+    assert summary.rolls == [("20231211", "202312"), ("20231213", "202403")]
 
 
 def test_third_friday():
@@ -81,7 +95,7 @@ def test_choose_contracts_by_expiry_rolls_on_wednesday_of_expiration_week():
     chosen = choose_contracts_by_expiry(vol, days_before=2)
     # June expires Fri 06-20: it is held through Tue 06-17 even though Sep has more volume, then Sep from Wed.
     assert list(chosen) == ["202506", "202506", "202506", "202509", "202509"]
-    assert list(choose_contracts(vol)) == ["202506", "202509", "202509", "202509", "202509"]
+    assert list(choose_contracts(vol)) == ["202506", "202506", "202509", "202509", "202509"]
 
 
 def test_import_store_expiry_roll(tmp_path):

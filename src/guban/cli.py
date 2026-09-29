@@ -243,6 +243,11 @@ def _parse_inputs(pairs: list[str], defaults: dict) -> dict:
     return out
 
 
+def _trade_list(nos: list[int], limit: int = 20) -> str:
+    """'#3, #17, ...' (the first `limit` trade numbers)."""
+    return ", ".join(f"#{n}" for n in nos[:limit]) + (f" and {len(nos) - limit} more" if len(nos) > limit else "")
+
+
 def _details(symbol: str, tf: str, session: str, history_from: str | None, spec, tz: str, fill_mode: str, commission: float, slippage: float) -> dict:
     return {
         "Data": f"{symbol} {tf}, {session} session" + (f" (+{history_from} history)" if history_from else ""),
@@ -279,7 +284,7 @@ def run_cmd(
 
     from guban.config import get_contract
     from guban.engine import Costs, run_backtest
-    from guban.metrics import backtest_metrics, jsonable
+    from guban.metrics import ROLL_NOTE, backtest_metrics, jsonable, roll_summary
     from guban.report import write_report
 
     t0 = time.perf_counter()
@@ -295,13 +300,19 @@ def run_cmd(
     tr = res.trades
     pos = res.open_position
     metrics = backtest_metrics(res, bars)
+    rolls = roll_summary(tr, bars)
 
     title = f"{cls.__name__} · {spec.symbol} {tf}"
     notes = []
     if history_from:
         notes.append(f"{history_from} bars stand in for {symbol} before {symbol}'s first bar.")
+    if rolls["trades_held_across"]:
+        notes.append(ROLL_NOTE.format(n=rolls["trades_held_across"], nos=_trade_list(rolls["trade_nos"])))
     if res.bars_without_sub_bars:
         notes.append(f"{res.bars_without_sub_bars:,} bars had no 1-minute data and were filled from their own OHLC.")
+    if res.bars_with_partial_sub_bars:
+        notes.append(f"{res.bars_with_partial_sub_bars:,} bars had 1-minute data that did not reproduce their OHLC (minutes missing) "
+                     "and were filled from their own OHLC.")  # fmt: skip
     if pos is not None:
         notes.append(f"A position is still open at the end ({pos.direction:+d} x{pos.qty} from {pos.entry_time:%Y-%m-%d %H:%M}); it is not in the trade statistics.")
     if len(tr) and tr["ambiguous"].any():
@@ -322,6 +333,7 @@ def run_cmd(
                  "session": session, "tz": tz, "fill_mode": fill_mode, "history_from": history_from,
                  "commission": commission, "slippage": slippage, "capital": capital, "inputs": vars(strategy.p),
                  "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)}  # fmt: skip
+    meta_json["contract_rolls"] = rolls
     (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **metrics}), indent=2, default=str) + "\n", encoding="utf-8")
     report_path = write_report(res, bars, out / "report.html", metrics, meta) if report else None
     t3 = time.perf_counter()
@@ -335,8 +347,10 @@ def run_cmd(
                    f"max drawdown: {acc['max_drawdown_intraday']:,.2f}  ambiguous fills: {a['ambiguous_fills']}")  # fmt: skip
     else:
         typer.echo("  trades: 0")
-    if res.bars_without_sub_bars:
-        typer.echo(f"  bars without 1-minute data (OHLC fallback): {res.bars_without_sub_bars}")
+    if res.bars_without_sub_bars or res.bars_with_partial_sub_bars:
+        typer.echo(f"  bars without (complete) 1-minute data (OHLC fallback): {res.bars_without_sub_bars + res.bars_with_partial_sub_bars}")
+    if rolls["trades_held_across"]:
+        typer.echo(f"  trades held across a contract roll (unadjusted series): {rolls['trades_held_across']}")
     if pos is not None:
         typer.echo(f"  open position at the end: {pos.direction:+d} x{pos.qty}")
     typer.echo(f"  time: load {t1 - t0:.1f} s + backtest {t2 - t1:.1f} s + report {t3 - t2:.1f} s = {t3 - t0:.1f} s")
@@ -459,7 +473,7 @@ def optimize_cmd(
 
     from guban.config import get_contract
     from guban.engine import Costs
-    from guban.metrics import jsonable
+    from guban.metrics import ROLL_NOTE, jsonable, roll_summary
     from guban.optimize import METRICS, TooManyCombinations, optimize
     from guban.optimize_report import heatmap_axes, write_optimize_report
     from guban.report import fmt_value
@@ -559,7 +573,7 @@ def wfo_cmd(
 
     from guban.config import get_contract
     from guban.engine import Costs
-    from guban.metrics import jsonable
+    from guban.metrics import ROLL_NOTE, jsonable, roll_summary
     from guban.optimize import METRICS, TooManyCombinations
     from guban.report import fmt_value
     from guban.wfo import walk_forward
@@ -593,6 +607,9 @@ def wfo_cmd(
     if wf.boundary_trades:
         notes.append(f"{wf.boundary_trades} out-of-sample trade(s) were still open at their window's end and were closed at its last bar's "
                      "close (exit “Window End”): every window starts and ends flat.")  # fmt: skip
+    rolls = roll_summary(wf.trades, bars)
+    if rolls["trades_held_across"]:
+        notes.append(ROLL_NOTE.format(n=rolls["trades_held_across"], nos=_trade_list(rolls["trade_nos"])))
     if s["combo"].isna().any():
         notes.append(f"{int(s['combo'].isna().sum())} window(s) had no combination with ≥ {min_trades:,} in-sample trades and sat out (flat).")
     tr = wf.trades
@@ -623,6 +640,7 @@ def wfo_cmd(
         "workers": wf.workers, "seconds": round(wf.seconds, 2),
         "walk_forward_efficiency": p["wfe"], "is_net_per_year": p["is_net_per_year"], "oos_net_per_year": p["oos_net_per_year"],
         "boundary_trades": wf.boundary_trades,
+        "contract_rolls": rolls,
         "windows": wf.summary_records(),
         "oos": wf.metrics,
     }  # fmt: skip

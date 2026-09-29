@@ -48,6 +48,14 @@ def result():
     return bars, run_backtest(Flipper(), bars, MNQ, Costs(commission=0.40, slippage=0.04))
 
 
+@pytest.mark.parametrize("capital", [0, -1.0, float("nan")])
+def test_trades_csv_rejects_non_positive_capital(result, tmp_path, capital):
+    _, res = result
+    with pytest.raises(ValueError, match="capital must be"):
+        res.write_trades_csv(tmp_path / "t" / "trades.csv", capital=capital)
+    assert not (tmp_path / "t").exists()  # checked before anything is written
+
+
 def test_trades_csv_has_mc_columns_and_values(result, tmp_path):
     _, res = result
     path = res.write_trades_csv(tmp_path / "trades.csv", capital=1_000_000)

@@ -190,6 +190,40 @@ def empty_metrics() -> dict:
     return compute_metrics(pd.DataFrame(columns=TRADE_COLUMNS), pd.Series([], index=pd.DatetimeIndex([], tz="UTC"), dtype=float))
 
 
+def contract_rolls(bars: pd.DataFrame) -> list[tuple[pd.Timestamp, str, str]]:
+    """(first bar, from contract, to contract) of every contract switch in `bars` (none without a contract column)."""
+    if "contract" not in bars.columns or not len(bars):
+        return []
+    c = bars["contract"].astype(str).to_numpy()
+    return [(bars.index[k], c[k - 1], c[k]) for k in np.flatnonzero(c[1:] != c[:-1]) + 1]
+
+
+def held_across_roll(trades: pd.DataFrame, bars: pd.DataFrame) -> pd.Series:
+    """Per trade: True when a contract switch lies between its entry and exit bars (bar numbers index `bars`). The
+    continuous series is unadjusted, so such a trade's P&L includes the price gap between the two contracts."""
+    if "contract" not in bars.columns or not len(trades):
+        return pd.Series(False, index=trades.index, dtype=bool)
+    c = bars["contract"].astype(str).to_numpy()
+    roll_no = np.r_[0, np.cumsum(c[1:] != c[:-1])]
+    entry, exit_ = trades["entry_bar"].to_numpy(int), trades["exit_bar"].to_numpy(int)
+    return pd.Series(roll_no[exit_] != roll_no[entry], index=trades.index)
+
+
+def roll_summary(trades: pd.DataFrame, bars: pd.DataFrame) -> dict:
+    """{"count", "rolls": [{"at", "from", "to"}], "trades_held_across": n, "trade_nos": [...]} for metrics.json."""
+    held = held_across_roll(trades, bars)
+    return {
+        "count": len(rolls := contract_rolls(bars)),
+        "rolls": [{"at": t, "from": a, "to": b} for t, a, b in rolls],
+        "trades_held_across": int(held.sum()),
+        "trade_nos": [int(n) for n in trades.loc[held, "trade_no"]] if len(trades) else [],
+    }
+
+
+ROLL_NOTE = ("{n} trade(s) were held across a contract roll. The continuous series is unadjusted, so the price gap "
+             "between the two contracts is part of their P&L: {nos}.")
+
+
 def jsonable(obj):
     """Metrics (or any nested dict/list) -> JSON-safe values: inf/NaN -> None, timestamps -> ISO strings."""
     if isinstance(obj, dict):

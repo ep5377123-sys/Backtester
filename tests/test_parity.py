@@ -12,7 +12,7 @@ import pytest
 from guban.config import ContractSpec
 from guban.data.resample import splice_history
 from guban.engine import Costs, run_backtest
-from guban.parity import compare_trades, load_mc_trades, load_our_trades, write_diff_html
+from guban.parity import _match, compare_trades, load_mc_trades, load_our_trades, write_diff_html
 
 CT, ET = "America/Chicago", "America/New_York"
 MNQ = ContractSpec(symbol="MNQ", name="Micro E-mini Nasdaq-100", point_value=2.0, tick_size=0.25)
@@ -106,6 +106,93 @@ def test_compare_does_not_match_outside_one_bar_or_across_directions():
     ours.loc[1, "direction"] = "short"
     c = compare_trades(ours, mc, BAR, 0.25, 2.0, start=pd.Timestamp("2024-01-01", tz=CT), end=pd.Timestamp("2024-01-03", tz=CT))
     assert c.matched.empty and len(c.mc_only) == 1 and len(c.ours_only) == 2
+
+
+def _at(*rows):
+    """Trades at (CT time, net) as ours_frame rows."""
+    return ours_frame([(t, 100.0, t, 101.0, "X", 0, 0, net) for t, net in rows])
+
+
+DAY = dict(start=pd.Timestamp("2024-01-02 10:00", tz=CT), end=pd.Timestamp("2024-01-02 16:00", tz=CT))
+
+
+def test_slack_trades_can_match_but_never_count_in_totals():
+    # FIX.md #4 repro: our $100 trade one bar before the window used to inflate our net to 110
+    mc = _at(("2024-01-02 10:00", 10.0))
+    ours = _at(("2024-01-02 09:57", 100.0), ("2024-01-02 10:00", 10.0))
+    c = compare_trades(ours, mc, BAR, 0.25, 2.0, **DAY)
+    assert (c.n_mc, c.n_ours, len(c.matched)) == (1, 1, 1)
+    assert (c.net_mc, c.net_ours, c.net_diff) == (10.0, 10.0, 0.0)
+    assert c.ours_only.empty  # the slack trade is outside the window: not listed as ours-only either
+    # an edge MC trade still finds its partner one bar outside the window, and our partnered trade is not "ours-only"
+    c = compare_trades(_at(("2024-01-02 09:57", 10.0)), mc, BAR, 0.25, 2.0, **DAY)
+    assert len(c.matched) == 1 and c.n_ours == 0 and c.net_ours == 0.0 and c.ours_only.empty
+
+
+def test_matching_is_optimal_not_greedy():
+    # FIX.md #4 repro: greedy pairs MC 10:00 with ours 10:02 (nearest) and strands MC 10:05; both can match
+    mc = _at(("2024-01-02 10:00", 1.0), ("2024-01-02 10:05", 1.0))
+    ours = _at(("2024-01-02 09:55", 1.0), ("2024-01-02 10:02", 1.0))
+    c = compare_trades(ours, mc, BAR, 0.25, 2.0, start=pd.Timestamp("2024-01-02 09:00", tz=CT), end=DAY["end"])
+    assert list(zip(c.matched["mc_trade"], c.matched["our_trade"])) == [(1, 1), (2, 2)]
+    assert c.match_rate == 1.0 and c.mc_only.empty and c.ours_only.empty
+
+
+def _brute(ta, tb, tol):
+    """Best (pairs, -total |dt|) over every one-to-one pairing, by exhaustive search."""
+    if not ta:
+        return (0, 0)
+    best = _brute(ta[1:], tb, tol)  # leave ta[0] unmatched
+    for k, t in enumerate(tb):
+        if abs(ta[0] - t) <= tol:
+            c, cost = _brute(ta[1:], tb[:k] + tb[k + 1 :], tol)
+            best = max(best, (c + 1, cost - abs(ta[0] - t)))
+    return best
+
+
+def test_matching_equals_exhaustive_search_on_random_lists():
+    rng = np.random.default_rng(7)
+    base = pd.Timestamp("2024-01-02 10:00")  # ours_frame localizes to CT
+    for _ in range(300):
+        na, nb = rng.integers(0, 6, 2)
+        ta = sorted(rng.integers(0, 25, na).tolist())
+        tb = sorted(rng.integers(0, 25, nb).tolist())
+        mc = _at(*[(base + pd.Timedelta(minutes=t), 1.0) for t in ta]) if na else _at(("2024-01-02 23:00", 1.0)).iloc[:0]
+        ours = _at(*[(base + pd.Timedelta(minutes=t), 1.0) for t in tb]) if nb else mc.iloc[:0]
+        pairs = _match(ours, mc, BAR)
+        assert len({i for i, _ in pairs}) == len({j for _, j in pairs}) == len(pairs)
+        assert all(abs(ta[i] - tb[j]) <= 5 for i, j in pairs)
+        got = (len(pairs), -sum(abs(ta[i] - tb[j]) for i, j in pairs))
+        assert got == _brute(ta, tb, 5), (ta, tb)
+
+
+def test_empty_inputs_and_zero_net():
+    mc = _at(("2024-01-02 10:00", 10.0), ("2024-01-02 11:00", -5.0))
+    none = mc.iloc[:0]
+    c = compare_trades(none, mc, BAR, 0.25, 2.0)  # FIX.md #4: every MC trade is listed as unmatched
+    assert (c.n_mc, c.n_ours, len(c.mc_only), c.match_rate) == (2, 0, 2, 0.0) and not c.passed
+    assert "note: we have no trades in the window" in c.summary()
+    c = compare_trades(mc, none, BAR, 0.25, 2.0)
+    assert (c.n_mc, c.n_ours, len(c.ours_only)) == (0, 2, 2) and not c.passed
+    with pytest.raises(ValueError, match="both trade lists are empty"):
+        compare_trades(none, none, BAR, 0.25, 2.0)
+    assert compare_trades(none, none, BAR, 0.25, 2.0, **DAY).n_mc == 0
+    with pytest.raises(ValueError, match="do not overlap"):
+        compare_trades(_at(("2024-01-03 10:00", 1.0)), mc, BAR, 0.25, 2.0)
+    flat = _at(("2024-01-02 10:00", 5.0), ("2024-01-02 11:00", -5.0))
+    c = compare_trades(flat, flat, BAR, 0.25, 2.0)
+    assert c.net_mc == 0 and c.net_diff == 0.0 and c.passed  # FIX.md #4: was inf
+    c = compare_trades(_at(("2024-01-02 10:00", 5.0), ("2024-01-02 11:00", 1.0)), flat, BAR, 0.25, 2.0)
+    assert c.net_diff == float("inf") and not c.passed
+
+
+def test_compare_rejects_naive_times():
+    mc = _at(("2024-01-02 10:00", 10.0))
+    naive = mc.assign(entry_time=mc["entry_time"].dt.tz_localize(None))
+    with pytest.raises(ValueError, match="entry_time must be a tz-aware datetime column"):
+        compare_trades(naive, mc, BAR, 0.25, 2.0)
+    with pytest.raises(ValueError, match="missing columns"):
+        compare_trades(mc.drop(columns="net_pnl"), mc, BAR, 0.25, 2.0)
 
 
 def test_our_trades_csv_round_trips_through_load_our_trades(tmp_path):

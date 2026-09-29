@@ -16,6 +16,9 @@ exit_price, exit_name, gross_pnl, commission, slippage, entry_bar, exit_bar, amb
 
 from __future__ import annotations
 
+import math
+import numbers
+
 import numpy as np
 import pandas as pd
 
@@ -42,6 +45,8 @@ def excel_serial(times: pd.Series) -> pd.Series:
 
 def to_mc_layout(trades: pd.DataFrame, point_value: float, capital: float = 1_000_000.0) -> pd.DataFrame:
     """Engine trades (BacktestResult.trades) -> MC trade-export columns followed by ENGINE_COLUMNS."""
+    if isinstance(capital, bool) or not isinstance(capital, numbers.Real) or not math.isfinite(capital) or capital <= 0:
+        raise ValueError(f"capital must be a finite amount > 0 (it divides cum_profit_pct), got {capital!r}; use --capital")
     t = trades
     long_ = t["direction"] == "long"
     notional = t["entry_price"] * point_value * t["qty"]

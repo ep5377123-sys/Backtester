@@ -8,8 +8,9 @@ Each file is one Globex session (18:00 ET -> 16:59 ET next day), a flat array of
     i4 x5  bid volume, ask volume, volume, volume (duplicate), unused
 
 Roll rules for the continuous series:
-- "volume" (default): highest-volume contract per session, never rolling back. Rolls land on the Sunday
-  before expiration week.
+- "volume" (default): each session trades the contract that had the highest volume in the previous session
+  (known at this session's open; the first session takes the front month), never rolling back. Rolls land one
+  session after the next contract first out-trades the current one, around the Monday of expiration week.
 - "expiry": hold each contract until `days_before` days before its expiration (3rd Friday of the contract
   month, CME equity index futures), then switch at that trading day's session open. days_before=2 (roll on
   the Wednesday of expiration week) reproduces MC's continuous contract in the Vault Break MNQ export.
@@ -115,22 +116,28 @@ def _session_volumes(source: Path) -> pd.DataFrame:
 
 
 def choose_contracts(volumes: pd.DataFrame) -> pd.Series:
-    """Pick the contract per session: highest volume, never rolling back to an earlier contract."""
+    """Pick the contract per session from what is known at its open: the contract with the highest volume in the
+    previous session with data (the front month for the first one), never rolling back to an earlier contract.
+    A session's own volume is not used: it is not known until the session ends."""
     chosen: dict[str, str] = {}
     current: str | None = None
+    prev: pd.Series | None = None  # volumes of the previous session with data
     for session, row in volumes.iterrows():
         row = row[row > 0]
         if row.empty:
             continue
-        best = row.idxmax()
-        if current is None or best > current:  # contract names are YYYYMM, so string order == time order
-            current = best
-        if row.get(current, 0) == 0:  # current contract has no data this session: move to the best later one
-            later = row[row.index > current]
-            if later.empty:
+        if current is None:
+            current = min(row.index)  # front month; contract names are YYYYMM, so string order == time order
+        elif prev is not None and prev.idxmax() > current:
+            current = prev.idxmax()
+        if current not in row.index:  # current contract has no data this session: move to the next listed one
+            later = sorted(c for c in row.index if c > current)
+            if not later:
+                prev = row
                 continue
-            current = later.idxmax()
+            current = later[0]
         chosen[session] = current
+        prev = row
     return pd.Series(chosen, name="contract")
 
 
