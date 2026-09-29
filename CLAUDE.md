@@ -20,6 +20,8 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - Default fill mode = 1-minute Bar Magnifier; OHLC-path mode kept for comparison.
 - Engine: `guban.engine` — subclass `Strategy`, run with `run_backtest(strategy, bars, spec, Costs(...))`.
   No pyramiding; opposite entry reverses; costs are USD per contract per round trip (MC style). Details in PLAN.md "Phase 3 results".
+- Intrabar fills: pass `sub_bars=load_bars(sym, "1m", session)` for magnifier mode (else OHLC path). Stop/limit orders via
+  `at="stop"|"limit", price=`; `set_stop_loss`/`set_profit_target` persist until set to None. Details in PLAN.md "Phase 4 results".
 - `data/` (Parquet) and `reports/` are generated and git-ignored.
 
 ## Data

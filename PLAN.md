@@ -217,7 +217,7 @@ class VaultBreak(Strategy):
       Done when: a synthetic-bar test shows a market order placed on bar t fills at bar t+1's open ± slippage, and positions, trades, and P&L are correct.
       Steps: Series with `[n]` lookback; Strategy base (inputs, on_bar, buy/sell/sell_short/buy_to_cover, market_position); order book; position and trade ledger; commission and slippage; determinism test.
       Covers: R3, R5, R11
-- [ ] Phase 4: Exits and intrabar fill modes
+- [x] Phase 4: Exits and intrabar fill modes (done 2026-09-28 — see Phase 4 results below)
       Done when: synthetic tests for dollar stop/target, stop and limit orders, and same-bar stop+target pass in both magnifier and OHLC modes.
       Steps: `set_stop_loss` / `set_profit_target` (per position, active from entry); stop and limit next-bar orders; magnifier walk over 1-min sub-bars; OHLC path rule; ambiguous-fill tagging.
       Covers: R4
@@ -275,3 +275,17 @@ class VaultBreak(Strategy):
 - Tests (`tests/test_engine.py`, 18): lookback, VarSeries, next-bar fills never on the signal bar (R3), slippage ticks, reversal, pyramiding and mismatched exits, partial exits, order sequencing, P&L and costs (R5), equity, inputs, error reporting, byte-identical `trades.csv` across two runs (R11). Full suite: 35 passed.
 - Early speed read for A4: 74k synthetic 5m bars with 19.8k trades run in 0.51 s (no sub-bars yet).
 - Not yet done: a `guban run` CLI command (comes with the report in Phase 6), and the MC-layout trades CSV (Phase 6; the current CSV is the engine's own column set).
+
+## Phase 4 results (2026-09-28)
+- API: `buy/sell/sell_short/buy_to_cover(..., at="market"|"stop"|"limit", price=...)`; `set_stop_loss(usd)` / `set_profit_target(usd)` (per position, MC names "Stop Loss" / "Profit Target"; they persist until changed, and `None` clears them). `run_backtest(..., sub_bars=<1m bars>, fill_mode="magnifier"|"ohlc")`: magnifier is the default when `sub_bars` is given; pass `load_bars(sym, "1m", session)`, which carries `session_date`.
+- Intrabar model (`guban/engine/backtest.py` docstring):
+  - Each sub-bar (a 1m bar, or the whole bar in OHLC mode) is walked O→H→L→C when the high is at least as near the open as the low, otherwise O→L→H→C. **A tie goes high first** (my own choice; check it in Phase 5).
+  - Stops and limits fill at their own price, or at the sub-bar open when price has gapped through them.
+  - After every fill, all orders are re-checked, so a stop loss is live from the entry fill onward (including the rest of the entry bar). An entry blocked by the open position can still fill after that position exits in the same bar.
+  - Exit orders fill only while a matching position is open at the moment they would fill. So an exit placed while flat can close a position opened intrabar on the same bar. This is an assumption; Vault Break doesn't exercise it.
+- Dollar exit prices = entry ∓ usd / (point value × contracts), **rounded to the nearest tick** (my own choice; check it against MC's exit prices in Phase 5).
+- `Costs.slippage_ticks` moves market and stop fills (stop losses included), never limit fills or profit targets.
+- Ambiguous fills: trades get an `ambiguous` column. It is True when the exit came from the path rule rather than the data, meaning either (a) a stop-type and a limit-type exit both lay inside the exit sub-bar's range, or (b) the position was entered intrabar in that same sub-bar. Fills at a sub-bar open are never ambiguous.
+- Sub-bar mapping: each 1m bar belongs to the first strategy bar labeled at or after it, within the same `session_date`; 1m bars from other sessions are dropped. The run fails loudly if a 1m bar lies outside its strategy bar's high-low range. A bar with no 1m data falls back to its own OHLC and is counted in `BacktestResult.bars_without_sub_bars`.
+- Tests: `tests/test_fills.py` has 22 tests (R4: OHLC path rule in three variants, magnifier vs OHLC on the same bar, a same-minute stop+target, an intrabar entry with its stop in the same or a later minute, gaps, stop/limit entries and exits, reversal by stop, tick rounding, slippage, validation, and magnifier determinism). Full suite: 57 passed.
+- Speed read (A4), synthetic data: 74k 5m bars + 370k 1m bars, bracket every bar, $60 stop/target, ~58k trades → magnifier 3.0 s, OHLC 2.1 s. Ambiguous trades: 53% in OHLC mode vs 15% with the magnifier.

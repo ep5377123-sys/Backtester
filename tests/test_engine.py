@@ -233,7 +233,7 @@ def test_strategy_exception_names_bar_and_position():
 
 def test_bad_orders_and_bars_fail_loudly():
     with pytest.raises(StrategyError, match="not supported"):
-        run({0: [("buy", dict(at="stop"))]}, make_bars([1, 2]))
+        run({0: [("buy", dict(at="moc"))]}, make_bars([1, 2]))
     with pytest.raises(StrategyError, match="positive int"):
         run({0: [("buy", dict(qty=0))]}, make_bars([1, 2]))
     with pytest.raises(ValueError, match="missing columns"):

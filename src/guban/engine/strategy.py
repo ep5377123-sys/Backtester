@@ -3,8 +3,11 @@
 - `inputs` holds defaults; constructor keyword arguments override them. Read them as self.p.<name>.
 - Bar series: open, high, low, close, volume, time (HHMM int, MC `Time`), date (calendar date of the bar
   close, MC `Date`), session_date (trading date), timestamp (pd.Timestamp). All support [n] lookback.
-- buy / sell / sell_short / buy_to_cover place orders for the NEXT bar. An order lives for one bar only;
-  re-issue it on every bar you want it active.
+- buy / sell / sell_short / buy_to_cover place orders for the NEXT bar: at="market" (the next bar's open),
+  or at="stop" / at="limit" with a price (filled intrabar; see guban.engine.backtest). An order lives for
+  one bar only; re-issue it on every bar you want it active.
+- set_stop_loss / set_profit_target (MC SetStopLoss / SetProfitTarget, per position, in USD) stay in force
+  until changed or cleared with None, and apply to every position from its entry fill onward.
 - Plain instance attributes play the role of intrabarpersist variables; self.series() gives a variable
   with [n] lookback.
 """
@@ -21,7 +24,7 @@ if TYPE_CHECKING:
     from guban.engine.backtest import Broker
 
 BUY, SELL, SELL_SHORT, BUY_TO_COVER = "buy", "sell", "sell_short", "buy_to_cover"
-ORDER_KINDS = ("market",)
+ORDER_KINDS = ("market", "stop", "limit")
 
 
 class Strategy:
@@ -58,30 +61,44 @@ class Strategy:
         return v
 
     # --- orders (fill on the next bar) --------------------------------------------------------------
-    def buy(self, name: str = "Buy", qty: int = 1, at: str = "market") -> None:
+    def buy(self, name: str = "Buy", qty: int = 1, at: str = "market", price: float | None = None) -> None:
         """Enter long. Reverses a short position; ignored while already long (no pyramiding)."""
-        self._order(BUY, name, qty, at)
+        self._order(BUY, name, qty, at, price)
 
-    def sell_short(self, name: str = "Short", qty: int = 1, at: str = "market") -> None:
+    def sell_short(self, name: str = "Short", qty: int = 1, at: str = "market", price: float | None = None) -> None:
         """Enter short. Reverses a long position; ignored while already short (no pyramiding)."""
-        self._order(SELL_SHORT, name, qty, at)
+        self._order(SELL_SHORT, name, qty, at, price)
 
-    def sell(self, name: str = "Sell", qty: int | None = None, at: str = "market") -> None:
+    def sell(self, name: str = "Sell", qty: int | None = None, at: str = "market", price: float | None = None) -> None:
         """Exit long (all contracts when qty is None). Ignored unless long when the order fills."""
-        self._order(SELL, name, qty, at)
+        self._order(SELL, name, qty, at, price)
 
-    def buy_to_cover(self, name: str = "Cover", qty: int | None = None, at: str = "market") -> None:
+    def buy_to_cover(self, name: str = "Cover", qty: int | None = None, at: str = "market", price: float | None = None) -> None:
         """Exit short (all contracts when qty is None). Ignored unless short when the order fills."""
-        self._order(BUY_TO_COVER, name, qty, at)
+        self._order(BUY_TO_COVER, name, qty, at, price)
 
-    def _order(self, action: str, name: str, qty: int | None, at: str) -> None:
+    def _order(self, action: str, name: str, qty: int | None, at: str, price: float | None) -> None:
         if self._broker is None:
             raise RuntimeError("orders can only be placed while a backtest is running")
         if at not in ORDER_KINDS:
             raise ValueError(f"order type {at!r} not supported; use one of {ORDER_KINDS}")
+        if at == "market":
+            if price is not None:
+                raise ValueError("market orders take no price")
+        elif price is None or not math.isfinite(price):
+            raise ValueError(f"{at} orders need a finite price, got {price!r}")
         if qty is not None and (not isinstance(qty, int) or qty <= 0):
             raise ValueError(f"qty must be a positive int or None, got {qty!r}")
-        self._broker.submit(action, name, qty, at, self._clock.i)
+        self._broker.submit(action, name, qty, at, self._clock.i, None if price is None else float(price))
+
+    # --- per-position dollar exits (MC SetStopLoss / SetProfitTarget) --------------------------------
+    def set_stop_loss(self, amount: float | None) -> None:
+        """Exit the whole position with a stop when its loss reaches `amount` USD (None clears it)."""
+        self._broker.stop_loss_usd = _dollars(amount, "set_stop_loss")
+
+    def set_profit_target(self, amount: float | None) -> None:
+        """Exit the whole position with a limit when its profit reaches `amount` USD (None clears it)."""
+        self._broker.profit_target_usd = _dollars(amount, "set_profit_target")
 
     # --- position state (as of the current bar's close) ---------------------------------------------
     @property
@@ -109,3 +126,11 @@ class Strategy:
     def current_bar(self) -> int:
         """1-based bar number (MC CurrentBar)."""
         return self._clock.i + 1
+
+
+def _dollars(amount: float | None, what: str) -> float | None:
+    if amount is None:
+        return None
+    if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount <= 0:
+        raise ValueError(f"{what} needs a positive USD amount or None, got {amount!r}")
+    return float(amount)
