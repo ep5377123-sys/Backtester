@@ -213,7 +213,7 @@ class VaultBreak(Strategy):
       Done when: tests prove 5-min RTH bars built from 1-min match hand-built bars, including a DST week.
       Steps: `config/contracts.toml` (NQ, MNQ, ES, MES); `config/sessions.toml` (RTH 09:30–16:00 ET, ETH); resample N-min and daily with close-time labels; cache results to Parquet.
       Covers: R2, R5; checks: A2
-- [ ] Phase 3: Engine core and Strategy API
+- [x] Phase 3: Engine core and Strategy API (done 2026-09-28 — see Phase 3 results below)
       Done when: a synthetic-bar test shows a market order placed on bar t fills at bar t+1's open ± slippage, and positions, trades, and P&L are correct.
       Steps: Series with `[n]` lookback; Strategy base (inputs, on_bar, buy/sell/sell_short/buy_to_cover, market_position); order book; position and trade ledger; commission and slippage; determinism test.
       Covers: R3, R5, R11
@@ -265,3 +265,13 @@ class VaultBreak(Strategy):
 - Tests (A2 checked): hand-built 5m RTH bars, spring and fall DST weeks, the ETH overnight bin that crosses midnight, gaps, daily, non-divisible timeframe, cache invalidation, and contract P&L.
 - Real NQ: 73,906 5m RTH bars across 964 sessions, 78 per normal day; 37 short sessions (holidays and early closes, plus the truncated last day). Building from 1m takes ~1.4 s.
 - Open point for Phase 5: on early-close days a daily bar is still labeled 16:00, not at the actual last bar. This only matters if MC labels it differently.
+
+## Phase 3 results (2026-09-28)
+- `guban/engine/`: `series.py` (Series with `[n]` lookback that raises on history before bar 1 or on negative offsets; `VarSeries` = a variable with lookback that carries its last value forward), `strategy.py` (Strategy base), `backtest.py` (loop, Broker, ledger, `run_backtest`).
+- Strategy API: `inputs` dict → `self.p`, with unknown overrides rejected. Hooks: `on_start()` (create `self.series()` vars here) and `on_bar()`. Series: `open/high/low/close/volume`, `time` (HHMM int, MC `Time`), `date` (calendar date, MC `Date`), `session_date`, `timestamp`. Orders: `buy/sell_short(name, qty=1)`, `sell/buy_to_cover(name, qty=None → all)`, `at="market"` only (Phase 4 adds the others). State: `market_position`, `current_contracts`, `entry_price`, `bars_since_entry`, `current_bar`.
+- Semantics: orders placed on bar i are processed at bar i+1's open and live for one bar only. Only one position at a time and no pyramiding (a same-direction entry is ignored). An opposite entry reverses at a single fill. Exits that don't match the position are ignored. Partial exits produce one trade row each. Orders on the same bar are processed in the order they were placed. A position still open after the last bar goes to `open_position`, not `trades`.
+- Costs (`Costs`): `commission` and `slippage` in USD per contract per round trip, deducted through `ContractSpec.pnl()` (MC style: fill prices are left as-is), plus an optional `slippage_ticks` that moves each fill price against the trade (R3's "open ± slippage"). Phase 5 picks the settings that reproduce MC's ~$2.10/trade.
+- Equity is marked at each bar close as closed net P&L plus open gross P&L. A strategy exception raises `StrategyError` naming the bar, its timestamp, and the position.
+- Tests (`tests/test_engine.py`, 18): lookback, VarSeries, next-bar fills never on the signal bar (R3), slippage ticks, reversal, pyramiding and mismatched exits, partial exits, order sequencing, P&L and costs (R5), equity, inputs, error reporting, byte-identical `trades.csv` across two runs (R11). Full suite: 35 passed.
+- Early speed read for A4: 74k synthetic 5m bars with 19.8k trades run in 0.51 s (no sub-bars yet).
+- Not yet done: a `guban run` CLI command (comes with the report in Phase 6), and the MC-layout trades CSV (Phase 6; the current CSV is the engine's own column set).

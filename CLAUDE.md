@@ -2,6 +2,12 @@
 
 Python backtester for CME futures that reproduces MultiCharts (MC) results. Full plan: [PLAN.md](PLAN.md).
 
+## File access rule (user, 2026-09-28) — highest priority
+- Read ONLY the file(s) the user explicitly designates for the current task (e.g. "work on phase N of PLAN.md" → read PLAN.md only).
+- Before reading ANY other file (source, tests, configs, data, external inputs), stop and ask the user for permission: name the exact file(s) and say why the task cannot be done without them. Ask only when it is genuinely necessary.
+- This covers every way of reading contents: Read, Grep, shell `cat`/`type`/`Get-Content`, Python scripts that open files, and subagents.
+- Files the user tells you to edit count as designated. Files you create in this session may be re-read.
+
 ## Stack & commands
 - Python 3.14, managed with uv. Package lives in `src/guban/`.
 - Install: `uv sync` · Tests: `uv run pytest` · CLI: `uv run guban --help`
@@ -12,6 +18,8 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
   orders placed in `on_bar` fill on the NEXT bar; `set_stop_loss`/`set_profit_target` are per-position dollars.
 - Bar timestamps are tz-aware America/New_York, labeled by bar CLOSE time (MC convention).
 - Default fill mode = 1-minute Bar Magnifier; OHLC-path mode kept for comparison.
+- Engine: `guban.engine` — subclass `Strategy`, run with `run_backtest(strategy, bars, spec, Costs(...))`.
+  No pyramiding; opposite entry reverses; costs are USD per contract per round trip (MC style). Details in PLAN.md "Phase 3 results".
 - `data/` (Parquet) and `reports/` are generated and git-ignored.
 
 ## Data
@@ -24,6 +32,9 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - MC strategies (PowerLanguage source): `C:\ProgramData\TS Support\MultiCharts64\StudyServer\Studies\SrcEl\Strategies\`
 - MC trade-list exports (parity oracle): `D:\Multi Charts\Performance Reports\CSV Data\*.csv`
 - Prop-firm notebook being ported: `D:\Multi Charts\25k Prop Firm Accurate Rules.ipynb`
+
+## Git
+- Commit after every completed PLAN.md phase (tests green, phase checkbox + results section updated), one commit per phase.
 
 ## Correctness gate
 A ported strategy is "done" only when `guban compare` against its MC export shows ≥95% trades matched,
