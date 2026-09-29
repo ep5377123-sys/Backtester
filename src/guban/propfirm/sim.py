@@ -15,11 +15,17 @@ Pipeline (notebook cell in brackets):
 - [10] Equity paths for the chart. [11] Summary: expected attempts, cumulative pass probability, verdict.
 
 Random draws are made in exactly the notebook's order with numpy's default_rng, so the same pool, seed and
-settings give the notebook's numbers exactly.
+settings give the notebook's numbers exactly. (The trade bootstrap draws in batches of rows to bound memory; the
+draws are the same numbers in the same order as the notebook's single rng.choice call.)
+
+Rules files are read strictly: every value must have its TOML type (true/false for switches, numbers for amounts
+and counts) and a sensible range; Rules, Scenario and Setup check themselves, so CLI overrides are checked too.
 """
 
 from __future__ import annotations
 
+import math
+import numbers
 import time
 import tomllib
 from dataclasses import dataclass, field, replace
@@ -41,6 +47,18 @@ VERDICTS = [(0.70, "STRONG", "High probability, strategy well-suited."), (0.50, 
             (0.0, "POOR", "Very low chance, major changes needed.")]  # fmt: skip
 
 
+def _num(owner: str, name: str, v, *, low: float | None = None, high: float | None = None, low_open: bool = False,
+         high_open: bool = False, integer: bool = False) -> None:
+    """Raise ValueError unless v is a finite (whole, when integer) number inside the given bounds."""
+    kind = numbers.Integral if integer else numbers.Real
+    if isinstance(v, bool) or not isinstance(v, kind) or not math.isfinite(v):
+        raise ValueError(f"{owner}: {name} must be a finite {'whole number' if integer else 'number'}, got {v!r}")
+    if low is not None and (v <= low if low_open else v < low):
+        raise ValueError(f"{owner}: {name} must be {'>' if low_open else '>='} {low:g}, got {v!r}")
+    if high is not None and (v >= high if high_open else v > high):
+        raise ValueError(f"{owner}: {name} must be {'<' if high_open else '<='} {high:g}, got {v!r}")
+
+
 @dataclass(frozen=True)
 class Rules:
     name: str
@@ -52,12 +70,30 @@ class Rules:
     min_trading_days: int = 0
     max_trading_days: int = 21
 
+    def __post_init__(self) -> None:
+        who = f"rules {self.name!r}"
+        _num(who, "account_size", self.account_size, low=0)
+        _num(who, "profit_target", self.profit_target, low=0, low_open=True)
+        _num(who, "max_drawdown", self.max_drawdown, low=0, low_open=True)
+        _num(who, "daily_loss_limit", self.daily_loss_limit, low=0)
+        _num(who, "min_trading_days", self.min_trading_days, low=0, integer=True)
+        _num(who, "max_trading_days", self.max_trading_days, low=1, integer=True)
+        if not isinstance(self.eod_trailing, bool):
+            raise ValueError(f"{who}: eod_trailing must be true or false, got {self.eod_trailing!r}")
+        if self.min_trading_days > self.max_trading_days:
+            raise ValueError(f"{who}: min_trading_days ({self.min_trading_days}) is more than max_trading_days ({self.max_trading_days}), so no run could pass")
+
 
 @dataclass(frozen=True)
 class Scenario:
     label: str
     win_rate_adj: float = 0.0  # e.g. -0.05: turn 5% of the pool's days (winning ones) into the mean losing day
     pnl_shrink: float = 0.0  # e.g. 0.15: every day's P&L x 0.85
+
+    def __post_init__(self) -> None:
+        who = f"scenario {self.label!r}"
+        _num(who, "win_rate_adj", self.win_rate_adj, low=-1, high=0)  # only a cut is modeled; > 0 would do nothing
+        _num(who, "pnl_shrink", self.pnl_shrink, low=0, high=1, high_open=True)
 
 
 @dataclass(frozen=True)
@@ -79,6 +115,19 @@ class Setup:
     scenarios: tuple[Scenario, ...] = ()
     notes: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        who = f"setup {self.key!r}"
+        for name in ("commission", "slippage"):
+            _num(who, name, getattr(self, name), low=0)
+        _num(who, "risk_per_contract", self.risk_per_contract, low=0, low_open=True)
+        for name in ("sims", "sweep_sims", "bootstrap_sims"):
+            _num(who, name, getattr(self, name), low=1, integer=True)
+        _num(who, "paths", self.paths, low=1, integer=True)
+        _num(who, "seed", self.seed, low=0, integer=True)
+        _num(who, "size", self.size, low=0, low_open=True)
+        for v in self.sweep:
+            _num(who, "every sweep size", v, low=0, low_open=True)
+
     def with_overrides(self, **kw) -> Setup:
         """Copy with the given settings changed; None values are ignored (CLI flags left unset)."""
         return replace(self, **{k: v for k, v in kw.items() if v is not None})
@@ -97,23 +146,74 @@ def load_setup(name: str | Path, config_dir: Path | None = None) -> Setup:
     if not path.exists():
         known = sorted(q.stem for q in path.parent.glob("*.toml")) if path.parent.exists() else []
         raise FileNotFoundError(f"No prop-firm rules {str(name)!r} ({path}); known: {', '.join(known) or 'none'}")
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
-    r = raw["rules"]
-    rules = Rules(
-        name=str(r["name"]), account_size=float(r.get("account_size", 0)), profit_target=float(r["profit_target"]),
-        max_drawdown=float(r["max_drawdown"]), eod_trailing=bool(r.get("eod_trailing", True)),
-        daily_loss_limit=float(r.get("daily_loss_limit", 0)), min_trading_days=int(r.get("min_trading_days", 0)),
-        max_trading_days=int(r.get("max_trading_days", 21)),
-    )  # fmt: skip
-    c, s = raw.get("costs", {}), raw.get("simulation", {})
-    scen = tuple(Scenario(str(x["label"]), float(x.get("win_rate_adj", 0)), float(x.get("pnl_shrink", 0))) for x in raw.get("scenarios", []))
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+        return _setup_from_toml(raw, path.stem)
+    except (tomllib.TOMLDecodeError, ValueError) as e:
+        raise ValueError(f"{path}: {e}") from None
+
+
+_NUMBER, _WHOLE, _BOOL, _TEXT = "a number", "a whole number", "true or false", "text"
+_SPEC = {
+    "rules": {"name": _TEXT, "account_size": _NUMBER, "profit_target": _NUMBER, "max_drawdown": _NUMBER, "eod_trailing": _BOOL,
+              "daily_loss_limit": _NUMBER, "min_trading_days": _WHOLE, "max_trading_days": _WHOLE},
+    "costs": {"commission": _NUMBER, "slippage": _NUMBER, "risk_per_contract": _NUMBER},
+    "simulation": {"sims": _WHOLE, "sweep_sims": _WHOLE, "seed": _WHOLE, "size": _NUMBER, "sweep": [_NUMBER], "paths": _WHOLE,
+                   "bootstrap_sims": _WHOLE},
+    "scenarios": {"label": _TEXT, "win_rate_adj": _NUMBER, "pnl_shrink": _NUMBER},
+}  # fmt: skip
+
+
+def _typed(table: dict, section: str) -> dict:
+    """`table`'s values after checking each has its TOML type (no casting: "false" is not a switch value)."""
+    spec = _SPEC[section]
+    unknown = set(table) - set(spec)
+    if unknown:
+        raise ValueError(f"[{section}] has unknown keys {sorted(unknown)}; known: {sorted(spec)}")
+    checks = {
+        _NUMBER: lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        _WHOLE: lambda v: isinstance(v, int) and not isinstance(v, bool),
+        _BOOL: lambda v: isinstance(v, bool),
+        _TEXT: lambda v: isinstance(v, str),
+    }
+    for key, v in table.items():
+        want = spec[key]
+        if isinstance(want, list):
+            if not isinstance(v, list) or not all(checks[want[0]](x) for x in v):
+                raise ValueError(f"[{section}] {key} must be a list of numbers, got {v!r}")
+        elif not checks[want](v):
+            raise ValueError(f"[{section}] {key} must be {want}, got {v!r}")
+    return table
+
+
+def _setup_from_toml(raw: dict, key: str) -> Setup:
+    known = {"rules", "costs", "simulation", "scenarios", "notes"}
+    if set(raw) - known:
+        raise ValueError(f"unknown sections {sorted(set(raw) - known)}; known: {sorted(known)}")
+    if "rules" not in raw:
+        raise ValueError("no [rules] section")
+    r = _typed(raw["rules"], "rules")
+    missing = {"name", "profit_target", "max_drawdown"} - set(r)
+    if missing:
+        raise ValueError(f"[rules] is missing {sorted(missing)}")
+    rules = Rules(**{"account_size": 0.0, **r})
+    c, s = _typed(raw.get("costs", {}), "costs"), _typed(raw.get("simulation", {}), "simulation")
+    scen = []
+    for x in raw.get("scenarios", []):
+        x = _typed(x, "scenarios")
+        if "label" not in x:
+            raise ValueError("every [[scenarios]] needs a label")
+        scen.append(Scenario(**x))
+    notes = raw.get("notes", [])
+    if not isinstance(notes, list) or not all(isinstance(n, str) for n in notes):
+        raise ValueError("notes must be a list of strings")
     return Setup(
-        key=path.stem, rules=rules,
-        commission=float(c.get("commission", 0)), slippage=float(c.get("slippage", 0)), risk_per_contract=float(c.get("risk_per_contract", 1000)),
-        sims=int(s.get("sims", 20_000)), sweep_sims=int(s.get("sweep_sims", 5_000)), seed=int(s.get("seed", 42)),
-        size=float(s.get("size", 1.0)), sweep=tuple(float(v) for v in s.get("sweep", [])), paths=int(s.get("paths", 300)),
-        bootstrap_sims=int(s.get("bootstrap_sims", 10_000)), scenarios=scen, notes=tuple(raw.get("notes", [])),
+        key=key, rules=rules,
+        commission=c.get("commission", 0.0), slippage=c.get("slippage", 0.0), risk_per_contract=c.get("risk_per_contract", 1000.0),
+        sims=s.get("sims", 20_000), sweep_sims=s.get("sweep_sims", 5_000), seed=s.get("seed", 42),
+        size=s.get("size", 1.0), sweep=tuple(s.get("sweep", [])), paths=s.get("paths", 300),
+        bootstrap_sims=s.get("bootstrap_sims", 10_000), scenarios=tuple(scen), notes=tuple(notes),
     )  # fmt: skip
 
 
@@ -145,10 +245,19 @@ def add_costs(trades: pd.DataFrame, setup: Setup) -> pd.DataFrame:
     return df
 
 
+BOOTSTRAP_BATCH = 4_000_000  # draws held in memory at once (32 MB of indices)
+
+
 def bootstrap_ci(x, sims: int = 10_000, ci: float = 0.95, seed: int = 42) -> tuple[np.ndarray, float, float]:
+    """Bootstrap means of x: the notebook's rng.choice(x, (sims, n)).mean(axis=1), computed in batches of rows
+    (same draws, same order, same result) so memory stays bounded however large sims x n gets."""
     x = pd.Series(x).dropna().to_numpy()
+    n = len(x)
+    if n == 0:
+        raise ValueError("bootstrap_ci needs at least one value")
     rng = np.random.default_rng(seed)
-    boot = rng.choice(x, size=(sims, len(x)), replace=True).mean(axis=1)
+    rows = max(1, BOOTSTRAP_BATCH // n)
+    boot = np.concatenate([x[rng.integers(0, n, (min(rows, sims - k), n))].mean(axis=1) for k in range(0, sims, rows)])
     a = (1 - ci) / 2
     return boot, float(np.quantile(boot, a)), float(np.quantile(boot, 1 - a))
 
@@ -347,6 +456,25 @@ def simulate_paths(net: np.ndarray, rules: Rules, n_paths: int, size: float, rng
     return paths, outcomes
 
 
+def assumptions(setup: Setup, stats: dict) -> list[str]:
+    """Modeling assumptions of the notebook's method (not the firm's rules), labeled for the report."""
+    out = [
+        "Assumption: each trade's P&L is booked on its entry date, so a trade held overnight counts on the day it was "
+        "entered, not the day it closed.",
+        "Assumption: simulated days are drawn independently from the pool, which removes streaks, volatility clustering and "
+        "market regimes; real evaluations with losing streaks fail more often than the pass rate suggests.",
+        "Assumption: the equity-path chart checks only the drawdown and the profit target, not the daily loss limit or the "
+        "minimum trading days, even when the main simulation uses them.",
+    ]
+    c = stats.get("contracts")
+    sizes = (setup.size, *setup.sweep)
+    if c is None or any(abs(s * c - round(s * c)) > 1e-9 for s in sizes):
+        out.append("Assumption: size scales daily P&L continuously, so some sizes imply fractional contracts"
+                   + ("" if c is None else f" (e.g. {next(s for s in sizes if abs(s * c - round(s * c)) > 1e-9):g} x {c:g})")
+                   + "; a real account can only trade whole contracts.")  # fmt: skip
+    return out
+
+
 def verdict(pass_rate: float) -> tuple[str, str]:
     for floor, tag, text in VERDICTS:
         if pass_rate >= floor:
@@ -447,10 +575,8 @@ def run_propfirm(trades: pd.DataFrame, setup: Setup, progress=None) -> PropFirmR
     """Run the whole notebook on a trade list (load_trades): stats, daily pool, main run, degradation, sweep, paths."""
     t0 = time.perf_counter()
     say = progress or (lambda msg: None)
-    if setup.sims < 1 or setup.sweep_sims < 1:
-        raise ValueError("sims and sweep_sims must be at least 1")
-    if setup.rules.max_trading_days < 1:
-        raise ValueError("max_trading_days must be at least 1")
+    if trades.empty:
+        raise ValueError("no trades to simulate")
     df = add_costs(trades, setup)
     stats = trade_stats(df, setup)
     daily = daily_pool(df)
@@ -486,5 +612,6 @@ def run_propfirm(trades: pd.DataFrame, setup: Setup, progress=None) -> PropFirmR
     if weekend.any():
         notes.append(f"{int(weekend.sum()):,} trade(s) on {df.loc[weekend, 'date'].nunique():,} weekend date(s) are not in the daily pool "
                      "(the notebook builds the pool from weekdays only).")  # fmt: skip
+    notes += assumptions(setup, stats)
     return PropFirmResult(setup, df, stats, daily, main, scen, sweep, paths, outcomes, int(weekend.sum()),
                           int(df.loc[weekend, "date"].nunique()), time.perf_counter() - t0, notes)  # fmt: skip

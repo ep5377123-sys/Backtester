@@ -484,10 +484,15 @@ Verified after the partial work: `uv run pytest` = 158 passed; the Vault Break p
   finite); direct-API grids/fixed values are checked against the defaults; `min_trades < 0` / `workers < 1`
   rejected. `--set` now uses the same coercion (`--set flag=false` used to be the truthy string "false").
 
+### Done (part 5)
+- #10: rules files read strictly (`_typed`: TOML types, unknown keys/sections rejected, no casting — `"false"` is
+  not a switch); `Rules` / `Scenario` / `Setup.__post_init__` range checks (so CLI overrides are checked too);
+  `bootstrap_ci` draws in batches of rows (≤ 4M indices; verified bit-identical to the notebook's `rng.choice`).
+- #11: `sim.assumptions()` adds labeled "Assumption:" notes (entry-date attribution, iid days, paths ignore the
+  daily loss limit / minimum days, fractional contracts when a size implies them). S6 unchanged: Vault Break MNQ
+  35.8%, 7,152 passed.
+
 ### Remaining (in this order)
-8. #10/#11 prop-firm: strict typed TOML loading + `__post_init__` checks on Rules/Scenario/Setup; batch
-   `bootstrap_ci` as `x[rng.integers(0, n, (b, n))]` (verified bit-identical to `rng.choice`); add
-   methodology-assumption notes (entry-date attribution, fractional size, iid days, paths ignore DLL/min days).
 9. #12 importer: size % 60 check; finite/geometry/volume checks; timestamps inside [session date, +2 days)
    (two real NQ files have one swapped minute each — keep sorting, don't reject disorder). Real data scanned
    clean for all other checks.

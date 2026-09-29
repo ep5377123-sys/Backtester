@@ -154,6 +154,68 @@ def test_rules_lookup_and_overrides(tmp_path):
     assert t.size == 2.0 and t.sims == s.sims and t.sweep == ()
 
 
+@pytest.mark.parametrize(
+    "body, match",
+    [
+        ('eod_trailing = "false"', "eod_trailing must be true or false"),  # FIX.md #10: bool("false") was True
+        ("profit_target = -5", "profit_target must be > 0"),
+        ("max_drawdown = 0", "max_drawdown must be > 0"),
+        ("min_trading_days = 30", "more than max_trading_days"),
+        ("max_trading_days = 0", "max_trading_days must be >= 1"),
+        ("max_trading_days = 2.5", "max_trading_days must be a whole number"),
+        ("daily_loss = 100", "unknown keys"),
+        ('profit_target = "3000"', "profit_target must be a number"),
+    ],
+)
+def test_rules_files_are_read_strictly(tmp_path, body, match):
+    p = tmp_path / "bad.toml"
+    base = {"name": '"Bad"', "profit_target": "3000", "max_drawdown": "2500"}
+    key = body.split("=")[0].strip()
+    lines = [f"{k} = {v}" for k, v in base.items() if k != key] + [body]
+    p.write_text("[rules]\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        load_setup(p)
+
+
+@pytest.mark.parametrize(
+    "section, body, match",
+    [
+        ("costs", "risk_per_contract = 0", "risk_per_contract must be > 0"),  # would make R multiples infinite
+        ("costs", "commission = -1", "commission must be >= 0"),
+        ("simulation", "sims = 0", "sims must be >= 1"),
+        ("simulation", "size = -1", "size must be > 0"),
+        ("simulation", "sweep = [0.5, -1]", "every sweep size must be > 0"),
+        ("scenarios", 'label = "x"\nwin_rate_adj = 0.05', "win_rate_adj must be <= 0"),
+        ("scenarios", 'label = "x"\npnl_shrink = 1.0', "pnl_shrink must be < 1"),
+    ],
+)
+def test_costs_simulation_and_scenarios_are_checked(tmp_path, section, body, match):
+    p = tmp_path / "bad.toml"
+    head = "[[scenarios]]" if section == "scenarios" else f"[{section}]"
+    p.write_text(f'[rules]\nname = "Bad"\nprofit_target = 3000\nmax_drawdown = 2500\n\n{head}\n{body}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        load_setup(p)
+
+
+def test_overrides_are_checked_too():
+    s = load_setup("apex_50k_eod")
+    for kw, match in ((dict(sims=0), "sims must be >= 1"), (dict(size=0.0), "size must be > 0"), (dict(paths=0), "paths must be >= 1")):
+        with pytest.raises(ValueError, match=match):
+            s.with_overrides(**kw)
+
+
+def test_bootstrap_in_batches_equals_the_notebooks_single_draw(monkeypatch):
+    import guban.propfirm.sim as sim
+
+    x = np.random.default_rng(3).normal(size=37)
+    want = np.random.default_rng(42).choice(x, size=(501, 37), replace=True).mean(axis=1)
+    for batch in (37, 100, 10**9):  # one row per batch, a few rows, everything at once
+        monkeypatch.setattr(sim, "BOOTSTRAP_BATCH", batch)
+        boot, lo, hi = sim.bootstrap_ci(x, 501, seed=42)
+        assert np.array_equal(boot, want)
+        assert (lo, hi) == (float(np.quantile(want, 0.025)), float(np.quantile(want, 0.975)))
+
+
 # --- trades and daily pool -----------------------------------------------------------------------------------
 
 
@@ -185,6 +247,8 @@ def test_costs_and_daily_pool_fill_weekdays_and_drop_weekends(tmp_path):
     res = run_propfirm(load_trades(p), Setup(key="t", rules=apex(), sims=50, sweep_sims=10, paths=5, bootstrap_sims=100))
     assert (res.weekend_trades, res.weekend_days) == (1, 1)
     assert any("weekend" in n for n in res.notes)
+    # FIX.md #11: the method's modeling assumptions are labeled apart from the firm's rules
+    assert sum(n.startswith("Assumption:") for n in res.notes) >= 3 and any("entry date" in n for n in res.notes)
 
 
 # --- simulation ----------------------------------------------------------------------------------------------
