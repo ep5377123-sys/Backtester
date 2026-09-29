@@ -449,17 +449,20 @@ Verified after the partial work: `uv run pytest` = 158 passed; the Vault Break p
   `equity_high` / `bar_drawdown` per bar; #1 engine groundwork: `run_backtest(..., trade_from=, flatten_at_end=,
   window_ends=)` and `BacktestResult.window(lo, hi)` (forced close named "Window End").
 
+### Done (part 2)
+- #2: `metrics.intraday_drawdown(equity, low, high, bar_drawdown)` tracks the running peak along the intrabar path;
+  threaded through `compute_metrics`, `backtest_metrics`, `report.py` and the WFO stitch. Regression tests
+  ($0 → +$10 → −$10 in one bar = −$20). Vault Break `guban run`: 737 trades, net 30,891.70 unchanged; max drawdown
+  −7,182.50 → −7,315.00 (the true peak-to-valley). S3 still PASSES.
+- #1: every WFO window (IS and OOS) is its own trading window: flat at its start (`trade_from`), a position still
+  open at its end closed at its last bar's close ("Window End"). `window_metrics` = `backtest_metrics(result.window())`;
+  `optimize._run_one` shares one run per distinct window start; `_run_full` replaced by `_run_window` (one run per
+  traded OOS window); `wfo._stitch` chains flat-to-flat windows and raises if final equity ≠ Σ trade net;
+  `boundary_trades` = "Window End" exits. Tests: oracle = separate `run_backtest(bars[:hi], trade_from=lo,
+  flatten_at_end=True)` runs; Momentum boundary-crossing test; both FIX repros. Vault Break WFO: 164 s (was 23.5 s),
+  675 OOS trades, net 19,777.90, WFE 71%, 1 boundary trade (the position open at the end of the data).
+
 ### Remaining (in this order)
-1. #2 finish: `metrics.intraday_drawdown(equity, low, high, bar_drawdown)`: peak_before = running max of prior
-   bars' `equity_high` (floored at 0); dd = min(low − peak_before, bar_drawdown, 0). Pass the new series through
-   `compute_metrics`, `backtest_metrics`, `report.py`, WFO. Add regression test ($0 → +$10 → −$10 in one bar = −$20).
-2. #1 finish: `metrics.window_metrics` = `backtest_metrics(result.window(lo, hi), bars.iloc[lo:hi])`. In
-   `optimize._run_one` (windows mode) group windows by `lo`, one run per distinct start
-   (`trade_from=lo, window_ends={his}`, bars sliced to max hi). Replace `_run_full` with a per-window run for
-   the chosen combo; `wfo._stitch` concatenates flat-to-flat windows with offsets, counts "Window End" exits as
-   `boundary_trades`, and raises if final equity ≠ Σ trade net. Rewrite `tests/test_wfo.py` oracle as
-   `run_backtest(bars[:hi], trade_from=lo, flatten_at_end=True)`; add boundary-crossing tests (Momentum) and
-   the FIX minimal repros. Update wfo docstring, CLI note and report caption. Expect WFO ~5–10× slower.
 3. #4 parity: separate exact scoring window from the ±1-bar matching window; order-preserving banded DP for
    max-cardinality/min-|dt| matching per direction (uncrossing is always feasible on a line); handle empty
    inputs; `net_diff` = 0 when both nets are 0; validate tz-aware time columns.

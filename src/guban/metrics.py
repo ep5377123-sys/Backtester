@@ -6,9 +6,12 @@ is "even": neither a winner nor a loser, and it ends a winning or losing streak.
 
 Drawdowns (always <= 0):
 - close-to-close: peak-to-valley of closed-trade equity (cumulative net P&L after each trade exit).
-- intraday peak-to-valley: the peak is the highest bar-close equity before the bar, the valley is the bar's
-  worst equity along the intrabar path (BacktestResult.equity_low: closed net + open gross at the adverse
-  extreme). Return on account = net profit / |intraday max drawdown| (MC's definition).
+- intraday peak-to-valley: the deepest drop of equity below its running peak (from 0), with equity followed
+  point by point along the intrabar path (closed net + open gross). Per bar it is the deeper of the bar's worst
+  equity (BacktestResult.equity_low) minus the highest equity any earlier bar reached (equity_high), and the
+  drop below a peak reached earlier inside the bar itself (bar_drawdown). So $0 -> +$10 -> -$10 in one bar is
+  -$20. Without the intrabar series it falls back to bar-close equity. Return on account = net profit /
+  |intraday max drawdown| (MC's definition).
 Sharpe (daily): mean / standard deviation (ddof 1) of the daily change in equity at each session's last bar,
 times sqrt(252), with no risk-free rate. Every session in the data counts, traded or not.
 """
@@ -96,13 +99,22 @@ def _longest_run(flags: np.ndarray) -> int:
     return best
 
 
-def intraday_drawdown(equity: pd.Series, equity_low: pd.Series | None = None) -> pd.Series:
-    """Per-bar drawdown (<= 0): the bar's worst equity minus the highest bar-close equity before it (from 0)."""
+def intraday_drawdown(
+    equity: pd.Series,
+    equity_low: pd.Series | None = None,
+    equity_high: pd.Series | None = None,
+    bar_drawdown: pd.Series | None = None,
+) -> pd.Series:
+    """Per-bar peak-to-valley drawdown (<= 0): min(bar's worst equity - highest equity of the earlier bars (from 0),
+    drop inside the bar below its own earlier peak, 0). Missing intrabar series fall back to bar-close equity."""
     eq = equity.to_numpy(float)
     low = eq if equity_low is None else np.minimum(equity_low.to_numpy(float), eq)
-    peak_before = np.maximum.accumulate(np.r_[0.0, eq[:-1]]) if len(eq) else eq
-    peak_before = np.maximum(peak_before, 0.0)
-    return pd.Series(np.minimum(low - peak_before, 0.0), index=equity.index, name="drawdown")
+    high = eq if equity_high is None else np.maximum(equity_high.to_numpy(float), eq)
+    peak_before = np.maximum(np.maximum.accumulate(np.r_[0.0, high[:-1]]), 0.0) if len(eq) else eq
+    dd = np.minimum(low - peak_before, 0.0)
+    if bar_drawdown is not None:
+        dd = np.minimum(dd, bar_drawdown.to_numpy(float))
+    return pd.Series(dd, index=equity.index, name="drawdown")
 
 
 def session_keys(index: pd.DatetimeIndex, session_dates=None) -> pd.DatetimeIndex:
@@ -121,6 +133,8 @@ def compute_metrics(
     equity_low: pd.Series | None = None,
     session_dates=None,
     open_position_pnl: float = 0.0,
+    equity_high: pd.Series | None = None,
+    bar_drawdown: pd.Series | None = None,
 ) -> dict:
     """{"all", "long", "short": trade_stats, "account": drawdowns, return on account, Sharpe, ...}."""
     out = {
@@ -131,7 +145,7 @@ def compute_metrics(
     closed = np.r_[0.0, trades["cum_net_pnl"].to_numpy(float)]
     ctc = closed - np.maximum.accumulate(closed)
     k = int(np.argmin(ctc))
-    dd = intraday_drawdown(equity, equity_low)
+    dd = intraday_drawdown(equity, equity_low, equity_high, bar_drawdown)
     j = int(np.argmin(dd.to_numpy())) if len(dd) else 0
     max_dd = float(dd.iat[j]) if len(dd) else 0.0
     daily = daily_equity(equity, session_dates)
@@ -155,21 +169,25 @@ def backtest_metrics(result, bars: pd.DataFrame) -> dict:
     """compute_metrics for a BacktestResult run on `bars` (the frame passed to run_backtest)."""
     open_pnl = result.equity.iat[-1] - result.net_profit if result.open_position is not None else 0.0
     sessions = bars["session_date"] if "session_date" in bars.columns else None
-    return compute_metrics(result.trades, result.equity, result.equity_low, sessions, open_pnl)
+    return compute_metrics(
+        result.trades, result.equity, result.equity_low, sessions, open_pnl,
+        equity_high=getattr(result, "equity_high", None), bar_drawdown=getattr(result, "bar_drawdown", None),
+    )  # fmt: skip
 
 
 def window_metrics(result, bars: pd.DataFrame, lo: int, hi: int) -> dict:
-    """compute_metrics for bars [lo, hi) of a run on `bars`: the trades entered in those bars (whole trades, even
-    when they exit later), with equity rebased to 0 at the close of bar lo - 1. A backtest is causal (later bars
-    never change earlier ones), so this scores a walk-forward window from one run over all the data as a run
-    through the window's end would, except that a trade still open at the window's end is counted whole."""
-    tr = result.trades
-    tr = tr[(tr["entry_bar"] >= lo) & (tr["entry_bar"] < hi)].reset_index(drop=True)
-    tr = tr.assign(cum_net_pnl=tr["net_pnl"].cumsum())
-    base = float(result.equity.iat[lo - 1]) if lo > 0 else 0.0
-    low = result.equity_low.iloc[lo:hi] - base if result.equity_low is not None else None
-    sessions = bars["session_date"].iloc[lo:hi] if "session_date" in bars.columns else None
-    return compute_metrics(tr, result.equity.iloc[lo:hi] - base, low, sessions)
+    """compute_metrics for the trading window [lo, hi) of a run on `bars` made with trade_from=lo and hi in
+    window_ends: flat at the window's start, and a position still open at its end closed at bar hi-1's close
+    ("Window End"). Equals backtest_metrics of run_backtest(..., bars[:hi], trade_from=lo, flatten_at_end=True) over
+    those bars, so nothing after the window's end (not even an open trade's eventual exit) reaches the score."""
+    return backtest_metrics(result.window(lo, hi), bars.iloc[lo:hi])
+
+
+def empty_metrics() -> dict:
+    """compute_metrics of a window with no bars: no trades, no drawdown."""
+    from guban.engine.backtest import TRADE_COLUMNS
+
+    return compute_metrics(pd.DataFrame(columns=TRADE_COLUMNS), pd.Series([], index=pd.DatetimeIndex([], tz="UTC"), dtype=float))
 
 
 def jsonable(obj):

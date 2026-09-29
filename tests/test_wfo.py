@@ -1,6 +1,6 @@
-"""Walk-forward (R9): window layout (no out-of-sample window overlaps its in-sample window), causality (the basis
-for scoring every window from one run over all the data), per-window selection and stitching equal to runs
-truncated at each window's end, efficiency, sat-out windows, and the HTML page."""
+"""Walk-forward (R9): window layout (no out-of-sample window overlaps its in-sample window), causality, per-window
+selection and stitching equal to separate runs of each trading window (flat at its start, flattened at its end),
+no look-ahead across window boundaries (FIX.md #1), efficiency, sat-out windows, and the HTML page."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ import pytest
 
 from guban.config import ContractSpec
 from guban.engine import Costs, Strategy, run_backtest
-from guban.metrics import session_keys
+from guban.engine.backtest import WINDOW_END
+from guban.metrics import backtest_metrics, session_keys, window_metrics
 from guban.optimize import combinations
 from guban.report import _plotly_js
 from guban.wfo import make_windows, walk_forward
@@ -136,12 +137,13 @@ def _sessions(bars):
     return session_keys(bars.index, bars["session_date"])
 
 
-def _entered(res, bars, lo, hi):
-    s = _sessions(bars)[res.trades["entry_bar"].to_numpy()]
-    return res.trades[(s >= lo) & (s < hi)]
+def _window_run(strategy, bars, sess, lo_day, hi_day, **kw):
+    """The trading window [lo_day, hi_day) run on its own: bars through its end, flat before it, flattened at its end."""
+    lo, hi = int(sess.searchsorted(lo_day)), int(sess.searchsorted(hi_day))
+    return run_backtest(strategy, bars.iloc[:hi], NQ, COSTS, trade_from=lo, flatten_at_end=True, **kw)
 
 
-def test_walk_forward_equals_runs_truncated_at_each_window():
+def test_walk_forward_equals_separate_runs_of_each_window():
     bars, sub = market(seed=2)  # a seed where the chosen inputs change between windows
     grid = {"lookback": [2, 6], "stop_usd": [100.0, 400.0]}
     wf = walk_forward(DayMomentum, grid, NQ, COSTS, bars=bars, sub_bars=sub, is_months=2, oos_months=1, min_trades=5, workers=2)
@@ -150,18 +152,16 @@ def test_walk_forward_equals_runs_truncated_at_each_window():
     combos = combinations(grid)
     stitched = []
     for w, (_, row) in zip(wf.windows, wf.summary.iterrows()):
-        # in sample: every combination run from the first bar through the in-sample end, scored on its window
-        runs = [run_backtest(DayMomentum(**c), bars[sess < w.is_end], NQ, COSTS, sub_bars=sub) for c in combos]
-        nets = [_entered(r, bars, w.is_start, w.is_end)["net_pnl"].sum() for r in runs]
+        # in sample: every combination run as its own trading window
+        runs = [_window_run(DayMomentum(**c), bars, sess, w.is_start, w.is_end, sub_bars=sub) for c in combos]
+        nets = [r.net_profit for r in runs]
         best = int(np.argmax(nets)) + 1  # first of equal values, like the stable ranking
         assert row["combo"] == best, w
         assert row["is_net_profit"] == pytest.approx(nets[best - 1])
-        # out of sample: the chosen inputs run from the first bar through the out-of-sample end
-        oos = run_backtest(DayMomentum(**combos[best - 1]), bars[sess < w.oos_end], NQ, COSTS, sub_bars=sub)
-        assert oos.open_position is None
-        mine = _entered(oos, bars, w.oos_start, w.oos_end)
-        assert row["oos_net_profit"] == pytest.approx(mine["net_pnl"].sum()) and row["oos_trades"] == len(mine)
-        stitched.append(mine)
+        # out of sample: the chosen inputs, run as their own trading window
+        oos = _window_run(DayMomentum(**combos[best - 1]), bars, sess, w.oos_start, w.oos_end, sub_bars=sub)
+        assert row["oos_net_profit"] == pytest.approx(oos.net_profit) and row["oos_trades"] == len(oos.trades)
+        stitched.append(oos.trades)
     want = pd.concat(stitched, ignore_index=True)
     cols = ["direction", "qty", "entry_time", "entry_price", "exit_time", "exit_price", "exit_name", "net_pnl"]
     pd.testing.assert_frame_equal(wf.trades[cols], want[cols])
@@ -176,7 +176,7 @@ def test_walk_forward_equals_runs_truncated_at_each_window():
         inside = (entry_sess >= w.oos_start) & (entry_sess < w.oos_end)
         assert not ((entry_sess[inside] >= w.is_start) & (entry_sess[inside] < w.is_end)).any()
 
-    # stitched curve: out-of-sample bars only, ends at the stitched net profit (no trade spans a window edge)
+    # stitched curve: out-of-sample bars only, ends at the stitched net profit (this strategy is flat every evening)
     assert wf.boundary_trades == 0
     assert (_sessions(bars)[bars.index.get_indexer(wf.equity.index)] >= first_oos).all()
     assert len(wf.equity) == int((sess >= first_oos).sum())
@@ -211,12 +211,62 @@ def test_windows_without_an_eligible_run_sit_out():
     assert wf.metrics["all"]["total_trades"] == 0
 
 
-def test_boundary_trades_are_counted():
+def test_positions_never_cross_a_window_boundary():
     bars, _ = market(days=90)
-    wf = walk_forward(Momentum, {"lookback": [2, 3, 5]}, NQ, bars=bars, is_months=2, oos_months=1, workers=1)
-    # always in the market: the first window carries a trade in, and each switch of inputs splits one
-    switches = int((wf.summary["combo"].diff().fillna(0) != 0).sum())
-    assert wf.boundary_trades >= 1 + switches
+    sess = _sessions(bars)
+    grid = {"lookback": [2, 3, 5]}
+    wf = walk_forward(Momentum, grid, NQ, COSTS, bars=bars, is_months=2, oos_months=1, workers=1)
+    combos = combinations(grid)
+    for w in wf.windows:
+        # in sample: scored as a run that stops at the window's end, whatever the open trade does afterwards
+        for c, r in zip(combos, wf.results[wf.results["window"] == w.no].itertuples()):
+            alone = _window_run(Momentum(**c), bars, sess, w.is_start, w.is_end)
+            assert r.is_net_profit == pytest.approx(alone.net_profit) and r.is_total_trades == len(alone.trades)
+            assert alone.trades["exit_name"].iat[-1] == WINDOW_END  # always in the market: one trade cut at the end
+    # always in the market: every out-of-sample window ends with a forced close, and starts flat
+    assert wf.boundary_trades == len(wf.windows) == int((wf.trades["exit_name"] == WINDOW_END).sum())
+    for w in wf.windows:
+        lo, hi = int(sess.searchsorted(w.oos_start)), int(sess.searchsorted(w.oos_end))
+        mine = wf.trades[(wf.trades["exit_bar"] >= lo) & (wf.trades["exit_bar"] < hi)]
+        assert (mine["entry_bar"] >= lo).all()  # nothing carried in from before the window
+        assert mine["exit_bar"].iat[-1] == hi - 1 and mine["exit_name"].iat[-1] == WINDOW_END
+        assert wf.equity.loc[bars.index[hi - 1]] == pytest.approx(wf.trades.loc[mine.index[-1], "cum_net_pnl"])
+    # equity, trades and metrics reconcile exactly
+    assert wf.equity.iat[-1] == pytest.approx(wf.trades["net_pnl"].sum())
+    assert wf.metrics["all"]["net_profit"] == pytest.approx(wf.equity.iat[-1])
+
+
+class Script(Strategy):
+    inputs = dict(plan={})
+
+    def on_bar(self):
+        for method in self.p.plan.get(self.current_bar - 1, []):
+            getattr(self, method)()
+
+
+def _flat_bars(closes):
+    idx = pd.date_range("2024-01-02 09:35", periods=len(closes), freq="5min", tz="America/New_York", name="time")
+    c = np.asarray(closes, float)
+    return pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1, "session_date": idx.tz_localize(None).normalize()}, index=idx)
+
+
+def test_window_score_never_sees_the_exit_after_the_window():
+    # FIX.md #1 repro: long from bar 1, exits at bar 3 for +$100; the window [0, 3) ends before the exit
+    bars = _flat_bars([100, 100, 100, 105, 105])
+    res = run_backtest(Script(plan={0: ["buy"], 2: ["sell"]}), bars, NQ, window_ends={3})
+    assert res.trades["net_pnl"].tolist() == [100.0]  # the whole run's trade
+    m = window_metrics(res, bars, 0, 3)
+    assert m["all"]["net_profit"] == 0.0 and m["all"]["total_trades"] == 1  # closed at bar 2's close (100)
+    alone = run_backtest(Script(plan={0: ["buy"], 2: ["sell"]}), bars.iloc[:3], NQ, flatten_at_end=True)
+    assert m == backtest_metrics(alone, bars.iloc[:3])
+
+
+def test_window_does_not_inherit_a_position_opened_before_it():
+    # FIX.md #1 repro: a long opened at bar 1 would carry +$100 into a window starting at bar 2
+    bars = _flat_bars([100, 100, 100, 105, 105])
+    res = run_backtest(Script(plan={0: ["buy"], 3: ["sell"]}), bars, NQ, trade_from=2, window_ends={5})
+    w = res.window(2, 5)
+    assert w.trades.empty and (w.equity == 0).all()
 
 
 def test_input_checks_pass_through():

@@ -11,7 +11,7 @@ import pytest
 
 from guban.config import ContractSpec
 from guban.engine import Costs, Strategy, run_backtest
-from guban.metrics import compute_metrics, intraday_drawdown, jsonable, trade_stats
+from guban.metrics import backtest_metrics, compute_metrics, intraday_drawdown, jsonable, trade_stats
 
 NQ = ContractSpec(symbol="NQ", name="E-mini Nasdaq-100", point_value=20.0, tick_size=0.25)
 IDX = pd.date_range("2024-01-02 09:35", periods=6, freq="5min", tz="America/New_York", name="time")
@@ -87,6 +87,16 @@ def test_intraday_drawdown_without_equity_low_uses_closes():
     assert intraday_drawdown(eq).tolist() == [0, 0, -30, 0, -70]
 
 
+def test_intraday_drawdown_uses_intrabar_peaks():
+    eq = pd.Series([0.0, 0.0, 0.0], index=IDX[:3])
+    low = pd.Series([0.0, -10.0, -5.0], index=IDX[:3])
+    high = pd.Series([0.0, 10.0, 30.0], index=IDX[:3])
+    bar_dd = pd.Series([0.0, -20.0, 0.0], index=IDX[:3])
+    # bar 1: 0 -> +10 -> -10 inside the bar = -20; bar 2: bar 1's intrabar peak (+10) is the prior peak -> -15
+    assert intraday_drawdown(eq, low, high, bar_dd).tolist() == [0, -20, -15]
+    assert intraday_drawdown(eq, low).tolist() == [0, -10, -5]  # without the intrabar peaks: from bar closes
+
+
 def test_empty_trades_and_json_safety():
     empty = fixture_trades().iloc[:0]
     eq = pd.Series(0.0, index=IDX)
@@ -139,3 +149,14 @@ def test_runup_is_floored_at_zero_and_limit_entries_pay_no_entry_slippage():
     (t,) = res.trades.itertuples()
     # bar 1 walks 100 -> 100 -> 98 -> 99: the limit fills at 99 on the way down, then sees 98
     assert (t.entry_price, t.drawdown) == (99, (98 - 99) * 20 - 2)  # entry-side cost: commission only
+
+
+def test_max_drawdown_is_peak_to_valley_inside_one_bar():
+    # long at bar 1's open (100); bar 1 walks 100 -> 100.5 (+$10) -> 99.5 (-$10) -> 100: a $20 drop in one bar
+    bars = bars_from([(100, 100, 100, 100), (100, 100.5, 99.5, 100), (100, 100, 100, 100)])
+    one = ContractSpec(symbol="X", name="x", point_value=20.0, tick_size=0.25)
+    res = run_backtest(Script(plan={0: [("buy", {})], 1: [("sell", {})]}), bars, one)
+    assert (res.equity_high.iat[1], res.equity_low.iat[1], res.bar_drawdown.iat[1]) == (10, -10, -20)
+    m = backtest_metrics(res, bars)
+    assert m["account"]["max_drawdown_intraday"] == -20
+    assert m["account"]["max_drawdown_intraday_time"] == bars.index[1]

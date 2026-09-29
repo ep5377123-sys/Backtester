@@ -42,7 +42,7 @@ def write_report(
     tr = result.trades
     sessions = bars["session_date"].reindex(result.equity.index) if "session_date" in bars.columns else None
     daily = daily_equity(result.equity, sessions)
-    dd = intraday_drawdown(result.equity, result.equity_low)
+    dd = intraday_drawdown(result.equity, result.equity_low, result.equity_high, result.bar_drawdown)
     daily_dd = dd.groupby(session_keys(dd.index, sessions)).min()
     data = {
         "tick": result.spec.tick_size if result.spec else 0.01,
@@ -65,7 +65,7 @@ def write_report(
         _tiles(metrics),
         f"<section><h2>Equity</h2><p class='cap'>Closed net profit plus open profit at each session's last bar, USD.{band_cap}</p>"
         "<div id='equity' class='chart'></div></section>",
-        "<section><h2>Drawdown</h2><p class='cap'>Worst intraday drawdown each session, from the prior equity peak, USD.</p>"
+        "<section><h2>Drawdown</h2><p class='cap'>Worst intraday drawdown each session, from the running equity peak (tracked along the intrabar path), USD.</p>"
         "<div id='drawdown' class='chart short'></div></section>",
         _summary_table(metrics),
         _monthly_table(tr),

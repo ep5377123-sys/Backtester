@@ -44,7 +44,9 @@ def wfo_section(wf: WalkForwardResult) -> str:
     cap = (
         f"{html.escape(layout)}. Each in-sample window picks the inputs with the best {html.escape(label.lower())} among the "
         f"{wf.combinations:,} combinations with at least {wf.min_trades:,} trades in the window; those inputs trade the next "
-        "out-of-sample window. Walk-forward efficiency (WFE) = annualized out-of-sample net profit ÷ annualized in-sample "
+        "out-of-sample window. Every window is traded on its own: it starts flat (indicators warmed on the earlier data) "
+        "and a position still open at its end is closed at its last bar's close (exit “Window End”), so no later price "
+        "reaches its result. Walk-forward efficiency (WFE) = annualized out-of-sample net profit ÷ annualized in-sample "
         "net profit of the chosen inputs. OOS rank: where the chosen inputs ranked out of sample among all combinations. "
         "Everything below this section is the stitched out-of-sample result."
     )

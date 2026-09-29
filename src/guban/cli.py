@@ -571,7 +571,7 @@ def wfo_cmd(
     out = out or run_dir(strategy_file, symbol, contract, tf, session, "_wfo")
     data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir))
     typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz}): "
-               f"{n:,} combinations, each run once over all the data")  # fmt: skip
+               f"{n:,} combinations, each run once per window start")  # fmt: skip
     t0 = time.perf_counter()
     try:
         wf = walk_forward(strategy_file, grid, spec, Costs(commission=commission, slippage=slippage), data=data, fixed=fixed,
@@ -591,8 +591,8 @@ def wfo_cmd(
     if history_from:
         notes.append(f"{history_from} bars stand in for {symbol} before {symbol}'s first bar.")
     if wf.boundary_trades:
-        notes.append(f"{wf.boundary_trades} trade(s) were open across an out-of-sample window boundary where the inputs change: each counts "
-                     "whole in its entry window's trades, but the equity curve switches to the next window's inputs at the boundary.")  # fmt: skip
+        notes.append(f"{wf.boundary_trades} out-of-sample trade(s) were still open at their window's end and were closed at its last bar's "
+                     "close (exit “Window End”): every window starts and ends flat.")  # fmt: skip
     if s["combo"].isna().any():
         notes.append(f"{int(s['combo'].isna().sum())} window(s) had no combination with ≥ {min_trades:,} in-sample trades and sat out (flat).")
     tr = wf.trades
@@ -644,7 +644,7 @@ def wfo_cmd(
                f"(in sample {fmt_value(p['is_net_per_year'], 'usd')}/yr)")  # fmt: skip
     typer.echo(f"  walk-forward efficiency: {'n/a' if p['wfe'] is None else format(p['wfe'], '.0%')}"
                + (f"  boundary trades: {wf.boundary_trades}" if wf.boundary_trades else ""))  # fmt: skip
-    typer.echo(f"  {n:,} runs + {int(s['combo'].nunique())} re-runs in {wf.seconds:,.1f} s on {wf.workers} workers")
+    typer.echo(f"  {n:,} combinations + {int(s['combo'].notna().sum())} out-of-sample window re-runs in {wf.seconds:,.1f} s on {wf.workers} workers")
     typer.echo(f"Wrote {trades_path}, {csv_paths[0]}, {csv_paths[1]}, {out / 'wfo.json'}, {html_path}")
     if open_report:
         _open(html_path)

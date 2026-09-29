@@ -31,9 +31,9 @@ import numpy as np
 import pandas as pd
 
 from guban.config import ContractSpec
-from guban.engine import Costs, Strategy, run_backtest
+from guban.engine import BacktestResult, Costs, Strategy, run_backtest
 from guban.engine.strategy import load_strategy_class
-from guban.metrics import backtest_metrics, window_metrics
+from guban.metrics import backtest_metrics, empty_metrics, window_metrics
 
 MAX_COMBINATIONS = 5000
 
@@ -173,28 +173,43 @@ def _init_worker(job: _Job, frames: tuple[pd.DataFrame, pd.DataFrame | None] | N
     _WORKER.update(job=job, cls=load_strategy_class(job.strategy_file, job.class_name), bars=bars, sub=sub)
 
 
-def _backtest(params: dict):
-    job = _WORKER["job"]
+def _backtest(params: dict, stop: int | None = None, **window):
+    """One run with `params` over the worker's bars (the first `stop` of them), with run_backtest's `window` options."""
+    job, bars = _WORKER["job"], _WORKER["bars"]
     try:
         strategy = _WORKER["cls"](**job.fixed, **params)
-        return run_backtest(strategy, _WORKER["bars"], job.spec, job.costs, sub_bars=_WORKER["sub"], fill_mode=job.fill_mode)
+        bars = bars if stop is None else bars.iloc[:stop]
+        return run_backtest(strategy, bars, job.spec, job.costs, sub_bars=_WORKER["sub"], fill_mode=job.fill_mode, **window)
     except Exception as e:
         raise RuntimeError(f"run with inputs {params} failed: {e}") from e
 
 
 def _run_one(params: dict) -> dict | list[dict]:
-    """Metrics of one run: of the whole run, or (walk-forward) one set per window in job.windows."""
+    """Metrics of one run: of the whole run, or (walk-forward) one set per trading window [lo, hi) in job.windows,
+    each scored as its own run: flat at lo, flattened at hi (guban.metrics.window_metrics). Windows that start on the
+    same bar share one run."""
     job, bars = _WORKER["job"], _WORKER["bars"]
-    res = _backtest(params)
     if job.windows is None:
-        return flatten_metrics(backtest_metrics(res, bars))
-    return [flatten_metrics(window_metrics(res, bars, lo, hi)) for lo, hi in job.windows]
+        return flatten_metrics(backtest_metrics(_backtest(params), bars))
+    ends: dict[int, set[int]] = {}
+    for lo, hi in job.windows:
+        if hi > lo:
+            ends.setdefault(lo, set()).add(hi)
+    scored = {}
+    for lo, his in ends.items():
+        res = _backtest(params, max(his), trade_from=lo, window_ends=his)
+        scored.update({(lo, hi): flatten_metrics(window_metrics(res, bars, lo, hi)) for hi in his})
+    empty = flatten_metrics(empty_metrics())
+    return [scored.get(w, empty) for w in job.windows]
 
 
-def _run_full(params: dict) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
-    """Trades, equity and equity_low of one run (walk-forward stitching)."""
-    res = _backtest(params)
-    return res.trades, res.equity.to_numpy(float), res.equity_low.to_numpy(float)
+def _run_window(item: tuple[dict, int, int]) -> BacktestResult:
+    """The trading window [lo, hi) of a run with `params` (walk-forward stitching): BacktestResult.window(lo, hi)."""
+    params, lo, hi = item
+    res = _backtest(params, hi, trade_from=lo, window_ends={hi})
+    out = res.window(lo, hi)
+    out.strategy = None  # workers send results back by pickling; the strategy instance is not needed
+    return out
 
 
 @contextmanager

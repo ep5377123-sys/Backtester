@@ -7,18 +7,21 @@ continue while an out-of-sample window has at least one day of data. step >= oos
 two windows, and no out-of-sample window overlaps its own in-sample window.
 
 Each in-sample window picks the input combination ranked first by the metric, among runs with at least
-`min_trades` trades entered in that window (guban.optimize.rank_results; ties keep grid order). Those inputs
-trade the next out-of-sample window; a window with no eligible run sits out (flat, no trades).
+`min_trades` trades in that window (guban.optimize.rank_results; ties keep grid order). Those inputs trade the
+next out-of-sample window; a window with no eligible run sits out (flat, no trades).
 
-Every run starts at the first bar of the data, so long-memory indicators are warm in every window. A backtest is
-causal (bars after bar k never change what happened up to bar k), so a run through a window's end is the start
-of a run over all the data: each grid combination is backtested once over all the data, and every window is
-scored from that run (guban.metrics.window_metrics: trades by entry bar, equity rebased at the window start).
-The stitched out-of-sample result is, per window, the chosen inputs' trades entered in the window, and their
-equity over the window's bars, rebased to continue the curve. A trade still open at a window's end counts whole
-in the window it was entered in; when the next window trades other inputs, the equity curve keeps only its part up
-to the boundary (and picks up the next inputs' carried-in trade, if any). Those trades are counted in
-`boundary_trades`; an intraday strategy has none.
+Every window, in sample or out of sample, is scored as its own trading window [lo, hi): the strategy runs from
+the first bar of the data (so long-memory indicators are warm) but no order fills before the window's first bar,
+so it starts flat, and a position still open after the window's last bar is closed at that bar's close as a
+market fill named "Window End" (run_backtest's trade_from / flatten_at_end; guban.metrics.window_metrics). No
+price after a window's end ever reaches its score, and no position opened before a window is carried into it.
+Windows that start on the same bar share one run (the engine is causal: BacktestResult.window).
+
+The stitched out-of-sample result chains the chosen inputs' trading windows: their trades, and their equity
+continued from the previous window's final equity. Every window starts and ends flat, so the stitched final
+equity equals the sum of the stitched trades' net profit (checked). Trades closed by a window's end are counted
+in `boundary_trades`; a strategy that is flat at every session's end has none, while an always-in-the-market
+strategy has one per window.
 
 Walk-forward efficiency = annualized out-of-sample net profit / annualized in-sample net profit of the chosen
 inputs (net per 365.25 calendar days of the window). Overall: pooled over the windows that traded,
@@ -39,9 +42,9 @@ import pandas as pd
 
 from guban.config import ContractSpec
 from guban.engine import Costs, Strategy
-from guban.engine.backtest import TRADE_COLUMNS, BacktestResult
+from guban.engine.backtest import TRADE_COLUMNS, WINDOW_END, BacktestResult
 from guban.metrics import compute_metrics, session_keys
-from guban.optimize import DataSpec, _pool, _run_full, _run_one, _setup, pool_size, rank_results
+from guban.optimize import DataSpec, _pool, _run_one, _run_window, _setup, pool_size, rank_results
 
 YEAR_DAYS = 365.25
 
@@ -121,9 +124,11 @@ class WalkForwardResult:
     trades: pd.DataFrame  # stitched out-of-sample trades (engine columns; bar numbers index `bars`)
     equity: pd.Series  # stitched out-of-sample equity over the out-of-sample bars
     equity_low: pd.Series
+    equity_high: pd.Series
+    bar_drawdown: pd.Series
     metrics: dict  # guban.metrics.compute_metrics of the stitched result
     pooled: dict  # windows that traded: {"is_net_per_year", "oos_net_per_year", "wfe"} (None when undefined)
-    boundary_trades: int
+    boundary_trades: int  # stitched trades closed by an out-of-sample window's end ("Window End")
     bars: pd.DataFrame
     spec: ContractSpec
     costs: Costs
@@ -143,7 +148,10 @@ class WalkForwardResult:
 
     def oos_result(self) -> BacktestResult:
         """The stitched out-of-sample result as a BacktestResult (for trades.csv and the report)."""
-        return BacktestResult(self.trades, self.equity, None, None, self.fill_mode, 0, self.equity_low, self.spec, self.costs)
+        return BacktestResult(
+            self.trades, self.equity, None, None, self.fill_mode, 0, self.equity_low, self.spec, self.costs,
+            equity_high=self.equity_high, bar_drawdown=self.bar_drawdown,
+        )  # fmt: skip
 
     def write_csvs(self, out: str | Path) -> list[Path]:
         """windows.csv (the summary) and results.csv (every window x combination)."""
@@ -193,7 +201,7 @@ def walk_forward(
     """Walk-forward analysis of `grid`: optimize each in-sample window, trade the winner out of sample, stitch.
 
     Arguments as guban.optimize.optimize, plus the window layout (see make_windows). min_trades applies to the
-    trades entered in each in-sample window. progress(done, total) reports the grid runs.
+    trades in each in-sample window. progress(done, total) reports the grid runs.
     """
     job, frames, combos = _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm)
     t0 = time.perf_counter()
@@ -210,16 +218,16 @@ def walk_forward(
     with _pool(job, frames, workers) as run:
         rows = run(_run_one, combos, progress)
         results, chosen = _rank_windows(windows, combos, rows, metric, min_trades)
-        picked = sorted({c for c in chosen if c is not None})
-        full = dict(zip(picked, run(_run_full, [combos[c - 1] for c in picked])))
-
-    trades, equity, equity_low, boundary = _stitch(frame, oos_r, chosen, full)
+        picked = [(k, c) for k, c in enumerate(chosen) if c is not None and oos_r[k][1] > oos_r[k][0]]
+        runs = run(_run_window, [(combos[c - 1], *oos_r[k]) for k, c in picked])
+    stitched = _stitch(frame, oos_r, dict(zip((k for k, _ in picked), runs)))
+    trades, equity, equity_low, equity_high, bar_dd, boundary = stitched
     sessions = frame["session_date"].reindex(equity.index) if "session_date" in frame.columns else None
-    metrics = compute_metrics(trades, equity, equity_low, sessions)
+    metrics = compute_metrics(trades, equity, equity_low, sessions, equity_high=equity_high, bar_drawdown=bar_dd)
     summary, pooled = _summary(windows, grid, combos, results, chosen, metric)
     return WalkForwardResult(
         windows, grid, metric, min_trades, anchored, is_months, oos_months, oos_months if step_months is None else step_months,
-        results, summary, trades, equity, equity_low, metrics, pooled, boundary,
+        results, summary, trades, equity, equity_low, equity_high, bar_dd, metrics, pooled, boundary,
         frame, spec, costs, job.fill_mode or ("magnifier" if sub_bars is not None else "ohlc"),
         workers, time.perf_counter() - t0, job.fixed,
     )  # fmt: skip
@@ -243,36 +251,42 @@ def _rank_windows(windows, combos, rows, metric, min_trades) -> tuple[pd.DataFra
     return pd.concat(tables, ignore_index=True), chosen
 
 
-def _stitch(frame, oos_r, chosen, full) -> tuple[pd.DataFrame, pd.Series, pd.Series, int]:
-    eq_parts, low_parts, tr_parts, pos = [], [], [], []
-    offset, boundary = 0.0, 0
-    for k, ((lo, hi), c) in enumerate(zip(oos_r, chosen)):
+def _stitch(frame, oos_r, runs: dict[int, BacktestResult]):
+    """Chain the out-of-sample windows (runs[k] = window k's result; a window without one sits out, flat) into
+    (trades, equity, equity_low, equity_high, bar_drawdown, boundary_trades)."""
+    parts: dict[str, list] = {"eq": [], "low": [], "high": [], "dd": []}
+    tr_parts, pos = [], []
+    offset = 0.0
+    for k, (lo, hi) in enumerate(oos_r):
         pos.append(np.arange(lo, hi))
-        if c is None:
-            eq_parts.append(np.full(hi - lo, offset))
-            low_parts.append(np.full(hi - lo, offset))
+        r = runs.get(k)
+        if r is None:
+            for key in ("eq", "low", "high"):
+                parts[key].append(np.full(hi - lo, offset))
+            parts["dd"].append(np.zeros(hi - lo))
             continue
-        tr, eq, low = full[c]
-        base = eq[lo - 1] if lo > 0 else 0.0
-        eq_parts.append(eq[lo:hi] - base + offset)
-        low_parts.append(low[lo:hi] - base + offset)
-        if hi > lo:
-            offset = float(eq_parts[-1][-1])
-        mine = tr[(tr["entry_bar"] >= lo) & (tr["entry_bar"] < hi)]
-        tr_parts.append(mine)
-        # trades open across a boundary where the curve switches inputs (or skips days)
-        if k + 1 == len(chosen) or chosen[k + 1] != c or oos_r[k + 1][0] != hi:
-            boundary += int((mine["exit_bar"] >= hi).sum())
-        if k == 0 or chosen[k - 1] != c or oos_r[k - 1][1] != lo:
-            boundary += int(((tr["entry_bar"] < lo) & (tr["exit_bar"] >= lo)).sum())
+        net = r.net_profit
+        if not math.isclose(float(r.equity.iat[-1]), net, rel_tol=1e-9, abs_tol=1e-6):
+            raise RuntimeError(f"out-of-sample window {k + 1}: final equity {r.equity.iat[-1]} != its trades' net profit {net}")
+        parts["eq"].append(r.equity.to_numpy(float) + offset)
+        parts["low"].append(r.equity_low.to_numpy(float) + offset)
+        parts["high"].append(r.equity_high.to_numpy(float) + offset)
+        parts["dd"].append(r.bar_drawdown.to_numpy(float))
+        tr_parts.append(r.trades)
+        offset += net
     idx = frame.index[np.concatenate(pos)]
     tr_parts = [t for t in tr_parts if len(t)]
     trades = pd.concat(tr_parts, ignore_index=True) if tr_parts else pd.DataFrame(columns=TRADE_COLUMNS)
     trades["trade_no"] = np.arange(1, len(trades) + 1)
     trades["cum_net_pnl"] = trades["net_pnl"].astype(float).cumsum()
-    equity = pd.Series(np.concatenate(eq_parts), index=idx, name="equity")
-    equity_low = pd.Series(np.concatenate(low_parts), index=idx, name="equity_low")
-    return trades, equity, equity_low, boundary
+    series = [pd.Series(np.concatenate(parts[key]), index=idx, name=name)
+              for key, name in (("eq", "equity"), ("low", "equity_low"), ("high", "equity_high"), ("dd", "bar_drawdown"))]  # fmt: skip
+    total = float(trades["net_pnl"].sum()) if len(trades) else 0.0
+    final = float(series[0].iat[-1]) if len(idx) else 0.0
+    if not math.isclose(final, total, rel_tol=1e-9, abs_tol=1e-6):
+        raise RuntimeError(f"stitched out-of-sample equity {final} does not reconcile with its trades' net profit {total}")
+    boundary = int((trades["exit_name"] == WINDOW_END).sum()) if len(trades) else 0
+    return trades, *series, boundary
 
 
 def _summary(windows, grid, combos, results, chosen, metric) -> tuple[pd.DataFrame, dict]:
