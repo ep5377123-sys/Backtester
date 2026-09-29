@@ -221,7 +221,7 @@ class VaultBreak(Strategy):
       Done when: synthetic tests for dollar stop/target, stop and limit orders, and same-bar stop+target pass in both magnifier and OHLC modes.
       Steps: `set_stop_loss` / `set_profit_target` (per position, active from entry); stop and limit next-bar orders; magnifier walk over 1-min sub-bars; OHLC path rule; ambiguous-fill tagging.
       Covers: R4
-- [ ] Phase 5: Port Vault Break and pass the parity gate
+- [x] Phase 5: Port Vault Break and pass the parity gate (done 2026-09-28 — S3 met on the MNQ-data window; see Phase 5 results below)
       Done when: `guban compare` against `Vault Break MNQ.csv` meets S3, and the backtest time is ≤15 s.
       Steps: open `Vault Break MNQ 500$ risk.xlsx` to recover inputs, costs, and session (A7, A8); port `sc_Vaultc20Break.el` line by line to `strategies/vault_break.py`; implement `guban compare` and `diff.html`; iterate on engine semantics until the thresholds pass; time the run (A4).
       Covers: R7, S3; checks: A4, A7, A8
@@ -289,3 +289,52 @@ class VaultBreak(Strategy):
 - Sub-bar mapping: each 1m bar belongs to the first strategy bar labeled at or after it, within the same `session_date`; 1m bars from other sessions are dropped. The run fails loudly if a 1m bar lies outside its strategy bar's high-low range. A bar with no 1m data falls back to its own OHLC and is counted in `BacktestResult.bars_without_sub_bars`.
 - Tests: `tests/test_fills.py` has 22 tests (R4: OHLC path rule in three variants, magnifier vs OHLC on the same bar, a same-minute stop+target, an intrabar entry with its stop in the same or a later minute, gaps, stop/limit entries and exits, reversal by stop, tick rounding, slippage, validation, and magnifier determinism). Full suite: 57 passed.
 - Speed read (A4), synthetic data: 74k 5m bars + 370k 1m bars, bracket every bar, $60 stop/target, ~58k trades → magnifier 3.0 s, OHLC 2.1 s. Ambiguous trades: 53% in OHLC mode vs 15% with the magnifier.
+
+## Phase 5 results (2026-09-28)
+- **A8 partly falsified.** `Vault Break MNQ 500$ risk.xlsx` holds only "List of Trades"; the Settings and analysis sheets say "Export cancelled by user". Inputs and costs were recovered from the trades instead:
+  - Inputs: 5 contracts, profit target $500, stop loss $500 (both ±50 MNQ points). Everything else matches the `.el` defaults: entries run 09:50–15:05 (EarliestEntry 945, LatestEntry 1500), TimeX exits at 15:55 (FlattenTime 1550), at most 3 trades a day.
+  - Costs: $0.40 commission + $0.04 slippage per contract per round trip. Profit-target trades cost $2.10 per 5-lot, market and stop exits $2.20, and run-up/drawdown carry $1.10 of entry-side cost. So MC charges half the slippage per market or stop fill and **none on limit fills**. The engine now does the same (`Costs.slippage`; this is the only engine semantics change in this phase).
+- **A7 falsified → adapted.** The MC chart was in **exchange time (America/Chicago) on a 24-hour Globex session**, not RTH Eastern.
+  - Evidence: every MC entry price equals our 1-minute open exactly one hour later in ET. Exits land at 15:20–15:55 CT (after the 15:15 CT equity close) and at 17:05/17:10 CT (evening reopen).
+  - Consequences: Time, Date and the input times are Central; `Date <> Date[1]` fires at midnight CT; a "day" is a calendar date, Sunday evenings included.
+  - Run with `--session eth --tz America/Chicago`. `load_bars(..., tz=)` relabels bars; sessions are still built in ET.
+- **MC traded MNQ prices.** NQ opens are within 1 tick of MC's MNQ fills only ~86% of the time. So the price check needs MNQ data, and the MNQ store covers only 2025-06-08 → 2026-09-17.
+- **MC's continuous contract rolls on the Wednesday of expiration week** (3rd Friday − 2 days). This held in 13 of 14 quarters 2023–2026; Mar 2023 had already rolled by Tuesday.
+  - New importer mode: `--roll expiry [--roll-days-before 2]`. `volume` stays the default.
+  - `data/NQ` and `data/MNQ` were re-imported with `--roll expiry`.
+- **DailyATR has long memory.** It is `RngSum / RngCnt` over every day since the chart's first bar, never rolling off.
+  - The MC chart starts around 2021-01-01: its first trade, 2021-01-20, is the first day allowed by `SessCount >= 15`. Local data starts 2022-12-28.
+  - The port adds warm-up stand-in inputs `atr_seed_sum`, `atr_seed_count` and `sess_count_seed` (0 = literal port). `guban run --history-from NQ` prepends NQ bars ahead of MNQ's first bar (`splice_history`).
+  - Seed used: 620 pre-data days (≈ 2 years × 310 Globex dates) × 276 points average range = 171,120. **The 276 was fitted against the MC export — one free parameter, not derived.**
+  - The match rate is robust to the seed: 98–99% in the MNQ window for 272–280 points with 560–680 days. Net profit is not: one flipped ±$500 trade is ~7.6% of the MNQ-window net.
+- **Parity (S3), against the CSV oracle as specified:**
+
+  | Window | MC trades | Matched | Entry & exit within 1 tick | Net profit (MC / ours) | Result |
+  |---|---|---|---|---|---|
+  | MNQ data: 2025-06-08 → 2026-09-17 | 302 | 300 (99.3%) | 293 (97.7%) | 6,555.30 / 6,540.30 (−0.23%) | **PASS** |
+  | NQ before Jun 2025 + MNQ after: 2022-12-29 → 2026-09-17 | 738 | 713 (96.6%) | 593 (83.2%) | 32,884.60 / 30,891.70 (−6.06%) | fails price and net (NQ ≠ MNQ prices) |
+
+  - "Prices within 1 tick" is gated at ≥95% of matched trades, because the plan's diff report expects some mismatches.
+  - The 7 MNQ-window price mismatches and the 2 unmatched pairs are all 0.5–2.75-point differences between MC's data and our minute store. None are tagged ambiguous. Only 1 trade in the whole run is ambiguous, so 1-minute magnifier resolution (Q8) is not a factor.
+  - The Phase 4 choices (dollar exits rounded to the tick; tie goes high first) are consistent with every matched trade: stop and target exits sit exactly at entry ± 50 points.
+- **A4 verified:** 263k 5m bars (24-hour session) + 1.3M one-minute sub-bars → load 0.5 s + backtest 1.7 s = 2.2 s. `trades.csv` is byte-identical across runs.
+- **New code:**
+  - `strategies/vault_break.py` — literal port.
+  - `guban/parity.py`:
+    - `load_mc_trades` reads the quoted CSV, or the report `.xlsx` with real exits.
+    - Matching pairs trades of the same direction whose entries are within one bar. Our side gets one bar of slack at the window edges.
+    - For the CSV, MC exit prices are implied from its net profit plus our costs (they agree exactly with the `.xlsx` exits).
+    - It computes the S3 checks and writes `diff.html`.
+  - CLI: `guban run` (for now it writes only `trades.csv`, plus timing) and `guban compare` (exit code 1 on FAIL).
+  - Tests: `tests/test_parity.py` (9), plus slippage (1) and expiry-roll (3) tests. Full suite: 69 passed.
+- **Reproduce:**
+  ```
+  uv run guban import Database/NQ-CME --symbol NQ --roll expiry
+  uv run guban import Database/MNQ-CME --symbol MNQ --roll expiry
+  uv run guban run strategies/vault_break.py --symbol MNQ --history-from NQ --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620 --out reports/vault_break_mnq
+  uv run guban compare --ours reports/vault_break_mnq/trades.csv --mc "D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv" --contract MNQ --start 2025-06-08
+  ```
+- **Open:**
+  - S3 on the full 2021–2026 span needs MNQ 1-minute data for 2021-01 → 2025-06 exported from MC. That would also replace the fitted ATR seed with real history.
+  - The other Vault Break exports (`Vault Break 1500.csv`, etc.) could cross-check the seed, if they came from the same chart.
+

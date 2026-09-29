@@ -4,7 +4,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from guban.data.importer import RECORD, _DOTNET_EPOCH_TICKS, choose_contracts, import_store, read_session_file
+from guban.data.importer import (
+    RECORD,
+    _DOTNET_EPOCH_TICKS,
+    choose_contracts,
+    choose_contracts_by_expiry,
+    import_store,
+    read_session_file,
+    third_friday,
+)
 
 
 def _ticks(ts: str) -> int:
@@ -58,3 +66,30 @@ def test_import_store_builds_continuous_series(tmp_path):
     assert list(out["contract"].astype(str)) == ["202312", "202403"]
     assert list(out["close"]) == [1, 2]
     assert summary.rolls == [("20231211", "202312"), ("20231212", "202403")]
+
+
+def test_third_friday():
+    assert [str(third_friday(c).date()) for c in ("202506", "202512", "202603", "202609")] == [
+        "2025-06-20", "2025-12-19", "2026-03-20", "2026-09-18",
+    ]  # fmt: skip
+
+
+def test_choose_contracts_by_expiry_rolls_on_wednesday_of_expiration_week():
+    # Sessions start at 18:00 ET the evening before their trading day: Sun 20250615 -> Mon 06-16.
+    sessions = ["20250612", "20250615", "20250616", "20250617", "20250618"]  # trading days Fri 13, Mon 16 .. Thu 19
+    vol = pd.DataFrame({"202506": [100, 90, 40, 30, 20], "202509": [10, 95, 80, 90, 95]}, index=sessions)
+    chosen = choose_contracts_by_expiry(vol, days_before=2)
+    # June expires Fri 06-20: it is held through Tue 06-17 even though Sep has more volume, then Sep from Wed.
+    assert list(chosen) == ["202506", "202506", "202506", "202509", "202509"]
+    assert list(choose_contracts(vol)) == ["202506", "202509", "202509", "202509", "202509"]
+
+
+def test_import_store_expiry_roll(tmp_path):
+    src = tmp_path / "MNQ-CME"
+    for session, t in (("20250615", "2025-06-15 18:00"), ("20250617", "2025-06-17 18:00")):
+        _write(src / f"202506/Minute/{session}.data", [(t, 1, 1, 1, 1, 5)])
+        _write(src / f"202509/Minute/{session}.data", [(t, 2, 2, 2, 2, 100)])
+    summary = import_store(src, "MNQ", tmp_path / "data", roll="expiry")
+    out = pd.read_parquet(tmp_path / "data/MNQ/1m.parquet")
+    assert list(out["contract"].astype(str)) == ["202506", "202509"]
+    assert summary.rolls == [("20250615", "202506"), ("20250617", "202509")]

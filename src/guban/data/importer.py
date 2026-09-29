@@ -6,6 +6,13 @@ Each file is one Globex session (18:00 ET -> 16:59 ET next day), a flat array of
     int64  .NET ticks, Eastern wall-clock time, bar OPEN time
     f8 x4  high, low, open, close        (note: not OHLC order)
     i4 x5  bid volume, ask volume, volume, volume (duplicate), unused
+
+Roll rules for the continuous series:
+- "volume" (default): highest-volume contract per session, never rolling back. Rolls land on the Sunday
+  before expiration week.
+- "expiry": hold each contract until `days_before` days before its expiration (3rd Friday of the contract
+  month, CME equity index futures), then switch at that trading day's session open. days_before=2 (roll on
+  the Wednesday of expiration week) reproduces MC's continuous contract in the Vault Break MNQ export.
 """
 
 from __future__ import annotations
@@ -127,15 +134,55 @@ def choose_contracts(volumes: pd.DataFrame) -> pd.Series:
     return pd.Series(chosen, name="contract")
 
 
-def import_store(source: Path, symbol: str, out_dir: Path) -> ImportSummary:
-    """Build an unadjusted continuous 1-minute series from a per-contract store and write Parquet."""
+def third_friday(contract: str) -> pd.Timestamp:
+    """Expiration date of a YYYYMM equity index contract: the third Friday of its month."""
+    first = pd.Timestamp(int(contract[:4]), int(contract[4:6]), 1)
+    return first + pd.Timedelta(days=(4 - first.weekday()) % 7 + 14)
+
+
+def choose_contracts_by_expiry(volumes: pd.DataFrame, days_before: int = 2) -> pd.Series:
+    """Pick the contract per session by calendar: the earliest contract whose roll day (expiration minus
+    `days_before` days) is after the session's trading day, never rolling back. A session file is named by
+    its 18:00 ET start, so its trading day is the next calendar day."""
+    chosen: dict[str, str] = {}
+    current: str | None = None
+    for session, row in volumes.iterrows():
+        row = row[row > 0]
+        if row.empty:
+            continue
+        trading_day = pd.Timestamp(session) + pd.Timedelta(days=1)
+        live = [c for c in sorted(row.index) if trading_day < third_friday(c) - pd.Timedelta(days=days_before)]
+        if not live:
+            continue
+        best = live[0]
+        if current is None or best > current:
+            current = best
+        if row.get(current, 0) == 0:
+            later = [c for c in live if c > current]
+            if not later:
+                continue
+            current = later[0]
+        chosen[session] = current
+    return pd.Series(chosen, name="contract")
+
+
+ROLLS = ("volume", "expiry")
+
+
+def import_store(source: Path, symbol: str, out_dir: Path, roll: str = "volume", days_before: int = 2) -> ImportSummary:
+    """Build an unadjusted continuous 1-minute series from a per-contract store and write Parquet.
+
+    roll: "volume" or "expiry" (see the module docstring); days_before applies to "expiry".
+    """
     source = Path(source)
     if not source.is_dir():
         raise FileNotFoundError(f"Not a directory: {source}")
+    if roll not in ROLLS:
+        raise ValueError(f"roll must be one of {ROLLS}, got {roll!r}")
     volumes = _session_volumes(source)
     if volumes.empty:
         raise ValueError(f"No non-empty Minute/*.data files under {source}")
-    contracts = choose_contracts(volumes)
+    contracts = choose_contracts(volumes) if roll == "volume" else choose_contracts_by_expiry(volumes, days_before)
 
     frames = []
     raw_count = 0

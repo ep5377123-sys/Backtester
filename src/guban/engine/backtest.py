@@ -58,10 +58,12 @@ Path_ = list[tuple[float, float, float, float]]  # sub-bars as (open, high, low,
 class Costs:
     """Trading costs.
 
-    commission, slippage: USD per contract per round trip, deducted from P&L (as MC does; fill prices are
-    unchanged). slippage_ticks: ticks moved against every market and stop fill price (buys higher, sells
-    lower); limit fills are never slipped. Use one slippage style or the other, not both, unless you mean to
-    double it.
+    commission: USD per contract per round trip, deducted from P&L (as MC does; fill prices are unchanged).
+    slippage: USD per contract per round trip, also deducted from P&L: half is charged on each market or stop
+    fill, none on a limit fill (limit orders, profit targets). MC does the same: in the Vault Break MNQ export,
+    profit-target trades cost $0.02 per contract less than market- or stop-exit trades.
+    slippage_ticks: ticks moved against every market and stop fill price (buys higher, sells lower); limit
+    fills are never slipped. Use one slippage style or the other, not both, unless you mean to double it.
     """
 
     commission: float = 0.0
@@ -89,6 +91,7 @@ class Position:
     entry_name: str
     entry_sub: tuple[int, int] | None = None  # (bar, sub-bar) of an intrabar entry
     entry_walk: bool = False  # filled along the path, not at a bar or sub-bar open
+    entry_slip: bool = True  # entry was a market or stop fill (pays half the USD slippage)
 
 
 class StrategyError(RuntimeError):
@@ -198,7 +201,7 @@ class Broker:
             self.live.remove(ref)
             self._execute(ref, price, slip=is_stop, amb=amb)
         else:  # stop loss / profit target: exit the whole position
-            self._close(pos.qty, self._slipped(price, -pos.direction) if is_stop else price, ref, amb)
+            self._close(pos.qty, self._slipped(price, -pos.direction) if is_stop else price, ref, amb, slip=is_stop)
 
     def _ambiguous(self, pos: Position, trig: list[tuple]) -> bool:
         if pos.entry_walk and pos.entry_sub == self._sub:
@@ -223,25 +226,26 @@ class Broker:
                 return  # no pyramiding
             px = self._slipped(price, d) if slip else price
             if pos is not None:
-                self._close(pos.qty, px, o.name, amb)
-            self.position = Position(d, o.qty, px, self._i, self._times[self._i], o.name, self._sub, self._walking)
+                self._close(pos.qty, px, o.name, amb, slip)
+            self.position = Position(d, o.qty, px, self._i, self._times[self._i], o.name, self._sub, self._walking, slip)
         else:
             d = 1 if o.action == SELL else -1  # direction of the position this order exits
             if pos is None or pos.direction != d:
                 return
             qty = pos.qty if o.qty is None else min(o.qty, pos.qty)
-            self._close(qty, self._slipped(price, -d) if slip else price, o.name, amb)
+            self._close(qty, self._slipped(price, -d) if slip else price, o.name, amb, slip)
 
-    def _close(self, qty: int, price: float, name: str, amb: bool = False) -> None:
+    def _close(self, qty: int, price: float, name: str, amb: bool = False, slip: bool = True) -> None:
         pos, c, spec, i = self.position, self.costs, self.spec, self._i
+        slippage = c.slippage * (pos.entry_slip + slip) / 2  # per contract: half per market/stop fill
         gross = spec.pnl(pos.entry_price, price, qty, pos.direction)
-        net = spec.pnl(pos.entry_price, price, qty, pos.direction, c.commission, c.slippage)
+        net = spec.pnl(pos.entry_price, price, qty, pos.direction, c.commission, slippage)
         self.closed_pnl += net
         self.trades.append((
             len(self.trades) + 1, "long" if pos.direction == 1 else "short", qty,
             pos.entry_time, pos.entry_price, pos.entry_name, pos.entry_bar,
             self._times[i], price, name, i,
-            gross, c.commission * qty, c.slippage * qty, net, self.closed_pnl, amb,
+            gross, c.commission * qty, slippage * qty, net, self.closed_pnl, amb,
         ))  # fmt: skip
         pos.qty -= qty
         if pos.qty == 0:

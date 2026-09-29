@@ -112,15 +112,36 @@ def cache_path(symbol: str, timeframe: str, session: str, data_dir: Path = Path(
 
 
 def load_bars(
-    symbol: str, timeframe: str = "1m", session: str = "rth", data_dir: Path = Path("data"), rebuild: bool = False
+    symbol: str,
+    timeframe: str = "1m",
+    session: str = "rth",
+    data_dir: Path = Path("data"),
+    rebuild: bool = False,
+    tz: str | None = None,
 ) -> pd.DataFrame:
-    """Bars for `symbol` at `timeframe`/`session`, from the Parquet cache when it is newer than 1m.parquet."""
+    """Bars for `symbol` at `timeframe`/`session`, from the Parquet cache when it is newer than 1m.parquet.
+
+    tz: chart time zone for the returned index (e.g. "America/Chicago" for an MC chart in CME exchange time).
+    Sessions and bins are always built in Eastern time; this only relabels the same instants.
+    """
     source = Path(data_dir) / symbol / "1m.parquet"
     if not source.exists():
         raise FileNotFoundError(f"{source} not found; run `guban import` first")
     cached = cache_path(symbol, timeframe, session, data_dir)
     if not rebuild and cached.exists() and cached.stat().st_mtime >= source.stat().st_mtime:
-        return pd.read_parquet(cached)
-    bars = resample(pd.read_parquet(source), timeframe, session)
-    bars.to_parquet(cached)
-    return bars
+        bars = pd.read_parquet(cached)
+    else:
+        bars = resample(pd.read_parquet(source), timeframe, session)
+        bars.to_parquet(cached)
+    return bars.tz_convert(tz) if tz else bars
+
+
+def splice_history(bars: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
+    """Prepend the rows of `history` that come before `bars`' first bar, e.g. NQ bars ahead of an MNQ series
+    that starts later (same underlying). Lets indicators with long memory see the same history as MC did."""
+    if str(history.index.tz) != str(bars.index.tz):
+        history = history.tz_convert(bars.index.tz)
+    out = pd.concat([history[history.index < bars.index[0]], bars])
+    if "contract" in out.columns:
+        out["contract"] = out["contract"].astype(str)
+    return out

@@ -280,3 +280,17 @@ def test_magnifier_backtest_is_deterministic(tmp_path):
     assert a.read_bytes() == b.read_bytes()
     trades = runs[0].trades
     assert len(trades) > 100 and set(trades["exit_name"]) >= {"Stop Loss", "Profit Target"}
+
+
+# --- USD slippage per fill (MC: none on limit fills) ----------------------------------------------
+
+
+def test_usd_slippage_is_half_per_market_or_stop_fill_and_none_on_limit_fills():
+    costs = Costs(commission=1.0, slippage=0.5)
+    target = one_trade(run(LONG_BRACKET, bars_from([FLAT, (100, 106, 99, 105), FLAT]), costs))  # market in, limit out
+    stop = one_trade(run(LONG_BRACKET, bars_from([FLAT, (100, 101, 94, 95), FLAT]), costs))  # market in, stop out
+    assert (target.exit_name, target.slippage, target.net_pnl) == ("Profit Target", 0.25, 100 - 1.0 - 0.25)
+    assert (stop.exit_name, stop.slippage, stop.net_pnl) == ("Stop Loss", 0.5, -100 - 1.0 - 0.5)
+    both_limit = {0: [("buy", dict(at="limit", price=99.5))], 1: [("sell", dict(at="limit", price=100.5))]}
+    t = one_trade(run(both_limit, bars_from([FLAT, (100, 100, 99, 99.5), (100, 101, 99.5, 100.5)]), costs))
+    assert (t.entry_price, t.exit_price, t.slippage) == (99.5, 100.5, 0.0)
