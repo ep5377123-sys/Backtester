@@ -38,6 +38,21 @@ class Boom(Strategy):
 '''
 
 
+BAD_INIT = '''from guban.engine import Strategy
+
+
+class BadInit(Strategy):
+    inputs = dict(n=0)
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.step = 1 / self.p.n
+
+    def on_bar(self):
+        pass
+'''
+
+
 def synthetic_bars() -> pd.DataFrame:
     idx = pd.date_range("2024-01-02 09:35", periods=40, freq="5min", tz="America/New_York")
     c = 17000 + np.cumsum(np.tile([4.0, -1.0, 3.0, -2.0], 10))
@@ -54,6 +69,7 @@ def workdir(tmp_path, monkeypatch):
     monkeypatch.delenv("GUBAN_DEBUG", raising=False)
     (tmp_path / "flip.py").write_text(FLIP)
     (tmp_path / "boom.py").write_text(BOOM)
+    (tmp_path / "bad_init.py").write_text(BAD_INIT)
     return tmp_path
 
 
@@ -190,3 +206,12 @@ def test_guban_debug_reraises(workdir, monkeypatch):
     monkeypatch.setenv("GUBAN_DEBUG", "1")
     res = runner.invoke(app, ["run", "flip.py", "--symbol", "XYZ"])
     assert isinstance(res.exception, KeyError)
+
+
+def test_strategy_constructor_error_is_a_friendly_strategy_error(workdir):
+    # FIX.md #15: an exception in the strategy's own __init__ used to escape as a raw traceback
+    res = runner.invoke(app, ["run", "bad_init.py", "--symbol", "NQ", "--fill-mode", "ohlc"])
+    assert res.exit_code == 2 and isinstance(res.exception, SystemExit), res.output
+    assert "Error: BadInit() could not be created: ZeroDivisionError" in res.output
+    assert "bad_init.py\", line 9, in __init__" in res.output
+    assert not (workdir / "reports").exists()

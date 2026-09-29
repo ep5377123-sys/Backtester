@@ -7,6 +7,10 @@ Each file is one Globex session (18:00 ET -> 16:59 ET next day), a flat array of
     f8 x4  high, low, open, close        (note: not OHLC order)
     i4 x5  bid volume, ask volume, volume, volume (duplicate), unused
 
+Every file is checked as it is read (a CorruptFileError names the file and the record): a whole number of
+records, finite prices with low <= open, close <= high, non-negative volume, and bar times inside the session's
+two calendar days. Records out of time order are sorted, not rejected (two real NQ files have one swapped minute).
+
 Roll rules for the continuous series:
 - "volume" (default): each session trades the contract that had the highest volume in the previous session
   (known at this session's open; the first session takes the front month), never rolling back. Rolls land one
@@ -48,9 +52,54 @@ assert RECORD.itemsize == 60
 _DOTNET_EPOCH_TICKS = 621_355_968_000_000_000
 
 
+class CorruptFileError(ValueError):
+    """A .data file is truncated or holds impossible records."""
+
+
+def read_records(path: Path) -> np.ndarray:
+    """A session file's records, after checking them (see the module docstring)."""
+    path = Path(path)
+    size = path.stat().st_size
+    if size % RECORD.itemsize:
+        raise CorruptFileError(
+            f"{path}: {size:,} bytes is not a whole number of {RECORD.itemsize}-byte records "
+            f"({size % RECORD.itemsize} stray bytes after record {size // RECORD.itemsize}); the file is truncated or not a minute file"
+        )
+    raw = np.fromfile(path, dtype=RECORD)
+    if raw.size:
+        _check_records(raw, path)
+    return raw
+
+
+def _check_records(raw: np.ndarray, path: Path) -> None:
+    o, h, l, c = (raw[k].astype(float) for k in ("open", "high", "low", "close"))  # noqa: E741
+    eps = 1e-9
+    try:
+        day = pd.Timestamp(path.stem)
+    except ValueError:
+        day = None
+    ns = (raw["ticks"] - _DOTNET_EPOCH_TICKS) * 100
+    checks = [
+        (~(np.isfinite(o) & np.isfinite(h) & np.isfinite(l) & np.isfinite(c)), "a missing (NaN) or infinite price"),
+        ((l > h + eps) | (o < l - eps) | (o > h + eps) | (c < l - eps) | (c > h + eps), "open/close outside low..high (or low > high)"),
+        ((raw["volume"] < 0) | (raw["bid_vol"] < 0) | (raw["ask_vol"] < 0), "a negative volume"),
+    ]
+    if day is not None:  # a session starts at 18:00 on its file date and ends the next afternoon
+        lo, hi = day.value, (day + pd.Timedelta(days=2)).value
+        checks.append(((ns < lo) | (ns >= hi), f"a time outside {day:%Y-%m-%d} .. +2 days"))
+    for bad, why in checks:
+        if bad.any():
+            k = int(np.flatnonzero(bad)[0])
+            t = pd.Timestamp(int(ns[k]))
+            raise CorruptFileError(
+                f"{path}: {int(bad.sum())} record(s) have {why}; first is record {k} (byte offset {k * RECORD.itemsize}): "
+                f"time={t} open={o[k]!r} high={h[k]!r} low={l[k]!r} close={c[k]!r} volume={int(raw['volume'][k])}"
+            )
+
+
 def read_session_file(path: Path) -> pd.DataFrame:
     """Read one session file into a DataFrame indexed by tz-aware bar CLOSE time (MC convention)."""
-    raw = np.fromfile(path, dtype=RECORD)
+    raw = read_records(path)
     if raw.size == 0:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume", "bid_vol", "ask_vol"])
     open_time = pd.to_datetime((raw["ticks"] - _DOTNET_EPOCH_TICKS) * 100, unit="ns")
@@ -111,7 +160,7 @@ def _session_volumes(source: Path) -> pd.DataFrame:
         for f in sorted((contract_dir / "Minute").glob("*.data")):
             if f.stat().st_size == 0:
                 continue
-            vol = int(np.fromfile(f, dtype=RECORD)["volume"].sum(dtype="int64"))
+            vol = int(read_records(f)["volume"].sum(dtype="int64"))
             records.append((f.stem, contract_dir.name, vol))
     df = pd.DataFrame(records, columns=["session", "contract", "volume"])
     return df.pivot(index="session", columns="contract", values="volume").fillna(0).sort_index()

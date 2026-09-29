@@ -433,7 +433,7 @@ The core intraday execution path is compact, deterministic, and has good convent
 
 The WFO and drawdown defects should be treated as the highest-priority correctness issues because they can make plausible-looking reports systematically optimistic without producing an exception.
 
-## Repair progress (paused 2026-09-29 at the user's request)
+## Repair progress (completed 2026-09-29)
 
 Verified after the partial work: `uv run pytest` = 158 passed; the Vault Break parity run is unchanged
 (737 trades, net 30,891.70, max drawdown −7,182.50).
@@ -492,9 +492,12 @@ Verified after the partial work: `uv run pytest` = 158 passed; the Vault Break p
   daily loss limit / minimum days, fractional contracts when a size implies them). S6 unchanged: Vault Break MNQ
   35.8%, 7,152 passed.
 
-### Remaining (in this order)
-9. #12 importer: size % 60 check; finite/geometry/volume checks; timestamps inside [session date, +2 days)
-   (two real NQ files have one swapped minute each — keep sorting, don't reject disorder). Real data scanned
-   clean for all other checks.
-10. #15 rest: CLI wraps strategy construction in `StrategyError`.
-11. Tests for every item, then update CLAUDE.md / PLAN.md / README.
+### Done (part 6)
+- #12: `importer.read_records` rejects truncated files (size % 60) and records with non-finite prices, broken OHLC
+  geometry, negative volume, or times outside [session date, +2 days), naming the file, record and byte offset
+  (`CorruptFileError`); out-of-order records are still sorted. All 2,372 real minute files pass.
+- #15 rest: `guban run` wraps the strategy's own `__init__` in `StrategyError` (friendly message + strategy frames).
+- Docs: README, CLAUDE.md and a "Backend audit fixes" section in PLAN.md (stale Phase 2/4/8 statements marked
+  superseded).
+
+All findings #1–#15 are fixed. Full suite: 220 passed.

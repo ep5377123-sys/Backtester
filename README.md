@@ -89,9 +89,12 @@ uv run guban import Database/MNQ-CME --symbol MNQ --roll expiry
 
 - Writes `data/<SYM>/1m.parquet`: one unadjusted continuous series, in Eastern time.
 - Prints the first and last bar, the bar count and the missing session days.
-- `--roll expiry` switches contracts on the Wednesday of expiration week, like MC. `--roll volume` (the default) picks
-  the highest-volume contract instead.
-- Optional: `guban bars --symbol NQ --tf 5m --session rth` builds and caches strategy bars and prints a per-session summary. `run` builds these caches on its own.
+- `--roll expiry` switches contracts on the Wednesday of expiration week, like MC. `--roll volume` (the default) trades
+  the contract that had the most volume in the previous session. The series is unadjusted either way, so `run` and
+  `wfo` list any trade held across a roll (its P&L includes the gap between the contracts).
+- Every `.data` file is checked while it is read (whole records, sane prices and volume, times inside the session);
+  a bad file stops the import with its name and the record's byte offset.
+- Optional: `guban bars --symbol NQ --tf 5m --session rth` builds and caches strategy bars and prints a per-session summary. `run` builds these caches on its own, and rebuilds them when `1m.parquet` or the session in `config/sessions.toml` changes.
 
 ### 2. run: backtest one set of inputs
 
@@ -102,7 +105,8 @@ uv run guban run strategies/vault_break.py @vb --out reports/vault_break_mnq --o
 - Writes `trades.csv` (MC trade-export layout plus guban's own columns), `metrics.json`, and a self-contained
   `report.html`. The report has KPIs, equity and drawdown, the performance summary, monthly net, a trade viewer and the
   trade list, and it opens offline.
-- Expected result: 737 trades, net 30,891.70, max drawdown −7,182.50, about 3 s.
+- Expected result: 737 trades, net 30,891.70, max drawdown −7,315.00, about 3 s. The max drawdown is peak to valley
+  along the intrabar equity path, so a rise and a fall inside one bar both count.
 - `--history-from NQ` fills in NQ bars before MNQ's first bar, so long-memory indicators warm up. The `atr_seed_*`
   inputs stand in for the MC chart's pre-2023 history (PLAN.md, Phase 5).
 - `--fill-mode ohlc` resolves exits with the OHLC path rule on the whole bar instead of 1-minute sub-bars.
@@ -114,7 +118,9 @@ uv run guban compare --ours reports/vault_break_mnq/trades.csv `
     --mc "D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv" --contract MNQ --start 2025-06-08 --open
 ```
 
-- Pairs trades that have the same direction and entries within one bar. Checks prices within 1 tick and net profit.
+- Pairs trades that have the same direction and entries within one bar, one to one, pairing as many as possible
+  (then the closest). Trade counts and net profit use exactly the same window on both sides. Checks prices within
+  1 tick and net profit.
   Writes `diff.html`, listing every unmatched and price-mismatched trade, into the `--ours` folder (or into `--out`).
 - **Pass** (the plan's S3 gate): ≥ 95% of trades matched, ≥ 95% of matched trades within 1 tick, net profit within 3%.
   Exit code 1 means FAIL.
@@ -143,9 +149,12 @@ uv run guban wfo strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 vwap_e
 
 - Optimizes each in-sample window and trades the winner in the next out-of-sample window. `--is 12 --oos 3 --step 3`
   (months) are the defaults; `--anchored` makes every in-sample window start at `--start` and grow.
+- Every window is traded on its own: indicators warm up on the earlier data, the window starts flat, and a position
+  still open at its end is closed at its last bar's close (exit "Window End"). So no price after a window reaches its
+  score, and the stitched equity always equals the sum of the stitched trades.
 - Writes the stitched out-of-sample `trades.csv`, `windows.csv`, `results.csv`, `wfo.json` and `wfo.html`, with
   walk-forward efficiency = annualized OOS net ÷ annualized IS net.
-- Expected: 11 windows, OOS net 19,877.60, WFE 71%, about 20 s.
+- Expected: 11 windows, 675 OOS trades, OOS net 19,777.90, WFE 71%, about 3 minutes on 6 cores.
 
 ### 6. propfirm: prop-firm evaluation Monte Carlo
 
@@ -155,7 +164,8 @@ uv run guban propfirm --trades reports/vault_break_mnq/trades.csv --rules apex_5
 
 - Takes a guban `trades.csv` or an MC export (`.csv` / `.xlsx`). Rules and simulation settings come from
   `config/propfirm/<rules>.toml`, and flags such as `--size`, `--sims`, `--sweep 0.5,1,1.5`, `--seed`, `--commission`
-  and `--slippage` override them.
+  and `--slippage` override them. Rules files are read strictly (true/false for switches, numbers in range), and
+  the report labels the simulation's own assumptions apart from the firm's rules.
 - Writes `propfirm.json`, `sweep.csv`, `degradation.csv`, `daily.csv` and `propfirm.html`: pass rate with a 95% CI,
   failure mix, degradation scenarios, and a size sweep.
 - This is a bit-exact port of `25k Prop Firm Accurate Rules.ipynb`, quirks included. Its `--commission` / `--slippage`
@@ -206,7 +216,7 @@ uv run guban run strategies/opening_range.py --symbol NQ --tf 5m --session rth -
 
 - **Inputs:** `inputs` holds the defaults. They are read as `self.p.<name>` and overridden with `--set name=value`.
   `optimize` and `wfo` sweep them with `--grid`.
-- **Series:** `open high low close volume time date session_date timestamp`. `[0]` is the current bar and `[n]` is n
+- **Series:** `open high low close volume time date session_date timestamp contract`. `[0]` is the current bar and `[n]` is n
   bars ago. Looking back before bar 1 raises. `time` is HHMM in the chart time zone (`--tz`), like MC's `Time`.
 - **Orders:** `buy` / `sell_short` open a position. `sell` / `buy_to_cover` close it (all contracts by default).
   `at="market"` (default), `"stop"` or `"limit"` with `price=`. Orders placed in `on_bar` are for the **next bar**,
@@ -218,9 +228,10 @@ uv run guban run strategies/opening_range.py --symbol NQ --tf 5m --session rth -
 - **Costs:** `--commission` / `--slippage` are USD per contract per round trip. Slippage is charged half per market or
   stop fill and none on limit fills (MC behavior).
 - **Rules for `optimize` / `wfo`:** define the class at the top level of its file, because worker processes re-import
-  it. Never look at future bars: walk-forward scores every window from one causal run.
-- **Errors:** if `on_bar` raises, the run stops, nothing is written, and guban prints the bar, its timestamp, the
-  position and the failing line of your file.
+  it. Never look at future bars. `--set` and `--grid` values take the type of the input's default (`true`/`false`
+  for a bool, a finite number for a number, text for a string).
+- **Errors:** if the strategy's `__init__`, `on_start` or `on_bar` raises, the run stops, nothing is written, and
+  guban prints where it failed (for `on_bar`: the bar, its timestamp and the position) and the failing line of your file.
 
 `strategies/vault_break.py` is the reference port: a literal, line-by-line translation of `sc_Vaultc20Break.el`.
 

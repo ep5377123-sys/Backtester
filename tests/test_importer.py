@@ -4,8 +4,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import pytest
+
 from guban.data.importer import (
     RECORD,
+    CorruptFileError,
     _DOTNET_EPOCH_TICKS,
     choose_contracts,
     choose_contracts_by_expiry,
@@ -107,3 +110,35 @@ def test_import_store_expiry_roll(tmp_path):
     out = pd.read_parquet(tmp_path / "data/MNQ/1m.parquet")
     assert list(out["contract"].astype(str)) == ["202506", "202509"]
     assert summary.rolls == [("20250615", "202506"), ("20250617", "202509")]
+
+
+def test_truncated_file_is_rejected_with_its_name(tmp_path):
+    # FIX.md #12: numpy silently ignored trailing bytes of a cut-off file
+    f = tmp_path / "20231120.data"
+    _write(f, [("2023-11-20 18:00", 100.0, 101.0, 99.0, 100.5, 10), ("2023-11-20 18:01", 100.5, 101.0, 100.0, 100.0, 5)])
+    f.write_bytes(f.read_bytes()[:-7])
+    with pytest.raises(CorruptFileError, match=r"20231120\.data: 113 bytes is not a whole number of 60-byte records"):
+        read_session_file(f)
+
+
+@pytest.mark.parametrize(
+    "bar, why",
+    [
+        (("2023-11-20 18:01", float("nan"), 101.0, 99.0, 100.0, 5), "NaN"),
+        (("2023-11-20 18:01", 100.0, 99.0, 101.0, 100.0, 5), "low > high"),
+        (("2023-11-20 18:01", 100.0, 101.0, 99.5, 102.0, 5), "outside low..high"),
+        (("2023-11-20 18:01", 100.0, 101.0, 99.0, 100.0, -3), "negative volume"),
+        (("2023-11-25 18:01", 100.0, 101.0, 99.0, 100.0, 5), "time outside 2023-11-20"),
+    ],
+)
+def test_impossible_records_are_rejected_with_the_record_offset(tmp_path, bar, why):
+    f = tmp_path / "20231120.data"
+    _write(f, [("2023-11-20 18:00", 100.0, 101.0, 99.0, 100.0, 10), bar])
+    with pytest.raises(CorruptFileError, match=rf"{why}.*record 1 \(byte offset 60\)"):
+        read_session_file(f)
+
+
+def test_records_out_of_order_are_sorted_not_rejected(tmp_path):
+    f = tmp_path / "20231120.data"
+    _write(f, [("2023-11-20 18:01", 101.0, 101.0, 101.0, 101.0, 1), ("2023-11-20 18:00", 100.0, 100.0, 100.0, 100.0, 1)])
+    assert read_session_file(f)["close"].tolist() == [100.0, 101.0]

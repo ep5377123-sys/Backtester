@@ -278,13 +278,17 @@ def run_cmd(
     import json
 
     from guban.config import get_contract
-    from guban.engine import Costs, run_backtest
+    from guban.engine import Costs, StrategyError, run_backtest
     from guban.metrics import ROLL_NOTE, backtest_metrics, jsonable, roll_summary
     from guban.report import write_report
 
     t0 = time.perf_counter()
     cls = _load_strategy_class(strategy_file, class_name)
-    strategy = cls(**_parse_inputs(inputs, cls.inputs))
+    overrides = _parse_inputs(inputs, cls.inputs)
+    try:
+        strategy = cls(**overrides)
+    except Exception as e:  # the strategy's own __init__ failed
+        raise StrategyError(f"{cls.__name__}({', '.join(f'{k}={v!r}' for k, v in overrides.items())}) could not be created: {e!r}") from e
     spec = get_contract(contract or symbol)
     bars, sub = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir)).load()
     t1 = time.perf_counter()

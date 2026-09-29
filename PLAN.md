@@ -252,7 +252,7 @@ class VaultBreak(Strategy):
 ## Phase 1 results (2026-09-28)
 - **A1 replaced.** The user supplied a binary per-contract store, not an ASCII export. Layout: `Database/<SYM>-CME/<YYYYMM>/{Minute,Tick}/<YYYYMMDD>.data`, one Globex session per file. Minute record = 60 bytes: int64 .NET ticks (ET wall-clock, bar open time), f8 high/low/open/close, i4 bid_vol/ask_vol/volume/volume/unused (verified: decoded files, field order inferred statistically: field0 is always the max, field1 always the min, close[t]==open[t+1] continuity).
 - **A5 verified.** Timestamps are Eastern time. The volume spikes land on the 09:31 and 16:00 bars (close-time labels) in both winter and summer.
-- **A6 falsified → adapted.** Data is per-contract. The importer builds an unadjusted continuous series, picking the highest-volume contract each session and never rolling back. There were 16 rolls, each on the Sunday before expiry week. Back-adjustment is a later option.
+- **A6 falsified → adapted.** Data is per-contract. The importer builds an unadjusted continuous series, picking the highest-volume contract each session and never rolling back. There were 16 rolls, each on the Sunday before expiry week. Back-adjustment is a later option. *(Superseded by the backend audit fixes — see "Backend audit fixes" at the end.)*
 - **A3 verified.** All dependencies install on Python 3.14.
 - NQ coverage: 2022-12-28 → 2026-09-24, 1,323,130 bars, 967 sessions, 9 holiday gaps. MNQ store covers 2025-03 → 2026-09 only.
 - **Tick data exists:** NQ from 2023-11, ~20 GB. The tick Bar Magnifier moves from "parked" to "available if 1-min parity falls short"; tick record layout not yet decoded.
@@ -362,7 +362,7 @@ class VaultBreak(Strategy):
   - Trade figures: net, gross profit/loss (sums of net winners/losers, as MC does), profit factor, trade counts (win/loss/even), percent profitable, averages, win:loss ratio, largest win and loss, max consecutive winners and losers (an even trade ends a streak), average bars in trade, commission, slippage, ambiguous fills.
   - Account figures:
     - Max close-to-close drawdown, on closed-trade equity.
-    - Max intraday peak-to-valley drawdown: bar-close equity peak before the bar vs. the bar's `equity_low`.
+    - Max intraday peak-to-valley drawdown: bar-close equity peak before the bar vs. the bar's `equity_low`. *(Superseded by the backend audit fixes — see "Backend audit fixes" at the end.)*
     - Return on account = net ÷ |intraday drawdown|.
     - Daily Sharpe: session-end equity changes, √252, no risk-free rate.
     - Trading days and open-position P/L.
@@ -450,13 +450,13 @@ class VaultBreak(Strategy):
   - Vault Break data (2022-12-28 → 2026-09-17) gives 11 windows: OOS 2024-01 → 2026-09, the last one partial.
 - **Warm-up (user decision, this session):** every run starts at the first bar of the data, so long-memory indicators (Vault Break's DailyATR) are warm in every window.
   - The engine is causal: later bars never change earlier trades or equity. A test proves this in both fill modes.
-  - So a run through a window's end is the start of a run over all the data. Each combination is backtested **once** over all the data, and every IS and OOS window is scored from that run (`metrics.window_metrics`: trades by entry bar, equity rebased at the window start). A trade still open at a window's end counts whole in its entry window.
+  - So a run through a window's end is the start of a run over all the data. Each combination is backtested **once** over all the data, and every IS and OOS window is scored from that run (`metrics.window_metrics`: trades by entry bar, equity rebased at the window start). A trade still open at a window's end counts whole in its entry window. *(Superseded by the backend audit fixes — see "Backend audit fixes" at the end.)*
   - Walk-forward costs one `optimize`, plus one re-run per distinct chosen input set. The re-runs rebuild the stitched equity curve.
 - **Selection and stitching:**
   - Each IS window's winner is rank 1 by the metric among runs with ≥ `min_trades` IS trades (the same `rank_results` as `optimize`; ties keep grid order).
   - If no combination qualifies, that OOS window sits out (flat).
   - The stitched curve covers the OOS bars only. For each window it takes the chosen inputs' equity, rebased so the curve continues.
-  - `boundary_trades` counts trades that span a window edge where the inputs change. There, the curve switches inputs while the trade list keeps each whole trade. Intraday Vault Break has 0.
+  - `boundary_trades` counts trades that span a window edge where the inputs change. There, the curve switches inputs while the trade list keeps each whole trade. Intraday Vault Break has 0. *(Superseded by the backend audit fixes — see "Backend audit fixes" at the end.)*
 - **Walk-forward efficiency (WFE)** = annualized OOS net ÷ annualized IS net of the chosen inputs (net per 365.25 calendar days of the window).
   - Overall figure: pooled over the windows that traded.
   - Undefined when IS profit is ≤ 0.
@@ -568,3 +568,32 @@ class VaultBreak(Strategy):
   - `propfirm` runs on the guban `trades.csv`.
 - **Open (not changed):**
   - ~~`StrategyError` bar numbers were 0-based~~ **Fixed (2026-09-29):** "failed at bar N" and "since bar N" are now 1-based, matching `current_bar` (MC CurrentBar). The two engine tests that pinned the old numbers were corrected.
+
+## Backend audit fixes (2026-09-29)
+The backend audit (FIX.md, findings #1–#15) is fixed in five commits ("Backend audit fixes, part 1–5"). Full suite:
+220 passed. What changed for users:
+- **Walk-forward (#1).** Every window, in sample and out of sample, is its own trading window: indicators warm up
+  from the first bar, but nothing fills before the window's first bar, and a position still open after its last bar is
+  closed at that bar's close (exit "Window End"). No later price reaches a window's score, and no position is carried
+  into a window. Windows that start on the same bar share one run (`run_backtest(trade_from=, window_ends=)`,
+  `BacktestResult.window`). The OOS stitch re-runs each traded window and checks final equity = Σ trade net.
+  `boundary_trades` = "Window End" exits. Vault Break WFO: 675 OOS trades, net 19,777.90, WFE 71%, 1 boundary trade
+  (the position open at the end of the data), 164 s on 6 workers (was 23.5 s).
+- **Drawdown (#2).** Intraday peak-to-valley drawdown follows the running equity peak along the intrabar path
+  (`equity_high`, `bar_drawdown`). Vault Break: max drawdown −7,315.00 (was −7,182.50); trades and net unchanged.
+- **Validation (#3, #5, #9, #10, #12, #13, #15).** Bars and sub-bars (finite numeric OHLC, geometry, volume), costs,
+  contract specs, order quantities, capital, grid / `--set` values (typed by the input's default), prop-firm rules
+  files (strict TOML types and ranges), and the binary importer (whole records, prices, volume, times) all reject bad
+  input with a message naming the fix. All 2,372 real minute files pass. Strategy errors in `__init__` / `on_start`
+  are friendly `StrategyError`s. Bars whose sub-bars don't reproduce their OHLC use the OHLC path.
+- **Parity (#4).** Counts and net use the exact window on both sides; the ±1-bar slack is for matching only.
+  Matching is optimal (most pairs, then least total time difference), not greedy. Empty inputs and zero nets handled.
+  Vault Break S3 unchanged: 300/302 matched, −0.23%, PASS.
+- **Data (#6, #8).** The volume roll decides each session from the previous session's volume (existing `--roll volume`
+  imports keep their old rolls until re-imported; MC-parity imports use `--roll expiry`, unchanged). `run` / `wfo`
+  report trades held across a roll. Bar caches carry a fingerprint (source, timeframe, session, `CACHE_VERSION`) and
+  every Parquet write is atomic.
+- **Engine hygiene (#7, #14).** Inputs are deep-copied per strategy instance; reusing an instance raises.
+- **Prop firm (#10, #11).** The bootstrap runs in bounded-memory batches with the notebook's exact draws; the report
+  labels the method's modeling assumptions. S6 unchanged: Vault Break MNQ 35.8%, 7,152 passed.
+
