@@ -442,8 +442,9 @@ def run_backtest(
             strategy.on_bar()
         except Exception as e:
             pos = broker.position
-            state = "flat" if pos is None else f"{pos.direction:+d} x{pos.qty} @ {pos.entry_price} since bar {pos.entry_bar}"
-            raise StrategyError(f"{type(strategy).__name__}.on_bar failed at bar {i} ({times[i]}), position {state}: {e!r}") from e
+            # bar numbers are 1-based, as the strategy sees them (current_bar, MC CurrentBar)
+            state = "flat" if pos is None else f"{pos.direction:+d} x{pos.qty} @ {pos.entry_price} since bar {pos.entry_bar + 1}"
+            raise StrategyError(f"{type(strategy).__name__}.on_bar failed at bar {i + 1} ({times[i]}), position {state}: {e!r}") from e
         equity[i] = eq = broker.closed_pnl + broker.open_pnl(closes[i])
         equity_low[i] = min(eq, broker.eq_low)
 

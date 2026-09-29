@@ -66,7 +66,7 @@ def test_series_rejects_history_before_first_bar_and_future():
         def on_bar(self):
             self.close[1]
 
-    with pytest.raises(StrategyError, match=r"bar 0 .*reaches before the first bar"):
+    with pytest.raises(StrategyError, match=r"bar 1 .*reaches before the first bar"):
         run_backtest(Bad(), make_bars([1, 2]), NQ)
 
     class Future(Strategy):
@@ -226,7 +226,8 @@ def test_strategy_exception_names_bar_and_position():
                 raise ZeroDivisionError("x")
 
     bars = make_bars([100, 101, 102])
-    with pytest.raises(StrategyError, match=r"bar 2 \(2024-01-02 09:45:00-05:00\), position \+1 x1 @ 101.0") as e:
+    # bar numbers match current_bar (1-based): raised on bar 3, entered at bar 2's open
+    with pytest.raises(StrategyError, match=r"bar 3 \(2024-01-02 09:45:00-05:00\), position \+1 x1 @ 101.0 since bar 2:") as e:
         run_backtest(Boom(), bars, NQ)
     assert isinstance(e.value.__cause__, ZeroDivisionError)
 

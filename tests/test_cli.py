@@ -114,7 +114,7 @@ def test_strategy_exception_prints_its_line_and_writes_nothing(workdir):
     res = runner.invoke(app, ["run", "boom.py", "--symbol", "NQ", "--fill-mode", "ohlc"])
     assert res.exit_code == 2
     assert isinstance(res.exception, SystemExit)  # no traceback
-    assert "Error: Boom.on_bar failed at bar" in res.output and "ZeroDivisionError" in res.output
+    assert "Error: Boom.on_bar failed at bar 5 (" in res.output and "ZeroDivisionError" in res.output  # = current_bar
     assert "boom.py\", line 9, in on_bar" in res.output and "return 1 / 0" in res.output
     assert not (workdir / "reports").exists()
 

@@ -567,4 +567,4 @@ class VaultBreak(Strategy):
   - `wfo`: OOS 19,877.60, WFE 71%, 20.3 s.
   - `propfirm` runs on the guban `trades.csv`.
 - **Open (not changed):**
-  - `StrategyError` says "bar 9" for the 10th bar, where `current_bar` is 10. The message uses the 0-based index, while strategies see MC-style 1-based `CurrentBar`. It is a one-line fix in `guban/engine/backtest.py`, not made because that file was outside this phase's read permission.
+  - ~~`StrategyError` bar numbers were 0-based~~ **Fixed (2026-09-29):** "failed at bar N" and "since bar N" are now 1-based, matching `current_bar` (MC CurrentBar). The two engine tests that pinned the old numbers were corrected.
