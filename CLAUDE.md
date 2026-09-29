@@ -29,16 +29,17 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - `guban wfo <strategy.py> --grid ... [run's data/cost flags]` walk-forwards inputs (`guban/wfo.py`, `guban/wfo_report.py`): `--is 12 --oos 3 --step 3` months, `--rolling/--anchored`, `--start`; writes `reports/<run>_wfo/trades.csv` (stitched OOS), `windows.csv`, `results.csv`, `wfo.json`, `wfo.html`. Each combination runs once over all the data and windows are scored from it (engine is causal — keep it that way: no strategy/engine code may look at future bars). Details in PLAN.md "Phase 8 results".
 - `guban propfirm --trades <trades.csv | MC csv/xlsx> --rules apex_50k_eod` runs the prop-firm evaluation Monte Carlo (`guban/propfirm/`, rules + sim settings in `config/propfirm/<rules>.toml`) and writes `reports/<trades>_<rules>/propfirm.json`, `sweep.csv`, `degradation.csv`, `daily.csv`, `propfirm.html`. It is a bit-exact port of the notebook (same RNG draw order) — keep it that way; notebook quirks (costs added on top of net profit, zero-trade weekdays in the pool) are ported as written and noted in the report. Details in PLAN.md "Phase 9 results".
 - MC costs: `Costs(commission, slippage)` USD per contract per round trip; slippage is charged half per market/stop fill, none on limit fills (MC behavior).
+- CLI conventions (`guban/cli.py`, Phase 10): `run`/`optimize`/`wfo` share module-level option objects (`SYMBOL`, `TZ`, `FILL_MODE`, ... — add new shared flags there, not per command; `tests/test_cli.py` checks they stay identical). `--out` is always a folder; default folders come from `run_dir()`. Commands are wrapped in `@_friendly`: expected failures (KeyError/ValueError/OSError/RuntimeError incl. `StrategyError`) print `Error: ...` (+ the strategy's own frames, also from worker processes) and exit 2; `compare` FAIL exits 1; `GUBAN_DEBUG=1` re-raises. Library code should raise those types with a message that names the fix. User docs: README.md.
 
 ## Data
-- Source store: `Database/<SYM>-CME/<YYYYMM contract>/Minute/<YYYYMMDD>.data` (binary, git-ignored, ~42 GB incl. Tick). Format documented in `src/guban/data/importer.py`.
+- Source store: `Database/<SYM>-CME/<YYYYMM contract>/Minute/<YYYYMMDD>.data` (binary, git-ignored, ~42 GB incl. Tick). It comes from **DeepCharts (dxFeed data)**, not MultiCharts (user, 2026-09-29) — so small price differences vs MC's feed are expected. Format documented in `src/guban/data/importer.py`.
 - `uv run guban import Database/NQ-CME --symbol NQ` → `data/NQ/1m.parquet` (unadjusted continuous, volume roll).
 - `uv run guban bars --symbol NQ --tf 5m --session rth` → session-aligned bars cached at `data/NQ/5m_rth.parquet` (`guban.data.resample.load_bars`).
 - Contract specs and session templates: `config/contracts.toml`, `config/sessions.toml` (loaded by `guban/config.py`).
 
 ## External inputs (read-only — never write to these)
 - MC strategies (PowerLanguage source): `C:\ProgramData\TS Support\MultiCharts64\StudyServer\Studies\SrcEl\Strategies\`
-- MC trade-list exports (parity oracle): `D:\Multi Charts\Performance Reports\CSV Data\*.csv`
+- MC trade-list exports (parity oracle): `D:\Multi Charts\Performance Reports\CSV Data\*.csv` (the user converts MC's Strategy Performance Report Excel export to this CSV; guban also reads the `.xlsx` List of Trades directly)
 - Prop-firm notebook being ported: `D:\Multi Charts\25k Prop Firm Accurate Rules.ipynb`
 
 ## Git

@@ -241,7 +241,7 @@ class VaultBreak(Strategy):
       Done when: with the same trades, seed, and inputs, the pass rate is within ±1 pp of the notebook's.
       Steps: port notebook cells 4–9 to `guban/propfirm/`; move the rules into `config/propfirm/apex_50k_eod.toml`; add a size sweep and degradation scenarios; output HTML charts; flag the notebook's $25k-vs-50K discrepancy to the user.
       Covers: R10, S6; checks: A10
-- [ ] Phase 10: CLI polish and README
+- [x] Phase 10: CLI polish and README (done 2026-09-29 — see Phase 10 results below)
       Done when: `uv run guban --help` lists all six commands; the README walks through import → run → compare → optimize → wfo → propfirm; the full `pytest` suite is green.
       Steps: consistent flags and run IDs; error messages for the failure cases above; README with the MC export instructions; update `CLAUDE.md`.
       Covers: all
@@ -530,3 +530,41 @@ class VaultBreak(Strategy):
   ```
   uv run guban propfirm --trades "D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv" --rules apex_50k_eod
   ```
+
+## Phase 10 results (2026-09-29)
+- **`uv run guban --help`** lists the commands in workflow order: import, bars, run, compare, optimize, wfo, propfirm. The epilog gives the workflow and the exit codes. `guban` with no arguments shows help; `guban --version` prints the version.
+- **Consistent flags** (`guban/cli.py`):
+  - `run`, `optimize` and `wfo` now build their data, cost and strategy flags from the same module-level option objects: `--symbol --contract --tf --session --history-from --tz --fill-mode --data-dir --commission --slippage --set --class`. So names, defaults and help cannot drift. `tests/test_cli.py` checks this.
+  - `--help` groups the flags into Data / Costs / Strategy / Optimization / Walk-forward / Output panels.
+  - Validation now happens before any data is loaded:
+    - `--fill-mode` accepts only magnifier or ohlc, and `import --roll` only volume or expiry.
+    - `--tz` and `compare --mc-tz` must be valid IANA time zone names.
+    - `import SOURCE` must be an existing folder.
+    - `optimize` and `wfo` share one `_parse_search` for `--grid`, `--set`, `--metric` and the 5,000-combination guard.
+  - `--out` is now a folder in every command. `compare --out` used to be a file path; a `.html` path is still accepted. `compare` gained `--open`.
+- **Run IDs:** `run_dir()` gives `reports/<strategy>_<symbol>_<tf>_<session>[_opt|_wfo]`. `<symbol>` becomes `NQ-MNQ` when `--contract` differs from `--symbol`, so those runs no longer overwrite each other. The `propfirm` and `compare` defaults are unchanged.
+- **Error messages** for the Edge Cases list, via `@_friendly` on every command:
+  - What it catches: KeyError, ValueError, OSError and RuntimeError, which includes `StrategyError` and worker failures.
+  - What it prints: one `Error: <library message>` line, then exit code **2**. `compare` FAIL stays exit 1. `GUBAN_DEBUG=1` re-raises with the full traceback.
+  - Cases checked: unknown symbol, session or time zone; a timeframe that does not divide the session; missing Parquet ("run `guban import` first"); a bad `--history-from`; a file that is not a trade list (`compare` used to raise a bare `KeyError: 'entry_time'`); a grid over 5,000 combinations; a bad `--set` or `--grid`.
+  - **Strategy exceptions:** the message names the bar, its timestamp and the position. It is followed by the frames from the strategy's own file (`File ".../boom.py", line 9, in on_bar`) and "no results were written".
+    - This also works inside `optimize` and `wfo` worker processes. The strategy frames are parsed from the text of `concurrent.futures`' `_RemoteTraceback`, because the worker's `StrategyError` reaches the parent as a plain RuntimeError.
+- **Bug fixed:** when stdout was piped or redirected on Windows (cp1252), the `optimize` and `wfo` summaries crashed on "−" and "→", after their files had been written. The CLI now switches non-console stdout and stderr to UTF-8.
+- **README.md** (was empty):
+  - Install, and where the two inputs come from:
+    - Bar data comes from **DeepCharts (dxFeed)**, not MultiCharts (user, this session). This replaces the plan's assumption that MC exports it.
+    - MC trade lists: Strategy Performance Report → Excel. guban reads the List of Trades sheet; the user's CSVs are a conversion of it.
+  - The MC chart settings that parity needs.
+  - A PowerShell walkthrough of import → run → compare → optimize → wfo → propfirm, with the Vault Break commands and their expected results.
+  - A strategy-writing guide, with an example that was run verbatim.
+  - Output folders, exit codes, configuration, and known limits.
+- **CLAUDE.md:** a CLI conventions bullet, plus the data source.
+- **Tests:** `tests/test_cli.py` has 22 tests. They cover the command list and order, version and no-args help, shared-flag identity, `run_dir`, default output folders, the `compare --out` folder, strategy-exception output and nothing being written, worker traceback parsing, 11 input-error cases, the missing-data message, UTF-8 redirect, and `GUBAN_DEBUG`. Full suite: 158 passed.
+- **Regression check:** results are unchanged.
+  - `run`: 737 trades, net 30,891.70, max drawdown −7,182.50, 3.3 s.
+  - `compare`: S3 PASS, 300/302 matched, −0.23% net.
+  - `optimize`: best 0.6/4 → 32,769.50, 15.6 s.
+  - `wfo`: OOS 19,877.60, WFE 71%, 20.3 s.
+  - `propfirm` runs on the guban `trades.csv`.
+- **Open (not changed):**
+  - `StrategyError` says "bar 9" for the 10th bar, where `current_bar` is 10. The message uses the 0-based index, while strategies see MC-style 1-based `CurrentBar`. It is a one-line fix in `guban/engine/backtest.py`, not made because that file was outside this phase's read permission.
