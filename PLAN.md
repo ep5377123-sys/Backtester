@@ -1,0 +1,267 @@
+# Plan: Guban Backtester — a Python backtester for CME futures that reproduces MultiCharts results
+
+One-line goal: You can write a futures strategy in Python, backtest it on multi-year 1-minute CME data exported from MultiCharts, get a MultiCharts-style performance report in the browser, optimize and walk-forward its inputs, and estimate prop-firm pass rates. The same strategy ported from MultiCharts produces the same trades MultiCharts did.
+
+## Classification
+Track: From scratch. The project folder `D:\Guban Backtester` is empty (verified: ran Get-ChildItem -Force -Recurse, no output). Parked secondary asks: multi-symbol portfolio backtesting (Q7), desktop/web GUI (Q1), running PowerLanguage `.el` files directly (Q5).
+
+## Interview Ledger
+- Q1 form factor → Python engine + CLI + interactive HTML reports (accepted recommended)
+- Q2 data source → own exported files (accepted recommended)
+- Q3 sample file → path offered but not supplied
+- Q4 file path → "elsewhere on my computer"; found by read-only disk search instead
+- Q5 strategy language → "Python for everything" (user)
+- Q6 history source → user will export data from MultiCharts (user)
+- Q7 v1 features → optimizer + walk-forward + prop-firm Monte Carlo; portfolio parked (user)
+- Q8 checkpoint: MC Bar Magnifier → ON, resolution 1-min or tick (user)
+- Q9 approval → via plan approval
+Total: 9 of 14.
+
+## Goal & Success Criteria
+- S1. `guban import <MC export>` turns a MultiCharts 1-minute export (NQ/MNQ, Jan 2021 onward) into a local Parquet store and prints its date range, bar count, and any session gaps.
+- S2. `guban run strategies/vault_break.py --symbol MNQ --tf 5m` finishes a 2021–2026 backtest in **≤ 15 s** on this PC and opens a self-contained HTML report with: summary metrics, equity curve, drawdown chart, trade list, and a price chart with trade markers.
+- S3. **Parity:** `guban compare` of the Python Vault Break port against `D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv` over the same dates meets all three:
+  - ≥ 95% of MC trades matched on entry time and direction.
+  - Matched trades' entry and exit prices within 1 tick.
+  - Total net profit within 3%.
+  - Every mismatch is listed in a diff report.
+- S4. `guban optimize` runs a grid search on all CPU cores and writes a ranked results table plus a 2-D heatmap to HTML.
+- S5. `guban wfo` runs rolling in-sample/out-of-sample windows and reports the stitched out-of-sample equity curve and walk-forward efficiency.
+- S6. `guban propfirm` reproduces the Apex EOD trailing-drawdown Monte Carlo from `25k Prop Firm Accurate Rules.ipynb`, run directly on a backtest's trades. With the same trade CSV, seed, and inputs, its pass rate is within ±1 percentage point of the notebook's.
+
+## Current State
+- The project folder is empty and not a git repo (verified: Get-ChildItem; environment reports "Is a git repository: false").
+- Python 3.14.4, uv 0.11.7, and git 2.54.0 are installed (verified: ran `python --version`, `uv --version`, `git --version`).
+- MultiCharts 16 is in use (verified: `D:\Multi Charts\MultiCharts_16_Release_7.exe`). Its bar history lives in `C:\ProgramData\TS Support\MultiCharts64\Databases\TSSTORAGE.GDB` (136 MB, Firebird; verified: Get-ChildItem). Python will not read it directly; the user will export from MultiCharts (user).
+- The user has ~30 PowerLanguage strategies in `C:\ProgramData\TS Support\MultiCharts64\StudyServer\Studies\SrcEl\Strategies\`, edited through Sep 2026 (verified: Get-ChildItem). Examples: `sc_Vaultc20Break.el`, `sb_VWAPb20GOAT.el`, and the IVB family.
+- Vault Break (verified: read `sc_Vaultc20Break.el`):
+  - Setup: 5-min NQ, RTH 09:30–16:00 ET, long only.
+  - Entry: when Close > SessOpen + NoiseMult×DailyATR and Close > VWAP, between 09:45 and 15:00, at most 3 trades a day.
+  - Exits: `SetProfitTarget` / `SetStopLoss` in dollars, a VWAP-cross exit, and a flatten at 15:50.
+  - Language features used: `Inputs`, `intrabarpersist` variables, `Date <> Date[1]`, `Buy … next bar at market`, `MarketPosition`.
+- MultiCharts trade-list exports sit in `D:\Multi Charts\Performance Reports\CSV Data\*.csv` (verified: Get-Content).
+  - Columns: `trade_id,order_id,type,signal,excel_date,excel_time,price,contracts,profit_usd,profit_pct,cum_profit_usd,cum_profit_pct,runup_usd,runup_pct,drawdown_usd,drawdown_pct,direction`.
+  - Earliest trades are Jan 2021 (excel date 44201).
+  - Times are Eastern chart time: the first Vault Break MNQ entry decodes to 2021-01-20 09:50 (verified: computed 0.40972×24h from that file's row 1).
+  - Profits appear to be net of costs: 5 contracts × 50 pts × $2 = $500 gross vs `profit_usd` 497.9 (verified: row 1 of `Vault Break MNQ.csv`; the inference is ~$2.10 per trade in costs).
+- One existing bar CSV format: `timestamp(ISO, UTC),open,high,low,close,volume`, MNQ 1-min, 2026-03-29 → 2026-04-24 only (verified: `D:\GitHub\we_model_code\data\MNQ_1m.csv`). This is not the history source.
+- A prop-firm Monte Carlo already exists as a Colab notebook: `D:\Multi Charts\25k Prop Firm Accurate Rules.ipynb` (verified: parsed the notebook).
+  - It covers Apex EOD trailing drawdown, commission of $2.25 and slippage of $5 per NQ contract, a bootstrap of daily P&L, a position-size sweep, and degradation scenarios.
+- **Housekeeping flag:** `we_model_code` and `trading-bot` each exist in three places (`D:\GitHub`, `D:\Users\ep537\OneDrive\Documents\GitHub`, `C:\Users\ep537\OneDrive\Documents\GitHub`) (verified: file search). This plan does not touch them, and nothing is copied from them into this repo.
+
+## Scope (v1)
+1. Importer for MultiCharts QuoteManager 1-minute ASCII exports. Output is a Parquet store per symbol, with a time-zone-normalized index (exchange time, America/New_York for display).
+2. Contract spec table and RTH/ETH session definitions. A resampler builds N-minute and daily bars from 1-minute data, aligned to session start.
+3. Bar-by-bar event-driven engine with a Python Strategy API that mirrors PowerLanguage behavior. Fill simulation has two modes: 1-minute Bar Magnifier (default) and OHLC-path.
+4. Commission and slippage model.
+5. Metrics (MultiCharts Strategy Performance Report core set), a self-contained HTML report, and a trade CSV in MultiCharts' export column layout.
+6. Parity harness (`guban compare`) against MultiCharts trade exports.
+7. Parameter grid optimizer, parallel across processes.
+8. Walk-forward analysis.
+9. Prop-firm Monte Carlo (port of the notebook).
+10. One ported strategy: Vault Break. It is the parity reference.
+
+## Out of Scope & Parked Items
+- **Multi-symbol portfolio backtesting** — parked by the user (Q7). The engine keeps one account per run.
+- **Desktop or web GUI** — parked (Q1). HTML reports are the UI.
+- **Running `.el` files or auto-translating them** — rejected by the user (Q5: "Python for everything"). Strategies are ported by hand, with Claude's help, one at a time.
+- **Tick-level backtesting and tick Bar Magnifier** — needs tick exports. It is parked until the 1-min parity tolerance proves insufficient.
+- **Genetic or Bayesian optimizer** — grid search only in v1.
+- **Live or paper trading, broker connectivity (Rithmic)** — not a backtester concern.
+- **Porting the other ~29 strategies** — done later, one at a time, using the same parity workflow.
+- **Numba/Cython acceleration** — only if S2's 15-second target is missed.
+
+## Approach
+A walking skeleton first: import real data, resample it, then run a trivial strategy end to end. Then build the engine, fills, and parity check around the Vault Break port. The analysis layers (report, optimizer, walk-forward, prop firm) come after that, because they only consume the engine's trade list.
+
+**Engine loop.**
+- Iterate over the strategy timeframe's bars (e.g. 5-min).
+- At each bar close, call `strategy.on_bar()`. Orders it places are "next bar" orders, as in PowerLanguage.
+- Market orders fill at the next bar's open, plus slippage.
+- Stop, limit, and dollar stop-loss/profit-target exits are evaluated inside the next bar:
+  - **Magnifier mode (default):** walk the 1-minute sub-bars in order. Inside one 1-minute bar, apply MC's OHLC path rule: whichever of high or low is nearer the open is assumed to be hit first.
+  - **OHLC-path mode:** apply the same rule to the whole strategy bar.
+- `set_stop_loss` and `set_profit_target` stay active while a position is open, and are evaluated from the entry fill onward, including the entry bar's remaining sub-bars.
+
+**Strategy API (executor may refine the names, not the behavior):**
+```python
+class VaultBreak(Strategy):
+    inputs = dict(noise_mult=0.60, daily_atr_len=14, earliest_entry=945, latest_entry=1500,
+                  max_trades_per_day=3, vwap_exit_bars=2, take_profit_usd=1000,
+                  stop_loss_usd=2000, flatten_time=1550, num_contracts=1)
+    def on_bar(self):
+        if self.date != self.date_[1]: ...           # series lookback: self.close[1]
+        self.buy("VB_Long", qty, at="market")          # next bar at market
+        self.sell("VB_TimeX", qty, at="market")
+        self.set_profit_target(self.p.take_profit_usd) # per-position dollars, like MC
+        self.set_stop_loss(self.p.stop_loss_usd)
+        self.market_position                           # -1 / 0 / 1
+```
+- Series such as `close`, `high`, and `date` support `[n]` lookback.
+- Plain instance attributes play the role of `intrabarpersist` variables.
+- Executor's choice: internal module layout, class names, and plotting details.
+
+**Parity loop.** Port Vault Break literally, line by line, with no "improvements". Get the inputs used for the MC run from the matching `.xlsx` report. Run `guban compare`, study the mismatches, and fix engine semantics (not the strategy) until S3 passes.
+
+## Requirements
+- **R1.** WHEN `guban import <file> --symbol MNQ` is given a MultiCharts 1-min ASCII export, THE SYSTEM SHALL write `data/MNQ/1m.parquet`, de-duplicate timestamps, and print the first and last bar, the bar count, and missing-session days.
+  - Check: test on a 3-day fixture, plus a real-file run.
+- **R2.** WHEN a strategy requests timeframe N-min, THE SYSTEM SHALL build bars from 1-min data aligned to the session open (RTH 09:30 ET → first 5-min bar labeled 09:35 by its close time, matching MC's close-time bar labels).
+  - Check: a unit test comparing against hand-built bars.
+- **R3.** WHEN `on_bar` places a market order, THE SYSTEM SHALL fill it at the next bar's open ± slippage, never on the signal bar.
+  - Check: a unit test on synthetic bars.
+- **R4.** WHEN a position has a dollar stop and target and both lie inside one strategy bar, THE SYSTEM SHALL decide the order of hits from the 1-min sub-bars (magnifier mode), or from the OHLC path rule (OHLC mode).
+  - Check: two synthetic-bar tests, one per mode.
+- **R5.** THE SYSTEM SHALL compute dollar P&L from the contract spec: points × point value × contracts − commission − slippage. Both NQ ($20/pt, 0.25 tick) and MNQ ($2/pt) are in the spec table [A2].
+  - Check: a unit test.
+- **R6.** WHEN a backtest finishes, THE SYSTEM SHALL write `reports/<run>/report.html` (self-contained, opens offline), `trades.csv` (MC export column layout), and `metrics.json`.
+  - Metrics: net profit, gross profit/loss, profit factor, total trades, % profitable, avg trade, avg win/loss, largest win/loss, max strategy drawdown (close-to-close and intraday peak-to-valley), max consecutive losers, return on account, Sharpe (daily).
+  - Check: metrics tests against a hand-computed 5-trade fixture.
+- **R7.** WHEN `guban compare --ours trades.csv --mc <MC csv>` runs, THE SYSTEM SHALL match trades by entry time ±1 strategy bar and direction, and print the S3 statistics, and write `diff.html` listing unmatched and price-mismatched trades.
+  - Check: a fixture test plus S3.
+- **R8.** WHEN `guban optimize` receives input ranges, THE SYSTEM SHALL run every combination with a process pool sized to CPU cores, and rank the results by a chosen metric (default net profit, with a minimum-trades filter).
+  - Check: a test on a 2×2 grid; results must equal four separate runs.
+- **R9.** WHEN `guban wfo` receives the in-sample length, out-of-sample length, and step (default 12 months / 3 months / 3 months, rolling), THE SYSTEM SHALL optimize each in-sample window, run the best inputs on the next out-of-sample window, and stitch the out-of-sample trades into one report with walk-forward efficiency = annualized OOS profit ÷ annualized IS profit.
+  - Check: a test that no OOS window overlaps its IS window.
+- **R10.** WHEN `guban propfirm --trades trades.csv --rules apex_50k_eod` runs, THE SYSTEM SHALL run the notebook's day-based Monte Carlo (EOD trailing drawdown, profit target, max trading days, cost model, size sweep, degradation scenarios), with rules held in a config file.
+  - Check: S6 comparison against the notebook.
+- **R11.** A backtest SHALL be deterministic: the same data, inputs, and seed produce byte-identical `trades.csv`.
+  - Check: a test that runs twice and diffs the output.
+
+## Key Decisions
+- **Form factor:** Python library + CLI + HTML reports (user, Q1).
+- **Strategy language:** Python only, with PowerLanguage-like behavior (user, Q5).
+- **Data source:** MultiCharts 1-min exports (user, Q6). Strategy timeframes are resampled from 1-min.
+- **Bar Magnifier:** default mode uses 1-min sub-bars, matching the user's MC setting (user, Q8). OHLC-path mode is kept as an option.
+- **Language and tooling:** Python 3.14 managed with uv (verified: installed versions).
+- **Libraries:** pandas, numpy, pyarrow, plotly (self-contained HTML), typer (CLI), pytest [A3].
+- **Storage:** Parquet files per symbol and timeframe under `data/`. No database — this is the simplest store that fits ~2M rows.
+- **Engine style:** a plain Python loop, not vectorized. PowerLanguage semantics (stateful, path-dependent exits) require it [A4].
+- **Time zone:** store bars in America/New_York, which is chart time in the MC exports (verified: decoded the excel_time of row 1), with DST handled by pandas tz-aware indexes [A5].
+- **Version control:** `git init` in Phase 1, and generate a `CLAUDE.md` for the repo (global instruction: new repos get a CLAUDE.md).
+
+## Data & State Changes
+- New files only:
+  - `data/<SYMBOL>/1m.parquet` (plus a cached `<tf>.parquet` for each resampled timeframe).
+  - `reports/<run-id>/…` outputs.
+  - `config/contracts.toml`, `config/sessions.toml`, `config/propfirm/*.toml`.
+- Nothing outside `D:\Guban Backtester` is written. MultiCharts' database, strategies, and exports are read only.
+- Rollback: delete `data/` and re-import.
+- Add `data/` and `reports/` to `.gitignore`.
+
+## Interfaces, Integrations & Credentials
+- **CLI:** `guban import | run | compare | optimize | wfo | propfirm` (typer).
+- **Inputs:**
+  - MC QuoteManager ASCII export. The format is not yet seen [A1]; the importer is written against a real file in Phase 1.
+  - MC trade-list CSV (verified format, above).
+- **Outputs:** HTML, CSV, and JSON only.
+- **Credentials:** none. No network access is needed after `uv sync`.
+
+## Edge Cases & Failure Handling
+- **Export has duplicate or out-of-order timestamps** → sort and drop duplicates, and report the count.
+- **Missing session days** (holidays, gaps) → listed in the import summary. The engine skips them; no forward-fill.
+- **Daylight-saving transitions** → tz-aware index. A DST-week fixture test checks that the RTH 09:30 open stays 09:30.
+- **Contract rolls in continuous data** → the plan assumes MC's export is already a continuous series [A6]. Roll gaps show up as large bar-to-bar jumps, and the importer flags jumps above 2% on roll weeks.
+- **Stop and target both hit within one 1-min sub-bar** → OHLC path rule applied to that sub-bar. These trades are counted in the report as "ambiguous fills".
+- **Strategy raises an exception** → stop and print the bar timestamp and strategy state. Partial results are not reported as complete.
+- **Optimizer grid larger than 5,000 combinations** → warn and require `--yes`.
+- **Wrong symbol/spec, or a timeframe not divisible into the session** → fail loudly before running.
+
+## Risks, Landmines & Adaptations
+- **The user's strategies are PowerLanguage, but the user wants Python only** → no interpreter. Strategies are ported by hand, and the MC trade exports become the correctness oracle (the S3 parity gate).
+- **MC Bar Magnifier was on (Q8), at 1-min or tick** → default fill mode is a 1-min magnifier. If MC used tick resolution, a few same-bar stop/target trades will legitimately differ. That is why S3 is set at 95% matched with a 3% profit tolerance, not 100%, and why the diff report tags ambiguous fills.
+- **Multi-year history is only inside MC's Firebird DB** → the user exports it (Q6). Phase 1 is gated on a real export file.
+- **Session template drives `Date <> Date[1]` logic** → Vault Break's session-open and ATR calculations assume RTH bars. The parity run uses an RTH session; running it on ETH data would silently change the results [A7].
+- **MC export profits are net of costs (~$2.10/trade observed)** → the parity run uses cost settings recovered from the MC `.xlsx` report, or inferred from gross-vs-net differences [A8].
+- **Performance of a Python loop** → the 15-second target is checked in Phase 5. Fallback: precompute series with numpy and only drop to sub-bars when an order is pending (already the design). Numba only if still slow.
+
+## Assumptions Ledger
+| ID | Assumption | Basis | Blast radius if wrong | Check |
+|----|-----------|-------|----------------------|-------|
+| A1 | MC QuoteManager ASCII export is a delimited text file with date, time, O, H, L, C, volume columns | Usual MC ASCII export shape; not seen this session | Importer rewrite (small) | Phase 1: read the real export's first lines before coding the parser |
+| A2 | NQ = $20/pt, MNQ = $2/pt, tick 0.25 | Consistent with Vault Break comments ("$1,000 = 50 NQ pts") (verified) and row 1 of the MNQ export math | Wrong P&L | Phase 2: unit test + parity |
+| A3 | pandas/numpy/pyarrow/plotly/typer/pytest install cleanly on Python 3.14 | Mainstream packages; wheels not verified | Pin to Python 3.13 via uv | Phase 1: `uv sync` succeeds |
+| A4 | A pure-Python loop over ~110k 5-min bars (+ sub-bars on pending orders) runs in ≤15 s | Rough count: 5.5 yrs × 252 d × 78 bars | Speed-up phase needed | Phase 5 timing |
+| A5 | The MC export's timestamps are in the same Eastern chart time as the trade exports | Trade exports decode to ET (verified) | All times shift → parity fails | Phase 1: check that the first RTH bar lands at 09:31 (1-min close-time label) |
+| A6 | The MC export is a continuous series (e.g. NQ continuous), not per-contract files | The user said they will export from MC (user); MC charts normally use continuous symbols | Add a roll/back-adjust step | Phase 1: inspect the export and check for roll jumps |
+| A7 | The MC Vault Break parity run used the RTH session, 5-min bars | Strategy header says "5-minute bars, RTH (09:30–16:00 ET)" (verified) | Parity fails | Phase 5: check the `.xlsx` settings; try ETH if the match rate is low |
+| A8 | MC run inputs and costs can be recovered from `Vault Break MNQ 500$ risk.xlsx` | Filename match; xlsx not opened yet | Guess inputs → parity harder | Phase 5: open the xlsx with pandas/openpyxl |
+| A9 | Walk-forward defaults: 12-month IS / 3-month OUT, rolling | Common starting point; the user gave no numbers | Only defaults change | Exposed as CLI flags |
+| A10 | Prop-firm rules to ship: Apex 50K EOD as in the notebook (including its $25k/$1,250/$1,000 values as written) | Verified from notebook cell 6 | Wrong pass rates | Rules in TOML; the user reviews the values in Phase 9 |
+
+## Open Items (none blocking)
+- Which of the other ~29 strategies to port next — proceed with none until Vault Break passes parity.
+- Whether MC's magnifier was 1-min or tick — proceed with 1-min. Revisit only if S3 fails because of ambiguous fills.
+- The notebook's Apex values ($25k account labeled "50K") look inconsistent — proceed with them as written and flag them to the user in Phase 9.
+
+## Verification
+- `uv run pytest` — unit tests for importer, resampler, fills (both modes), costs, metrics, optimizer equivalence, WFO window separation, and determinism.
+- `uv run guban import <real export> --symbol MNQ` → the printed summary shows 2021 → 2026 coverage.
+- `uv run guban run strategies/vault_break.py --symbol MNQ --tf 5m` → it finishes in ≤15 s (time it) and `report.html` opens offline.
+- `uv run guban compare --ours reports/<run>/trades.csv --mc "D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv"` → prints the S3 statistics, which must pass.
+- `uv run guban optimize … --grid noise_mult=0.4:1.0:0.1 vwap_exit_bars=1:4` → heatmap HTML.
+- `uv run guban wfo …` → stitched OOS report.
+- `uv run guban propfirm --trades <MC csv>` vs the notebook with the same seed → pass rate within ±1 pp.
+- **How you confirm it's done:** open the Vault Break `report.html` next to MultiCharts' report for the same run, and compare net profit, trade count, and max drawdown.
+
+## Build Phases
+- [x] Phase 1: Walking skeleton on real data (done 2026-09-28 — see Phase 1 results below)
+      Done when: `uv run guban import <real MC export> --symbol MNQ` writes `data/MNQ/1m.parquet` and prints a 2021→2026 summary; `uv run pytest` passes.
+      Steps: ask the user for the MC 1-min export file path (they said they will export it) and read its first 20 lines to verify A1/A5/A6; `git init`, `uv init`, add dependencies, `uv sync` (A3); write `CLAUDE.md` and `.gitignore`; implement the importer with a fixture test; run it on the real file.
+      Covers: R1; checks: A1, A3, A5, A6
+- [x] Phase 2: Contract specs, sessions, resampler (done 2026-09-28 — see Phase 2 results below)
+      Done when: tests prove 5-min RTH bars built from 1-min match hand-built bars, including a DST week.
+      Steps: `config/contracts.toml` (NQ, MNQ, ES, MES); `config/sessions.toml` (RTH 09:30–16:00 ET, ETH); resample N-min and daily with close-time labels; cache results to Parquet.
+      Covers: R2, R5; checks: A2
+- [ ] Phase 3: Engine core and Strategy API
+      Done when: a synthetic-bar test shows a market order placed on bar t fills at bar t+1's open ± slippage, and positions, trades, and P&L are correct.
+      Steps: Series with `[n]` lookback; Strategy base (inputs, on_bar, buy/sell/sell_short/buy_to_cover, market_position); order book; position and trade ledger; commission and slippage; determinism test.
+      Covers: R3, R5, R11
+- [ ] Phase 4: Exits and intrabar fill modes
+      Done when: synthetic tests for dollar stop/target, stop and limit orders, and same-bar stop+target pass in both magnifier and OHLC modes.
+      Steps: `set_stop_loss` / `set_profit_target` (per position, active from entry); stop and limit next-bar orders; magnifier walk over 1-min sub-bars; OHLC path rule; ambiguous-fill tagging.
+      Covers: R4
+- [ ] Phase 5: Port Vault Break and pass the parity gate
+      Done when: `guban compare` against `Vault Break MNQ.csv` meets S3, and the backtest time is ≤15 s.
+      Steps: open `Vault Break MNQ 500$ risk.xlsx` to recover inputs, costs, and session (A7, A8); port `sc_Vaultc20Break.el` line by line to `strategies/vault_break.py`; implement `guban compare` and `diff.html`; iterate on engine semantics until the thresholds pass; time the run (A4).
+      Covers: R7, S3; checks: A4, A7, A8
+- [ ] Phase 6: Metrics and HTML report
+      Done when: metrics tests pass on the hand-computed fixture, and the Vault Break `report.html` opens offline with equity, drawdown, trade list, and a price chart with trades.
+      Steps: metrics module; MC-layout `trades.csv`; `metrics.json`; plotly self-contained HTML report.
+      Covers: R6, S2
+- [ ] Phase 7: Parameter optimizer
+      Done when: the 2×2 grid equivalence test passes, and a Vault Break grid produces a ranked table plus a heatmap.
+      Steps: grid spec parser; ProcessPoolExecutor, with data loaded once per worker; ranking and min-trades filter; heatmap; guard for grids over 5,000 combinations.
+      Covers: R8, S4
+- [ ] Phase 8: Walk-forward analysis
+      Done when: the IS/OOS no-overlap test passes, and the Vault Break WFO report shows stitched OOS equity and walk-forward efficiency.
+      Steps: window generator (rolling and anchored); per-window optimize → OOS run; stitch the trades; WFO report section.
+      Covers: R9, S5; checks: A9
+- [ ] Phase 9: Prop-firm Monte Carlo
+      Done when: with the same trades, seed, and inputs, the pass rate is within ±1 pp of the notebook's.
+      Steps: port notebook cells 4–9 to `guban/propfirm/`; move the rules into `config/propfirm/apex_50k_eod.toml`; add a size sweep and degradation scenarios; output HTML charts; flag the notebook's $25k-vs-50K discrepancy to the user.
+      Covers: R10, S6; checks: A10
+- [ ] Phase 10: CLI polish and README
+      Done when: `uv run guban --help` lists all six commands; the README walks through import → run → compare → optimize → wfo → propfirm; the full `pytest` suite is green.
+      Steps: consistent flags and run IDs; error messages for the failure cases above; README with the MC export instructions; update `CLAUDE.md`.
+      Covers: all
+
+---
+**Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
+
+## Phase 1 results (2026-09-28)
+- **A1 replaced.** The user supplied a binary per-contract store, not an ASCII export. Layout: `Database/<SYM>-CME/<YYYYMM>/{Minute,Tick}/<YYYYMMDD>.data`, one Globex session per file. Minute record = 60 bytes: int64 .NET ticks (ET wall-clock, bar open time), f8 high/low/open/close, i4 bid_vol/ask_vol/volume/volume/unused (verified: decoded files, field order inferred statistically: field0 is always the max, field1 always the min, close[t]==open[t+1] continuity).
+- **A5 verified.** Timestamps are Eastern time. The volume spikes land on the 09:31 and 16:00 bars (close-time labels) in both winter and summer.
+- **A6 falsified → adapted.** Data is per-contract. The importer builds an unadjusted continuous series, picking the highest-volume contract each session and never rolling back. There were 16 rolls, each on the Sunday before expiry week. Back-adjustment is a later option.
+- **A3 verified.** All dependencies install on Python 3.14.
+- NQ coverage: 2022-12-28 → 2026-09-24, 1,323,130 bars, 967 sessions, 9 holiday gaps. MNQ store covers 2025-03 → 2026-09 only.
+- **Tick data exists:** NQ from 2023-11, ~20 GB. The tick Bar Magnifier moves from "parked" to "available if 1-min parity falls short"; tick record layout not yet decoded.
+- MC trade CSVs wrap each whole line in quotes. The parity parser must strip them. Vault Break MNQ.csv has 744 of 1,081 rows inside the NQ data range.
+
+## Phase 2 results (2026-09-28)
+- `config/contracts.toml` (NQ $20, MNQ $2, ES $50, MES $5; tick 0.25) and `config/sessions.toml` (RTH 09:30–16:00, ETH 18:00–17:00 overnight), loaded by `guban/config.py`. `ContractSpec.pnl()` = points × point value × contracts − (commission + slippage) × contracts, with costs defined **per contract per round trip** (Phase 3 may refine this).
+- `guban/data/resample.py`: N-minute bins counted from the session open, labeled by close time; bins are capped at the session close; gaps are not filled; daily bars are labeled at the session close; every bar carries `session_date` (trading date — an ETH session's evening bars belong to the next day). A timeframe that does not divide the session raises unless `allow_partial=True`.
+- Cache: `data/<SYM>/<N>m_<session>.parquet` / `1d_<session>.parquet`, rebuilt when `1m.parquet` is newer. CLI: `guban bars --symbol NQ --tf 5m --session rth`.
+- Tests (A2 checked): hand-built 5m RTH bars, spring and fall DST weeks, the ETH overnight bin that crosses midnight, gaps, daily, non-divisible timeframe, cache invalidation, and contract P&L.
+- Real NQ: 73,906 5m RTH bars across 964 sessions, 78 per normal day; 37 short sessions (holidays and early closes, plus the truncated last day). Building from 1m takes ~1.4 s.
+- Open point for Phase 5: on early-close days a daily bar is still labeled 16:00, not at the actual last bar. This only matters if MC labels it differently.

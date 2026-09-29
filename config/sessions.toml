@@ -1,0 +1,14 @@
+# Session templates, Eastern wall-clock time (America/New_York).
+# A bar belongs to a session when its CLOSE time t satisfies start < t <= end.
+# If end <= start the session runs overnight: it opens on the previous calendar day and its
+# trading date is the day it ends on (e.g. Sunday 18:00 -> Monday 17:00 is Monday's session).
+
+[rth]
+name = "Regular trading hours"
+start = "09:30"
+end = "16:00"
+
+[eth]
+name = "Globex electronic trading hours"
+start = "18:00"
+end = "17:00"

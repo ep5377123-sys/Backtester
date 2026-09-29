@@ -1,0 +1,138 @@
+import os
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from guban.data.resample import cache_path, load_bars, parse_timeframe, resample
+
+TZ = "America/New_York"
+
+
+def one_minute(start: str, end: str, seed: int = 0) -> pd.DataFrame:
+    """Synthetic 1-min bars labeled by close time from `start` to `end` inclusive (ET wall clock)."""
+    idx = pd.date_range(start, end, freq="1min", tz=TZ)
+    rng = np.random.default_rng(seed)
+    close = 15000 + np.cumsum(rng.integers(-8, 9, len(idx))) * 0.25
+    open_ = np.r_[close[0], close[:-1]]
+    high = np.maximum(open_, close) + rng.integers(0, 5, len(idx)) * 0.25
+    low = np.minimum(open_, close) - rng.integers(0, 5, len(idx)) * 0.25
+    vol = rng.integers(1, 100, len(idx))
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": vol, "bid_vol": vol // 2, "ask_vol": vol - vol // 2},
+        index=pd.DatetimeIndex(idx, name="time"),
+    )
+
+
+def hand_bar(m: pd.DataFrame, first: str, last: str) -> dict:
+    """Aggregate the 1-min bars with close times first..last (inclusive) by hand."""
+    x = m.loc[first:last]
+    return dict(open=x.open.iloc[0], high=x.high.max(), low=x.low.min(), close=x.close.iloc[-1], volume=x.volume.sum())
+
+
+def bar(df: pd.DataFrame, i: int) -> dict:
+    r = df.iloc[i]
+    return dict(open=r.open, high=r.high, low=r.low, close=r.close, volume=r.volume)
+
+
+def test_parse_timeframe():
+    assert parse_timeframe("5m") == 5
+    assert parse_timeframe("1h") == 60
+    assert parse_timeframe("15min") == 15
+    assert parse_timeframe("1d") is None
+    with pytest.raises(ValueError):
+        parse_timeframe("0m")
+    with pytest.raises(ValueError):
+        parse_timeframe("5s")
+
+
+def test_rth_5min_matches_hand_built_bars():
+    m = one_minute("2024-03-05 09:00", "2024-03-05 16:30")  # includes pre- and post-RTH bars
+    b = resample(m, "5m", "rth")
+    assert len(b) == 78
+    assert b.index[0] == pd.Timestamp("2024-03-05 09:35", tz=TZ)
+    assert b.index[-1] == pd.Timestamp("2024-03-05 16:00", tz=TZ)
+    assert bar(b, 0) == hand_bar(m, "2024-03-05 09:31", "2024-03-05 09:35")
+    assert bar(b, 1) == hand_bar(m, "2024-03-05 09:36", "2024-03-05 09:40")
+    assert bar(b, -1) == hand_bar(m, "2024-03-05 15:56", "2024-03-05 16:00")
+    assert (b.session_date == pd.Timestamp("2024-03-05")).all()
+    # every in-session 1-min bar is used exactly once
+    assert b.volume.sum() == m.between_time("09:31", "16:00").volume.sum()
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [("2024-03-08", "2024-03-11"), ("2024-11-01", "2024-11-04")],  # spring-forward and fall-back weekends
+    ids=["spring", "fall"],
+)
+def test_dst_week_keeps_rth_open_at_0930(before, after):
+    m = pd.concat([one_minute(f"{d} 09:00", f"{d} 16:30", seed=i) for i, d in enumerate([before, after])])
+    b = resample(m, "5m", "rth")
+    for d in (before, after):
+        day = b[b.session_date == pd.Timestamp(d)]
+        assert len(day) == 78
+        assert day.index[0].strftime("%H:%M") == "09:35"
+        assert day.index[-1].strftime("%H:%M") == "16:00"
+        assert bar(day, 0) == hand_bar(m, f"{d} 09:31", f"{d} 09:35")
+    offsets = {b[b.session_date == pd.Timestamp(d)].index[0].utcoffset() for d in (before, after)}
+    assert len(offsets) == 2  # the UTC offset changed across the weekend, the wall-clock open did not
+
+
+def test_eth_overnight_session_belongs_to_next_trading_day():
+    m = one_minute("2024-03-10 18:01", "2024-03-11 17:00")  # Sunday evening (after DST switch) -> Monday
+    b = resample(m, "60m", "eth")
+    assert len(b) == 23
+    assert b.index[0] == pd.Timestamp("2024-03-10 19:00", tz=TZ)
+    assert b.index[-1] == pd.Timestamp("2024-03-11 17:00", tz=TZ)
+    assert (b.session_date == pd.Timestamp("2024-03-11")).all()
+    assert bar(b, 0) == hand_bar(m, "2024-03-10 18:01", "2024-03-10 19:00")
+    assert bar(b, 6) == hand_bar(m, "2024-03-11 00:01", "2024-03-11 01:00")  # bin that crosses midnight
+
+
+def test_gaps_are_not_filled():
+    m = one_minute("2024-03-05 09:31", "2024-03-05 10:00")
+    m = m.drop(m.loc["2024-03-05 09:36":"2024-03-05 09:40"].index)  # a whole 5-min bin missing
+    m = m.drop(m.loc["2024-03-05 09:43":"2024-03-05 09:44"].index)  # a partially missing bin
+    b = resample(m, "5m", "rth")
+    assert list(b.index.strftime("%H:%M")) == ["09:35", "09:45", "09:50", "09:55", "10:00"]
+    assert bar(b, 1) == hand_bar(m, "2024-03-05 09:41", "2024-03-05 09:45")
+
+
+def test_daily_bars_one_per_session_labeled_at_close():
+    m = pd.concat([one_minute(f"{d} 09:00", f"{d} 16:30", seed=i) for i, d in enumerate(["2024-03-05", "2024-03-06"])])
+    d = resample(m, "1d", "rth")
+    assert list(d.index) == [pd.Timestamp("2024-03-05 16:00", tz=TZ), pd.Timestamp("2024-03-06 16:00", tz=TZ)]
+    assert bar(d, 0) == hand_bar(m, "2024-03-05 09:31", "2024-03-05 16:00")
+    assert bar(d, 1) == hand_bar(m, "2024-03-06 09:31", "2024-03-06 16:00")
+
+
+def test_timeframe_not_dividing_session_fails_loudly():
+    m = one_minute("2024-03-05 09:31", "2024-03-05 16:00")
+    with pytest.raises(ValueError, match="does not divide"):
+        resample(m, "7m", "rth")
+    b = resample(m, "7m", "rth", allow_partial=True)
+    assert b.index[-1] == pd.Timestamp("2024-03-05 16:00", tz=TZ)  # 390 = 55*7 + 5: last bar is short
+    assert bar(b, -1) == hand_bar(m, "2024-03-05 15:56", "2024-03-05 16:00")
+
+
+def test_contract_column_is_carried():
+    m = one_minute("2024-03-05 09:31", "2024-03-05 09:40")
+    m["contract"] = pd.Categorical(["202403"] * 7 + ["202406"] * 3)
+    b = resample(m, "5m", "rth")
+    assert list(b.contract.astype(str)) == ["202403", "202406"]
+
+
+def test_load_bars_caches_and_rebuilds_when_source_changes(tmp_path):
+    src = tmp_path / "NQ" / "1m.parquet"
+    src.parent.mkdir()
+    one_minute("2024-03-05 09:00", "2024-03-05 16:30").to_parquet(src)
+    first = load_bars("NQ", "5m", "rth", tmp_path)
+    cached = cache_path("NQ", "5m", "rth", tmp_path)
+    assert cached.name == "5m_rth.parquet" and cached.exists()
+    pd.testing.assert_frame_equal(load_bars("NQ", "5m", "rth", tmp_path), first)
+
+    one_minute("2024-03-06 09:00", "2024-03-06 16:30").to_parquet(src)
+    later = cached.stat().st_mtime + 10
+    os.utime(src, (later, later))
+    rebuilt = load_bars("NQ", "5m", "rth", tmp_path)
+    assert (rebuilt.session_date == pd.Timestamp("2024-03-06")).all()

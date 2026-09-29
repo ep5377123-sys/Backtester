@@ -1,0 +1,28 @@
+[project]
+name = "guban"
+version = "0.1.0"
+description = "CME futures backtester with MultiCharts parity"
+readme = "README.md"
+authors = [
+    { name = "ep5377123-sys", email = "ep5377123@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.5.3",
+    "pandas>=3.0.6",
+    "plotly>=7.1.0",
+    "pyarrow>=25.0.1",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+guban = "guban.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
