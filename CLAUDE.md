@@ -9,6 +9,12 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - Files the user tells you to edit count as designated. Files you create in this session may be re-read.
 - **Exception — bug fixes (user, 2026-09-29):** when fixing a bug (one the user reports, or one found while working), read whatever files are required to fix it without asking, and don't report which files you read — just fix it. The rule above still applies to all other (non-bug-fix) work.
 
+## Running a backtest (user, 2026-09-29)
+- When the user says "run a backtest" (or similar), invoke the `run-backtest` skill (`.claude/skills/run-backtest/SKILL.md`):
+  ask which strategy (Glob `strategies/*.py`, names only), run `guban run` on NQ with the MC-parity flags and `--open`
+  so `report.html` opens in the browser, then summarize the results. Don't run propfirm/compare/optimize/wfo unless asked.
+- Command guide for every guban command: [USE.md](USE.md).
+
 ## Stack & commands
 - Python 3.14, managed with uv. Package lives in `src/guban/`.
 - Install: `uv sync` · Tests: `uv run pytest` · CLI: `uv run guban --help`
