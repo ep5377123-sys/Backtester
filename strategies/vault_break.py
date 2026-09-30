@@ -3,9 +3,11 @@
 LONG:  Close breaks above the upper noise boundary (session open + NoiseMult x DailyATR) and above VWAP.
 EXIT:  profit target / stop loss in dollars per position, a VWAP cross held for N bars, or flatten at FlattenTime.
 
-MC setup this port reproduces (recovered from the Vault Break MNQ trade export): 5-minute bars, chart in
-exchange time (America/Chicago), 24-hour Globex session. So Time/Date and the input times below are Central,
-`Date <> Date[1]` fires at midnight CT, and a "day" is a calendar date, Sunday evenings included.
+Chart time is Eastern (user, 2026-09-29): run with `--tz America/New_York`, 5-minute bars, 24-hour Globex
+session. So Time/Date and the input times below are Eastern, `Date <> Date[1]` fires at midnight ET, and a
+"day" is a calendar date, Sunday evenings included. The MC chart this was ported from (Vault Break MNQ trade
+export) ran in exchange time (America/Chicago) with LatestEntry 1500 / FlattenTime 1550 CT, so this version no
+longer reproduces that export trade for trade.
 
 DailyATR is the running mean of every completed day's range since the first bar (RngSum / RngCnt never roll
 off), so it depends on where the data starts. atr_seed_sum / atr_seed_count / sess_count_seed stand in for
@@ -23,9 +25,9 @@ class VaultBreak(Strategy):
         # Noise boundary
         noise_mult=0.60,
         daily_atr_len=14,
-        # Entry timing (HHMM, chart time)
-        earliest_entry=945,
-        latest_entry=1500,
+        # Entry timing (HHMM, chart time = Eastern)
+        earliest_entry=1045,
+        latest_entry=1530,
         # Re-entry
         max_trades_per_day=3,
         # VWAP exit
@@ -33,7 +35,7 @@ class VaultBreak(Strategy):
         # Fixed stop & target (USD per position)
         take_profit_usd=1000,
         stop_loss_usd=2000,
-        # Time exit
+        # Time exit (HHMM, Eastern): the bar closing at 15:50 sends a market exit that fills at 15:50
         flatten_time=1550,
         # Position
         num_contracts=1,

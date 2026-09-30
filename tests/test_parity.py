@@ -236,7 +236,10 @@ def test_vault_break_enters_next_bar_after_breakout_and_exits_at_target():
     bars = pd.DataFrame({"open": o, "high": h, "low": l, "close": c, "volume": 1}, index=idx)
     nq = ContractSpec(symbol="NQ", name="E-mini Nasdaq-100", point_value=20.0, tick_size=0.25)
     VaultBreak = _vault_break()
-    strat = VaultBreak(take_profit_usd=200, stop_loss_usd=400, atr_seed_sum=150.0, atr_seed_count=15, sess_count_seed=15)
+    strat = VaultBreak(
+        earliest_entry=945,  # the MC chart's CT input (the strategy default is now Eastern)
+        take_profit_usd=200, stop_loss_usd=400, atr_seed_sum=150.0, atr_seed_count=15, sess_count_seed=15,
+    )
     res = run_backtest(strat, bars, nq, Costs())
     (t,) = res.trades.itertuples()
     assert t.entry_time == pd.Timestamp("2024-03-05 09:50", tz=CT) and t.entry_price == 110.0
