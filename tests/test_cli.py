@@ -172,6 +172,9 @@ def test_strategy_frames_from_a_worker_process(tmp_path):
         (["import", ".", "--symbol", "NQ", "--roll", "monthly"], "'monthly' is not one of"),
         (["compare", "--ours", "flip.py", "--mc", "flip.py", "--contract", "MNQ"], "flip.py is not a guban trades.csv"),
         (["compare", "--ours", "flip.py", "--mc", "flip.py", "--contract", "MNQ", "--mc-tz", "Nowhere"], "unknown time zone"),
+        (["run", "flip.py", "--symbol", "NQ", "--mc-sims", "-1"], "--mc-sims must be a whole number"),
+        (["run", "flip.py", "--symbol", "NQ", "--mc-sims", "2000000"], "--mc-sims must be a whole number"),
+        (["run", "flip.py", "--symbol", "NQ", "--mc-dd-limit", "0"], "--mc-dd-limit must be a drawdown"),
     ],
 )
 def test_input_errors_are_one_line_messages_with_exit_2(workdir, args, message):
@@ -215,3 +218,40 @@ def test_strategy_constructor_error_is_a_friendly_strategy_error(workdir):
     assert "Error: BadInit() could not be created: ZeroDivisionError" in res.output
     assert "bad_init.py\", line 9, in __init__" in res.output
     assert not (workdir / "reports").exists()
+
+
+def _run_json(workdir, *extra, out="mc"):
+    import json
+
+    res = runner.invoke(app, ["run", "flip.py", "--symbol", "NQ", "--fill-mode", "ohlc", "--out", out, *extra])
+    assert res.exit_code == 0, res.output
+    return res, json.loads((workdir / out / "metrics.json").read_text(encoding="utf-8")), (workdir / out / "report.html").read_text(encoding="utf-8")
+
+
+def test_run_has_a_trade_monte_carlo_by_default(workdir):
+    res, m, page = _run_json(workdir, "--mc-dd-limit", "20")
+    mc = m["monte_carlo"]
+    assert mc["sims"] == 10_000 and mc["seed"] == 42 and mc["dd_basis"] == "close_to_close" and mc["dd_limit"] == 20
+    assert mc["trades"] == m["all"]["total_trades"] >= 2
+    assert mc["backtest"]["max_drawdown"] == m["account"]["max_drawdown_close_to_close"]
+    assert mc["reorder"]["net_profit"]["p5"] == mc["reorder"]["net_profit"]["p95"] == m["all"]["net_profit"]
+    assert "p_dd_reaches_limit" in mc["resample"]
+    assert "monte carlo (10,000 runs" in res.output and "P(max DD reaches 20.00)" in res.output
+    assert "<section id='monte-carlo'>" in page and "id='mc-band-resample'" in page and "id='mc-band-reorder'" in page
+    assert '"mc":{"x":[0,' in page
+
+
+def test_run_monte_carlo_is_deterministic_and_seeded(workdir):
+    a = _run_json(workdir, out="a")[1]["monte_carlo"]
+    b = _run_json(workdir, out="b")[1]["monte_carlo"]
+    c = _run_json(workdir, "--mc-seed", "7", out="c")[1]["monte_carlo"]
+    assert a == b and a != c
+
+
+def test_run_monte_carlo_off_and_skipped(workdir):
+    res, m, page = _run_json(workdir, "--mc-sims", "0", out="off")
+    assert "monte_carlo" not in m and "<section id='monte-carlo'>" not in page and "monte carlo" not in res.output
+    assert '"mc":null' in page
+    res, m, page = _run_json(workdir, "--set", "hold=100", out="skip")  # never exits: 0 closed trades
+    assert m["monte_carlo"] == {"skipped": "needs at least 2 trades; this run has 0"}
+    assert "Monte Carlo skipped: needs at least 2 trades" in page and "monte carlo: skipped" in res.output

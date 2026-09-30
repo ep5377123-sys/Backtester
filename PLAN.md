@@ -245,6 +245,11 @@ class VaultBreak(Strategy):
       Done when: `uv run guban --help` lists all six commands; the README walks through import → run → compare → optimize → wfo → propfirm; the full `pytest` suite is green.
       Steps: consistent flags and run IDs; error messages for the failure cases above; README with the MC export instructions; update `CLAUDE.md`.
       Covers: all
+- [x] Phase 11: Trade Monte Carlo in the `guban run` report (done 2026-09-29 — see "Phase 11 plan" and "Phase 11 results" below)
+      Done when: every `guban run` shows a Monte Carlo section (resample and reorder side by side) in `report.html` and a
+      `monte_carlo` block in `metrics.json`; Vault Break trades/net unchanged; MC ≤ 2 s; full `pytest` green.
+      Steps: core module `guban/montecarlo.py` + tests; `run` flags and `metrics.json`; report section; real run, docs, commit.
+      Covers: R12
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -331,7 +336,7 @@ class VaultBreak(Strategy):
   ```
   uv run guban import Database/NQ-CME --symbol NQ --roll expiry
   uv run guban import Database/MNQ-CME --symbol MNQ --roll expiry
-  uv run guban run strategies/vault_break.py --symbol MNQ --history-from NQ --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620 --out reports/vault_break_mnq
+  uv run guban run strategies/vault_break.py --symbol MNQ --history-from NQ --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620 --set earliest_entry=945 --set latest_entry=1500 --set flatten_time=1550 --set flatten_early_close=false --out reports/vault_break_mnq
   uv run guban compare --ours reports/vault_break_mnq/trades.csv --mc "D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv" --contract MNQ --start 2025-06-08
   ```
 - **Open:**
@@ -597,3 +602,54 @@ The backend audit (FIX.md, findings #1–#15) is fixed in five commits ("Backend
 - **Prop firm (#10, #11).** The bootstrap runs in bounded-memory batches with the notebook's exact draws; the report
   labels the method's modeling assumptions. S6 unchanged: Vault Break MNQ 35.8%, 7,152 passed.
 
+- **Scheduled closes and data gaps (FIX.md VaultBreak follow-up A).** `config/calendar.toml` lists CME equity early
+  closes (13:00 ET holidays, 13:15 ET half days, Good Friday mornings; 2023–2026 checked against the NQ data), named
+  per contract by `calendar` in `contracts.toml`. `load_bars` adds `session_close` (not cached) and strategies read it
+  as a series. Vault Break flattens `early_close_buffer` (10) minutes before an early close, and its last entry moves
+  with it; `flatten_early_close=false` restores the literal .el. That setting is needed for MC parity, since MC held
+  through those closes. `run` / `wfo` report trades held past their session's scheduled close or across a data gap
+  (`metrics.session_exposure`). An unscheduled gap can't be known in advance, so the strategy acts on the first bar
+  after it. Eastern defaults: 700 trades (was 702); 1 trade held over a close, #619, the 2026-05-14 feed gap (was 4).
+  MC parity (Central inputs pinned, `flatten_early_close=false`): 737 trades, net 30,891.70, S3 PASS unchanged.
+
+## Phase 11 plan: trade Monte Carlo (approved 2026-09-29)
+Goal: every `guban run` also runs a Monte Carlo on its own trades and shows it in `report.html` (opened by `--open`).
+It is separate from the prop-firm Monte Carlo (`guban propfirm`), which is unchanged.
+- **Decisions (user):** two methods side by side: **resample** (n trades drawn with replacement: net profit and drawdown
+  vary) and **reorder** (the same trades shuffled: net fixed, only the path and drawdown vary). Draw unit: single trades
+  (a whole-day mode is parked). On by default on every `guban run`.
+- **Defaults:** `--mc-sims 10000` (0 = off), `--mc-seed 42` (resample uses seed, reorder seed+1), optional
+  `--mc-dd-limit USD`. Drawdown basis: close-to-close, exactly `compute_metrics`' definition (a trade list has no
+  intraday path) — labeled on the page.
+- **R12.** WHEN `guban run` finishes with ≥ 2 trades and `--mc-sims` > 0, THE SYSTEM SHALL simulate both methods and
+  report per method: 5/25/50/75/95th percentiles of net profit and max drawdown, P(max DD deeper than the backtest's
+  close-to-close max DD), P(net ≤ 0) (resample), P(max DD ≤ −limit) with `--mc-dd-limit`; equity bands with the actual
+  path; histograms. Reorder net = backtest net in every run. Same seed → identical output. `--mc-sims 0` → no section,
+  no `monte_carlo` key; < 2 trades → skipped with a reason; bad flag values → `Error:` + exit 2. `trades.csv` unchanged.
+- **Build steps:** (1) `guban/montecarlo.py` (numpy, fixed 1,000-run batches, bands sampled at ≤ 400 trade indexes,
+  60-bin histograms) + `tests/test_montecarlo.py`; (2) `run` flags in a "Monte Carlo" help panel, `metrics.json`
+  `monte_carlo`, terminal line; (3) `write_report(..., monte_carlo=)` section after the Drawdown chart, two columns
+  on wide screens, light/dark; (4) Vault Break run, docs (USE.md, README.md, CLAUDE.md, run-backtest skill), commit.
+
+## Phase 11 results (2026-09-29)
+- **`guban run`** now runs the trade Monte Carlo by default (`src/guban/montecarlo.py`): 10,000 resample + 10,000
+  reorder runs of the run's `net_pnl`. Flags `--mc-sims` (0 = off), `--mc-seed`, `--mc-dd-limit`, in a "Monte Carlo"
+  help panel; bad values are rejected before data loads (`Error: --mc-sims must be ...`, exit 2).
+- **Outputs:** `metrics.json` `monte_carlo` = {sims, seed, unit "trade", dd_basis "close_to_close", dd_limit, trades,
+  backtest {net_profit, max_drawdown}, resample/reorder {net_profit and max_drawdown percentiles p5–p95,
+  p_dd_worse_than_backtest, resample p_net_le_0, p_dd_reaches_limit with a limit}}; no timing, so it is deterministic.
+  `--mc-sims 0` → no key; < 2 trades → `{"skipped": reason}`. A terminal `monte carlo` line and its time.
+- **Report:** a "Monte Carlo" section after the Drawdown chart: two columns (one below 800 px) with headline
+  probabilities, percentile bands (5–95, 25–75, median) with the backtest path, max-drawdown histograms (and a
+  resample net-profit histogram) with the backtest value dashed, and a percentile table. Checked in headless Edge in
+  light, dark and 600 px widths. Adds ~43 KB to report.html.
+- **Design:** batches sized by trade count (`BATCH_CELLS // n`) bound memory; numpy `integers`/`permuted` draws are
+  batch-size invariant (verified, and pinned by a test), so results don't depend on it. Bands are percentiles at
+  ≤ 400 trade counts; histograms are binned in Python (60 bins).
+- **Vault Break MNQ parity run:** trades unchanged (737, net 30,891.70; `trades.csv` byte-identical with and without the
+  Monte Carlo). Close-to-close max DD −7,081.10. Resample net P5 9,524.65 / P50 30,819.55 / P95 51,851.28,
+  P(net ≤ 0) 0.9%, max DD P5 −13,491.37; reorder max DD P5 −11,697.53, P(DD worse than backtest) 58.0%. 0.7 s
+  (20,000 trades × 10,000 runs: 13 s).
+- **Tests:** `tests/test_montecarlo.py` (17: drawdown = compute_metrics' close-to-close, per-run hand checks, reorder
+  net constant, determinism, batch-size invariance, zero spread, percentile order, band sampling, summary shape, flag
+  validation) and 6 CLI tests (default on, determinism/seed, off, skipped, 3 bad-flag cases). Full suite: 255 passed.

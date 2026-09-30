@@ -1,0 +1,60 @@
+# Exchange calendars: scheduled early closes, Eastern wall-clock time (America/New_York).
+# A contract uses the calendar named by `calendar` in config/contracts.toml.
+#
+# early_close: trading date -> the time the exchange halts that day. A session listed here closes at
+# min(session template end, this time); every other session closes at its template end (config/sessions.toml).
+# Days the exchange is closed all day (New Year's Day, Christmas, most Good Fridays) have no session: leave them out.
+# These are published in advance, so a strategy may use them without looking ahead (Strategy.session_close).
+#
+# Update every year from CME's holiday calendar: https://www.cmegroup.com/tools-information/holiday-calendar.html
+# 2023-2026 were checked against the NQ minute store (the last bar of each short session).
+
+[cme_equity]
+name = "CME equity index futures (NQ, MNQ, ES, MES) on Globex"
+
+[cme_equity.early_close]
+# 2023
+"2023-01-16" = "13:00"  # Martin Luther King Jr. Day
+"2023-02-20" = "13:00"  # Presidents' Day
+"2023-04-07" = "09:15"  # Good Friday (payrolls release: short morning session)
+"2023-05-29" = "13:00"  # Memorial Day
+"2023-06-19" = "13:00"  # Juneteenth
+"2023-07-03" = "13:15"  # day before Independence Day
+"2023-07-04" = "13:00"  # Independence Day
+"2023-09-04" = "13:00"  # Labor Day
+"2023-11-23" = "13:00"  # Thanksgiving
+"2023-11-24" = "13:15"  # day after Thanksgiving
+# 2024
+"2024-01-15" = "13:00"  # Martin Luther King Jr. Day
+"2024-02-19" = "13:00"  # Presidents' Day
+"2024-05-27" = "13:00"  # Memorial Day
+"2024-06-19" = "13:00"  # Juneteenth
+"2024-07-03" = "13:15"  # day before Independence Day
+"2024-07-04" = "13:00"  # Independence Day
+"2024-09-02" = "13:00"  # Labor Day
+"2024-11-28" = "13:00"  # Thanksgiving
+"2024-11-29" = "13:15"  # day after Thanksgiving
+"2024-12-24" = "13:15"  # Christmas Eve
+# 2025
+"2025-01-09" = "09:30"  # National Day of Mourning (President Carter)
+"2025-01-20" = "13:00"  # Martin Luther King Jr. Day
+"2025-02-17" = "13:00"  # Presidents' Day
+"2025-05-26" = "13:00"  # Memorial Day
+"2025-06-19" = "13:00"  # Juneteenth
+"2025-07-03" = "13:15"  # day before Independence Day
+"2025-07-04" = "13:00"  # Independence Day
+"2025-09-01" = "13:00"  # Labor Day
+"2025-11-27" = "13:00"  # Thanksgiving
+"2025-11-28" = "13:15"  # day after Thanksgiving
+"2025-12-24" = "13:15"  # Christmas Eve
+# 2026
+"2026-01-19" = "13:00"  # Martin Luther King Jr. Day
+"2026-02-16" = "13:00"  # Presidents' Day
+"2026-04-03" = "09:15"  # Good Friday (payrolls release: short morning session)
+"2026-05-25" = "13:00"  # Memorial Day
+"2026-06-19" = "13:00"  # Juneteenth
+"2026-07-03" = "13:00"  # Independence Day (observed)
+"2026-09-07" = "13:00"  # Labor Day
+"2026-11-26" = "13:00"  # Thanksgiving
+"2026-11-27" = "13:15"  # day after Thanksgiving
+"2026-12-24" = "13:15"  # Christmas Eve

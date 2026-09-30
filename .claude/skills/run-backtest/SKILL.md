@@ -28,6 +28,8 @@ Runs one strategy through `guban run` on NQ data and opens the HTML report in th
 
 4. **Report the results** from the command's stdout, briefly:
    - trades, net profit, profit factor, max drawdown, ambiguous fills, run time
+   - the `monte carlo` line: resample net P5 / P50 / P95 and P(net <= 0); reorder max DD P5 vs the backtest's
+     close-to-close drawdown, and P(DD worse than backtest). The report's "Monte Carlo" section has the charts.
    - bar range (first → last bar)
    - that the report is open in the browser, with a link to `reports/<file>_nq/report.html` in case it didn't open
    - one line listing the settings used, and an offer to rerun with different ones

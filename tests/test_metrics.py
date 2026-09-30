@@ -15,10 +15,12 @@ from guban.metrics import (
     backtest_metrics,
     compute_metrics,
     contract_rolls,
+    data_gaps,
     held_across_roll,
     intraday_drawdown,
     jsonable,
     roll_summary,
+    session_exposure,
     trade_stats,
 )
 
@@ -182,3 +184,41 @@ def test_trades_held_across_a_contract_roll_are_flagged():
     r = roll_summary(res.trades, bars)
     assert (r["count"], r["trades_held_across"], r["trade_nos"]) == (1, 1, [1])
     assert roll_summary(res.trades, bars.drop(columns="contract"))["count"] == 0
+
+
+def _day_bars(times: list[str], session_dates: list[str], closes: list[str]) -> pd.DataFrame:
+    idx = pd.DatetimeIndex(pd.to_datetime(times), name="time").tz_localize("America/New_York")
+    return pd.DataFrame({"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1,
+                         "session_date": pd.to_datetime(session_dates),
+                         "session_close": pd.DatetimeIndex(pd.to_datetime(closes)).tz_localize("America/New_York")}, index=idx)  # fmt: skip
+
+
+def test_data_gaps_are_missing_bars_inside_a_session_or_data_stopping_before_the_scheduled_close():
+    d1, d2, d3 = "2026-05-14", "2026-05-15", "2026-05-18"
+    c1, c2, c3 = f"{d1} 17:00", f"{d2} 13:15", f"{d3} 17:00"  # d2 has a scheduled early close
+    bars = _day_bars(
+        [f"{d1} 13:00", f"{d1} 13:05", f"{d1} 14:25", f"{d1} 18:05", f"{d2} 13:10", f"{d2} 13:15", f"{d3} 16:55", f"{d3} 17:00"],
+        [d1, d1, d1, d2, d2, d2, d3, d3], [c1, c1, c1, c2, c2, c2, c3, c3],
+    )
+    # bar 2: 13:10..14:20 missing; bar 3: d1's data stopped at 14:25, not 17:00; bar 4: 18:10..13:05 missing in d2.
+    # d2 ended at its scheduled 13:15 close: no gap before bar 6.
+    assert data_gaps(bars) == [2, 3, 4]
+    assert data_gaps(bars.drop(columns="session_close")) == [2, 4]
+
+
+def test_trades_held_past_the_session_close_or_across_a_gap_are_flagged():
+    # FIX.md follow-up A: the data stops at 14:25 (not the 17:00 close) and resumes in the next session at 18:05
+    d1, d2 = "2026-05-14", "2026-05-15"
+    bars = _day_bars([f"{d1} 13:00", f"{d1} 13:05", f"{d1} 14:25", f"{d1} 18:05", f"{d1} 18:10"],
+                     [d1, d1, d1, d2, d2], [f"{d1} 17:00"] * 3 + [f"{d2} 17:00"] * 2)
+    # trade 1: bar 1 -> 2 (across the 13:10..14:20 gap); trade 2: bar 3 -> 4 (inside d2's session)
+    res = run_backtest(Script(plan={0: [("buy", {})], 1: [("sell", {})], 2: [("buy", {})], 3: [("sell", {})]}), bars, NQ)
+    e = session_exposure(res.trades, bars)
+    assert (e["trades_held_across_gap"], e["gap_trade_nos"], e["trades_held_past_close"]) == (1, [1], 0)
+    assert [g["before"] for g in e["data_gaps"]] == [bars.index[2], bars.index[3]]
+    # entered at 13:05 in d1, exits at 18:10 in d2: past d1's close and across the gap
+    res = run_backtest(Script(plan={0: [("buy", {})], 3: [("sell", {})]}), bars, NQ)
+    e = session_exposure(res.trades, bars)
+    assert (e["trades_held_past_close"], e["past_close_trade_nos"], e["gap_trade_nos"]) == (1, [1], [1])
+    assert session_exposure(res.trades, bars.drop(columns="session_close"))["trades_held_past_close"] == 0
+    json.dumps(jsonable(e))

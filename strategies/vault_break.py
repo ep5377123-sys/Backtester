@@ -9,6 +9,11 @@ session. So Time/Date and the input times below are Eastern, `Date <> Date[1]` f
 export) ran in exchange time (America/Chicago) with LatestEntry 1500 / FlattenTime 1550 CT, so this version no
 longer reproduces that export trade for trade.
 
+Scheduled early closes (not in the .el): on a day the exchange halts early (config/calendar.toml, e.g. 13:15 ET on
+Dec 24, 13:00 ET on CME holidays), FlattenTime moves to early_close_buffer minutes before the halt and LatestEntry
+moves with it (same gap to FlattenTime), so the position is flat before the halt instead of held to the reopen.
+flatten_early_close=False turns this off (the literal .el, e.g. for MC parity).
+
 DailyATR is the running mean of every completed day's range since the first bar (RngSum / RngCnt never roll
 off), so it depends on where the data starts. atr_seed_sum / atr_seed_count / sess_count_seed stand in for
 history before the first bar (the MC chart starts in Jan 2021; the local 1-minute store in Dec 2022). They are
@@ -37,6 +42,9 @@ class VaultBreak(Strategy):
         stop_loss_usd=2000,
         # Time exit (HHMM, Eastern): the bar closing at 15:50 sends a market exit that fills at 15:50
         flatten_time=1550,
+        # Scheduled early close (not in the .el): flatten this many minutes before it
+        flatten_early_close=True,
+        early_close_buffer=10,
         # Position
         num_contracts=1,
         # Warm-up stand-ins for history before the first bar (not in the .el)
@@ -115,12 +123,21 @@ class VaultBreak(Strategy):
         else:
             self.bars_below_vw = 0
 
+        # --- Scheduled early close (not in the .el) ---
+        latest, flatten = p.latest_entry, p.flatten_time
+        close_at = self.session_close[0]
+        if p.flatten_early_close and close_at is not None and close_at.date() == date:
+            cut = close_at.hour * 60 + close_at.minute - p.early_close_buffer
+            if cut < _minutes(flatten):
+                latest = _hhmm(cut - (_minutes(flatten) - _minutes(latest)))
+                flatten = _hhmm(cut)
+
         # --- Entry: long only ---
         if (
             c > self.noise_up
             and c > self.vwap
             and time >= p.earliest_entry
-            and time <= p.latest_entry
+            and time <= latest
             and self.d_trades < p.max_trades_per_day
             and self.market_position == 0
             and self.sess_count >= p.daily_atr_len + 1
@@ -134,5 +151,13 @@ class VaultBreak(Strategy):
         self.set_stop_loss(p.stop_loss_usd)
         if self.market_position == 1 and self.bars_below_vw >= p.vwap_exit_bars:
             self.sell("VB_VWAP_X", p.num_contracts)
-        if time >= p.flatten_time and self.market_position == 1:
+        if time >= flatten and self.market_position == 1:
             self.sell("VB_TimeX", p.num_contracts)
+
+
+def _minutes(hhmm: int) -> int:
+    return hhmm // 100 * 60 + hhmm % 100
+
+
+def _hhmm(minutes: int) -> int:
+    return minutes // 60 * 100 + minutes % 60

@@ -180,3 +180,24 @@ def test_corrupt_or_foreign_cache_is_rebuilt_and_writes_are_atomic(tmp_path):
     pd.DataFrame({"x": [1]}).to_parquet(cached)  # a Parquet file without a fingerprint
     assert len(load_bars("NQ", "5m", "rth", tmp_path)) == 78
     assert not list(cached.parent.glob("*.tmp"))  # no temporary files left behind
+
+
+def test_session_close_is_the_template_end_or_the_scheduled_early_close():
+    from guban.config import get_session
+    from guban.data.resample import session_closes
+
+    days = pd.Series(pd.to_datetime(["2024-12-23", "2024-12-24", "2024-12-24", "2024-12-26"]))
+    early = {pd.Timestamp("2024-12-24").date(): time(13, 15)}
+    eth = session_closes(days, get_session("eth"), early)
+    assert list(eth.dt.strftime("%Y-%m-%d %H:%M")) == ["2024-12-23 17:00", "2024-12-24 13:15", "2024-12-24 13:15", "2024-12-26 17:00"]
+    assert str(eth.dt.tz) == TZ
+    rth = session_closes(days, get_session("rth"), early | {pd.Timestamp("2024-12-26").date(): time(18, 0)})
+    assert list(rth.dt.strftime("%H:%M")) == ["16:00", "13:15", "13:15", "16:00"]  # a later "early" close never extends
+
+
+def test_load_bars_adds_session_close_from_the_symbols_calendar_in_chart_time(tmp_path):
+    _source(tmp_path, "2024-12-24 09:00", "2024-12-24 13:15")
+    b = load_bars("NQ", "5m", "rth", tmp_path, tz="America/Chicago")
+    assert (b["session_close"] == pd.Timestamp("2024-12-24 12:15", tz="America/Chicago")).all()
+    assert str(b["session_close"].dt.tz) == "America/Chicago"
+    assert "session_close" not in pd.read_parquet(cache_path("NQ", "5m", "rth", tmp_path)).columns  # not cached

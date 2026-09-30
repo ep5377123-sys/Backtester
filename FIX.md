@@ -501,3 +501,164 @@ Verified after the partial work: `uv run pytest` = 158 passed; the Vault Break p
   superseded).
 
 All findings #1–#15 are fixed. Full suite: 220 passed.
+
+## VaultBreak execution audit follow-up (2026-09-29)
+
+Scope: the only Python strategy currently in `strategies/`, `strategies/vault_break.py`, plus the engine paths
+that submit and fill its orders. This follow-up audited the latest Eastern-time version after its defaults were
+changed to `EarliestEntry=1045`, `LatestEntry=1530`, and `FlattenTime=1550` with
+`--tz America/New_York`.
+
+Fresh default run used for the audit:
+
+```text
+uv run guban run strategies/vault_break.py --symbol NQ --tf 5m --session eth \
+  --tz America/New_York --fill-mode magnifier --no-report \
+  --out reports/audit_vault_break_default_et
+```
+
+Independent rule replay over that ledger found:
+
+```text
+Eligible entry signals:       702
+Actual entries:               702
+Missing / extra entries:      0 / 0
+Maximum entries per day:      3
+Direction / quantity errors:  0 / 0
+Exit-rule errors:             0
+
+Profit Target exits:          369
+Stop Loss exits:              119
+VWAP exits:                    52
+Time exits:                   162
+```
+
+The audit independently rebuilt the calendar-day ATR, noise boundary, calendar-day VWAP, consecutive bars below
+VWAP, entry window, position state, and daily trade count. It also checked that market entries and VWAP/time exits
+used the next bar's open and that stop/target exits reached the correct per-position dollar level. The ordinary
+entry, sizing, daily-cap, stop, target, VWAP, and next-bar execution rules all behaved as implemented.
+
+### New finding A: `FlattenTime` does not guarantee flat/no-overnight
+
+Locations:
+
+- `strategies/vault_break.py`, time-exit condition around lines 137-138.
+- `src/guban/engine/backtest.py`, bar loop and pending-order processing around lines 584-607.
+
+The strategy submits `VB_TimeX` only while processing an observed bar whose chart time is at least 15:50. If a
+shortened session or a whole-bar data gap removes the 15:50 bar, no time-exit order exists. The position remains
+open until trading/data resumes. At the reopening bar the strategy can finally submit `VB_TimeX`, which fills on
+the following bar, unless a persistent stop or target exits first.
+
+Four violations occurred in the fresh Eastern-time default run:
+
+```text
+#238  2024-07-03 13:10 ET -> 2024-07-03 18:10 ET  VB_TimeX       -$650
+#330  2024-12-24 13:00 ET -> 2024-12-25 18:05 ET  Profit Target  +$1,000
+#446  2025-07-03 11:50 ET -> 2025-07-03 18:10 ET  VB_TimeX     -$1,285
+#621  2026-05-14 13:55 ET -> 2026-05-14 18:10 ET  VB_TimeX       -$400
+```
+
+The July 3 and December 24 cases are shortened holiday sessions. The May 14, 2026 case contains a multi-hour data
+gap before the 18:00 ET reopen. The longest hold in this default run crossed into the next calendar day. The
+current customized `reports/vault_break_nq` ledger also has four late/overnight exits, including a position held
+across a holiday weekend.
+
+Impact:
+
+- The stated "flat by 15:50 / no overnight" risk rule is not actually guaranteed.
+- A position can be exposed through a market closure, holiday, weekend, or missing-data interval.
+- The eventual stop/target fill can include a reopening gap that the advertised intraday strategy should not
+  have carried.
+- The backtest currently gives no prominent warning that the flatten bar was absent.
+
+Recommended fix:
+
+- Define the intended policy explicitly for scheduled shortened sessions and unexpected missing bars.
+- Provide each bar with a causal, exchange-calendar-derived scheduled session close/last tradable bar. Flatten on
+  the final available bar before that known close; do not infer it by looking at future prices.
+- Add a data-continuity warning for missing whole strategy bars, especially when a position or pending market
+  order spans the gap.
+- Consider broker-side/session-close protection for live use because a backtest-only gap rule cannot protect a
+  live position when data stops unexpectedly.
+- Add regression tests for July 3/December 24 early closes and for a multi-hour missing-data interval.
+- Add a run-level invariant/report warning listing every position that crosses the intended close or reopen.
+
+### New finding B: the Eastern-time default change broke the strategy test
+
+Location: `tests/test_parity.py`, `test_vault_break_enters_next_bar_after_breakout_and_exits_at_target()`, around
+lines 226-244.
+
+Current full-suite result:
+
+```text
+219 passed, 1 failed
+```
+
+The failing test creates Central-time bars with a breakout at 09:45 CT, but it relies on the strategy's defaults.
+The strategy now defaults to `EarliestEntry=1045` in an Eastern-time chart, so the test produces no trade and
+fails while unpacking the empty trade list.
+
+Recommended fix:
+
+- If the test is for the new strategy, convert the synthetic chart to `America/New_York` and place the breakout
+  at 10:45 ET.
+- If it is intentionally an MC-parity test for the old Central-time variant, pass
+  `earliest_entry=945`, `latest_entry=1500`, and the old chart-zone assumptions explicitly rather than relying on
+  mutable strategy defaults.
+- Keep separate tests for the current Eastern-time strategy and the historical MC-compatible configuration.
+
+### Configuration and parity caveat
+
+The current strategy header correctly states that the Eastern-time defaults no longer reproduce the MC export
+trade for trade. Therefore the old parity result is not proof for the new default schedule.
+
+The historical MC-compatible configuration was re-compared over the period backed by actual MNQ data
+(`2025-06-08 17:05 CT` onward) and still passed S3:
+
+```text
+MC trades / ours:                 302 / 302
+Matched:                          300 (99.3%)
+Matched prices within one tick:   293 (97.7%)
+Net profit:                       MC $6,555.30 / ours $6,540.30 (-0.23%)
+S3:                               PASSED
+```
+
+That result validates the engine and old explicit inputs against the MC oracle; it must remain labeled separately
+from reports made with the new Eastern-time defaults.
+
+One timestamp detail should also be documented clearly: a bar labeled 15:50 is a close-time label. An order it
+submits fills at the next bar's open (wall-clock 15:50) but the trade ledger associates the fill with the next
+close-labeled bar (normally 15:55). Reports will therefore show a 15:55 `exit_time` for the ordinary 15:50 time
+exit.
+
+### Acceptance criteria for this follow-up
+
+- `uv run pytest -q` returns all green after the timezone test is corrected.
+- An Eastern-time regression test proves a valid 10:45 signal fills at the next bar's open.
+- Shortened-session tests prove an open position is closed before the scheduled holiday close.
+- Missing-whole-bar gaps while a position is open are surfaced prominently and follow a documented policy.
+- A full NQ default run has zero positions crossing the intended daily close/reopen, or explicitly reports every
+  unavoidable exception.
+- The MC-compatible parity test remains separate and continues to pass its three S3 thresholds.
+
+### Follow-up repair (completed 2026-09-29)
+
+- **B** was already fixed before this repair: the Central-time test pins `earliest_entry=945`. There is now also an Eastern-time
+  regression test: a 10:45 ET signal fills at the 10:50 bar's open, and the 15:50 exit shows as 15:55.
+- **A, policy.** *Scheduled* closes are known in advance. `config/calendar.toml` lists CME equity early closes
+  (checked against every short session in the NQ store: 27 × 13:00 ET, 8 × 13:15 ET, 2 Good Fridays, 2025-01-09).
+  `load_bars` adds `session_close`, and strategies see it as a series. VaultBreak flattens at
+  min(FlattenTime, close − `early_close_buffer`=10 min), and its last entry moves with it (keeping the 20-min gap).
+  `flatten_early_close=false` gives the literal .el. *Unscheduled* gaps cannot be known without look-ahead, so the
+  strategy acts on the first bar after data resumes. `run` / `wfo` then list every trade held past its session's
+  scheduled close or across missing bars (notes, CLI summary, `session_exposure` in metrics.json / wfo.json).
+- **A, results.** Eastern default run: 700 trades (was 702). #238 (07-03) and #330 (12-24) are no longer entered,
+  because their signals came after the capped last entry. #446 (2025-07-03) exits at 13:05 ET for −$960 (was −$1,285
+  at 18:10). The only remaining trade held over a close is #619, the 2026-05-14 feed gap, and it is reported.
+  With the switch off, the detector flags exactly the audit's four trades.
+- **Parity.** The MC-compatible configuration pins `earliest_entry=945 latest_entry=1500 flatten_time=1550
+  flatten_early_close=false` (README `$vb`, USE.md, PLAN.md). MC held through early closes, so the flatten would
+  cost parity (+18.6% net). Result: 737 trades, net 30,891.70, 300/302 matched, −0.23%, S3 PASS.
+- Tests: 232 passed (early close 13:00/13:15, moved last entry, the gap exit + report, calendar, `session_close`
+  in chart time, `data_gaps` / `session_exposure`).

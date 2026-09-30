@@ -253,3 +253,77 @@ def test_vault_break_without_seeds_waits_for_daily_atr_history():
     bars = pd.DataFrame({"open": 100.0, "high": 200.0, "low": 50.0, "close": 150.0, "volume": 1}, index=idx)
     res = run_backtest(_vault_break()(), bars, MNQ, Costs())
     assert res.trades.empty  # SessCount < DailyATRLen + 1: literal port never trades on day one
+
+
+NQ_SPEC = ContractSpec(symbol="NQ", name="E-mini Nasdaq-100", point_value=20.0, tick_size=0.25)
+SEEDS = dict(take_profit_usd=200, stop_loss_usd=400, atr_seed_sum=150.0, atr_seed_count=15, sess_count_seed=15)
+
+
+def _et_day(day: str, breakout: str, last: str, close: str) -> pd.DataFrame:
+    """ET 5m bars from 23:55 the evening before to `last`: flat at 100 until the `breakout` bar closes at 110 (above
+    NoiseUp = 100 + 0.6 x 10 and VWAP), flat at 110 after it (no target or stop is reached). Session closes at `close`."""
+    idx = pd.date_range(pd.Timestamp(day) - pd.Timedelta("5min"), f"{day} {last}", freq="5min", tz=ET)
+    o = np.full(len(idx), 100.0)
+    k = idx.get_loc(pd.Timestamp(f"{day} {breakout}", tz=ET))
+    o[k + 1 :] = 110.0
+    c = o.copy()
+    c[k] = 110.0
+    bars = pd.DataFrame({"open": o, "high": np.maximum(o, c) + 0.5, "low": np.minimum(o, c) - 0.5, "close": c, "volume": 1}, index=idx)
+    bars["session_close"] = pd.Timestamp(f"{day} {close}", tz=ET)
+    return bars
+
+
+def test_vault_break_eastern_defaults_enter_after_a_1045_signal_and_flatten_at_1550():
+    # FIX.md follow-up B: the default schedule is Eastern (EarliestEntry 1045, FlattenTime 1550)
+    res = run_backtest(_vault_break()(**SEEDS), _et_day("2024-03-05", "10:45", "16:30", "17:00"), NQ_SPEC, Costs())
+    (t,) = res.trades.itertuples()
+    assert (t.entry_time, t.entry_price) == (pd.Timestamp("2024-03-05 10:50", tz=ET), 110.0)  # next bar's open
+    # the 15:50 bar sends the exit; it fills at the next bar's open (wall-clock 15:50), labeled 15:55
+    assert (t.exit_time, t.exit_name, t.exit_price) == (pd.Timestamp("2024-03-05 15:55", tz=ET), "VB_TimeX", 110.0)
+
+
+@pytest.mark.parametrize("close, exit_label", [("13:15", "13:10"), ("13:00", "12:55")])
+def test_vault_break_flattens_before_a_scheduled_early_close(close, exit_label):
+    # FIX.md follow-up A: 2024-07-03 / 2024-12-24 held to the reopen; now flat at close - 10 min
+    bars = _et_day("2024-12-24", "12:00", close, close)
+    res = run_backtest(_vault_break()(**SEEDS), bars, NQ_SPEC, Costs())
+    (t,) = res.trades.itertuples()
+    assert t.entry_time == pd.Timestamp("2024-12-24 12:05", tz=ET)
+    assert (t.exit_time, t.exit_name) == (pd.Timestamp(f"2024-12-24 {exit_label}", tz=ET), "VB_TimeX")
+    assert res.open_position is None
+    # the literal .el (flatten_early_close=False) is still long at the halt
+    res = run_backtest(_vault_break()(flatten_early_close=False, **SEEDS), bars, NQ_SPEC, Costs())
+    assert res.trades.empty and res.open_position is not None
+
+
+def test_vault_break_last_entry_moves_with_an_early_close():
+    # 13:15 close: flatten 13:05, last entry 12:45 (LatestEntry keeps its 20 min before FlattenTime)
+    assert run_backtest(_vault_break()(**SEEDS), _et_day("2024-07-03", "12:50", "13:15", "13:15"), NQ_SPEC, Costs()).trades.empty
+    res = run_backtest(_vault_break()(**SEEDS), _et_day("2024-07-03", "12:45", "13:15", "13:15"), NQ_SPEC, Costs())
+    assert res.trades["entry_time"].tolist() == [pd.Timestamp("2024-07-03 12:50", tz=ET)]
+
+
+def test_vault_break_data_gap_exits_after_data_resumes_and_is_reported():
+    # FIX.md follow-up A, 2026-05-14: the feed stops at 14:25 and resumes at 18:05 (next session). The gap is not
+    # known in advance, so VB_TimeX goes out on the first bar after it and fills on the next; the trade is reported.
+    from guban.metrics import session_exposure
+
+    day = _et_day("2026-05-14", "12:00", "14:25", "17:00")
+    after = pd.date_range("2026-05-14 18:05", periods=3, freq="5min", tz=ET)
+    bars = pd.concat([day, pd.DataFrame({"open": 110.0, "high": 110.5, "low": 109.5, "close": 110.0, "volume": 1,
+                                         "session_close": pd.Timestamp("2026-05-15 17:00", tz=ET)}, index=after)])  # fmt: skip
+    bars["session_date"] = np.where(bars.index < after[0], pd.Timestamp("2026-05-14"), pd.Timestamp("2026-05-15"))
+    res = run_backtest(_vault_break()(**SEEDS), bars, NQ_SPEC, Costs())
+    (t,) = res.trades.itertuples()
+    assert (t.exit_time, t.exit_name) == (pd.Timestamp("2026-05-14 18:10", tz=ET), "VB_TimeX")
+    e = session_exposure(res.trades, bars)
+    assert (e["past_close_trade_nos"], e["gap_trade_nos"]) == ([1], [1])
+
+
+def test_session_close_series_is_in_chart_time_and_must_be_tz_aware():
+    bars = _et_day("2024-12-24", "12:00", "13:15", "13:15").tz_convert(CT)
+    strat = _vault_break()(**SEEDS)
+    run_backtest(strat, bars, NQ_SPEC, Costs())
+    assert strat.session_close[0] == pd.Timestamp("2024-12-24 12:15", tz=CT) and str(strat.session_close[0].tz) == CT
+    with pytest.raises(ValueError, match="session_close"):
+        run_backtest(_vault_break()(), bars.assign(session_close=bars["session_close"].dt.tz_localize(None)), NQ_SPEC, Costs())

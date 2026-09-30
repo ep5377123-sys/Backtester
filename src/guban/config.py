@@ -1,4 +1,4 @@
-"""Contract specifications and session templates, loaded from config/*.toml."""
+"""Contract specifications, session templates and exchange calendars, loaded from config/*.toml."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 import numbers
 import tomllib
 from dataclasses import dataclass
-from datetime import time
+from datetime import date, time
 from functools import cache
 from pathlib import Path
 
@@ -26,6 +26,7 @@ class ContractSpec:
     name: str
     point_value: float  # USD per 1.0 point per contract
     tick_size: float
+    calendar: str | None = None  # exchange calendar in config/calendar.toml (scheduled early closes)
 
     def __post_init__(self) -> None:
         for name in ("point_value", "tick_size"):
@@ -108,3 +109,27 @@ def get_session(key: str, config_dir: Path | None = None) -> Session:
     if key.lower() not in sessions:
         raise KeyError(f"Unknown session {key!r}; known: {', '.join(sessions)} (edit config/sessions.toml)")
     return sessions[key.lower()]
+
+
+@cache
+def _calendars(config_dir: Path | None) -> dict[str, dict[date, time]]:
+    out = {}
+    for key, v in _load("calendar.toml", config_dir).items():
+        closes = {}
+        for d, t in v.get("early_close", {}).items():
+            try:
+                closes[date.fromisoformat(d)] = time.fromisoformat(t)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"config/calendar.toml [{key}.early_close]: bad entry {d!r} = {t!r}; use \"YYYY-MM-DD\" = \"HH:MM\"") from e
+        out[key] = closes
+    return out
+
+
+def get_early_closes(calendar: str | None, config_dir: Path | None = None) -> dict[date, time]:
+    """Scheduled early closes of exchange calendar `calendar`: trading date -> Eastern halt time ({} for None)."""
+    if calendar is None:
+        return {}
+    calendars = _calendars(config_dir)
+    if calendar not in calendars:
+        raise KeyError(f"Unknown calendar {calendar!r}; known: {', '.join(calendars)} (edit config/calendar.toml)")
+    return calendars[calendar]

@@ -87,7 +87,7 @@ def _friendly(fn):
 # ---------------------------------------------------------------------------
 # Shared options: run, optimize and wfo take the same data, cost and strategy flags with the same meaning.
 
-DATA, COSTS, STRAT, SEARCH, WF, OUTPUT = "Data", "Costs", "Strategy", "Optimization", "Walk-forward", "Output"
+DATA, COSTS, STRAT, SEARCH, WF, MC, OUTPUT = "Data", "Costs", "Strategy", "Optimization", "Walk-forward", "Monte Carlo", "Output"
 
 
 def _check_tz(value: str | None) -> str | None:
@@ -243,6 +243,18 @@ def _trade_list(nos: list[int], limit: int = 20) -> str:
     return ", ".join(f"#{n}" for n in nos[:limit]) + (f" and {len(nos) - limit} more" if len(nos) > limit else "")
 
 
+def _exposure_notes(exposure: dict) -> list[str]:
+    """Report notes for guban.metrics.session_exposure: trades held past a scheduled close or across a data gap."""
+    from guban.metrics import GAP_NOTE, PAST_CLOSE_NOTE
+
+    notes = []
+    if exposure["trades_held_past_close"]:
+        notes.append(PAST_CLOSE_NOTE.format(n=exposure["trades_held_past_close"], nos=_trade_list(exposure["past_close_trade_nos"])))
+    if exposure["trades_held_across_gap"]:
+        notes.append(GAP_NOTE.format(n=exposure["trades_held_across_gap"], nos=_trade_list(exposure["gap_trade_nos"])))
+    return notes
+
+
 def _details(symbol: str, tf: str, session: str, history_from: str | None, spec, tz: str, fill_mode: str, commission: float, slippage: float) -> dict:
     return {
         "Data": f"{symbol} {tf}, {session} session" + (f" (+{history_from} history)" if history_from else ""),
@@ -270,19 +282,24 @@ def run_cmd(
     inputs: list[str] = SET_INPUTS,
     class_name: str = CLASS_NAME,
     capital: float = CAPITAL,
+    mc_sims: int = typer.Option(10_000, "--mc-sims", help="Monte Carlo runs per method (resample, reorder) on this run's trades; 0: off", rich_help_panel=MC),
+    mc_seed: int = typer.Option(42, "--mc-seed", help="Monte Carlo random seed", rich_help_panel=MC),
+    mc_dd_limit: float = typer.Option(None, "--mc-dd-limit", help="Also report the chance the max drawdown reaches this many USD, e.g. 2500", rich_help_panel=MC),
     report: bool = typer.Option(True, "--report/--no-report", help="Write report.html", rich_help_panel=OUTPUT),
     out: Path = _out_option(RUN_ID),
     open_report: bool = _open_option("report.html"),
 ) -> None:
-    """Backtest a strategy; write trades.csv (MC layout), metrics.json and report.html."""
+    """Backtest a strategy; write trades.csv (MC layout), metrics.json and report.html (with a trade Monte Carlo)."""
     import json
 
     from guban.config import get_contract
     from guban.engine import Costs, StrategyError, run_backtest
-    from guban.metrics import ROLL_NOTE, backtest_metrics, jsonable, roll_summary
-    from guban.report import write_report
+    from guban.metrics import ROLL_NOTE, backtest_metrics, jsonable, roll_summary, session_exposure
+    from guban.montecarlo import MIN_TRADES, check_settings, run_monte_carlo
+    from guban.report import fmt_value, write_report
 
     t0 = time.perf_counter()
+    check_settings(mc_sims, mc_seed, mc_dd_limit)  # before the data loads
     cls = _load_strategy_class(strategy_file, class_name)
     overrides = _parse_inputs(inputs, cls.inputs)
     try:
@@ -300,6 +317,13 @@ def run_cmd(
     pos = res.open_position
     metrics = backtest_metrics(res, bars)
     rolls = roll_summary(tr, bars)
+    exposure = session_exposure(tr, bars)
+    mc = None  # MonteCarloResult, or {"skipped": reason}
+    if mc_sims:
+        if len(tr) >= MIN_TRADES:
+            mc = run_monte_carlo(tr["net_pnl"].to_numpy(float), mc_sims, mc_seed, mc_dd_limit)
+        else:
+            mc = {"skipped": f"needs at least {MIN_TRADES} trades; this run has {len(tr)}"}
 
     title = f"{cls.__name__} · {spec.symbol} {tf}"
     notes = []
@@ -307,6 +331,7 @@ def run_cmd(
         notes.append(f"{history_from} bars stand in for {symbol} before {symbol}'s first bar.")
     if rolls["trades_held_across"]:
         notes.append(ROLL_NOTE.format(n=rolls["trades_held_across"], nos=_trade_list(rolls["trade_nos"])))
+    notes += _exposure_notes(exposure)
     if res.bars_without_sub_bars:
         notes.append(f"{res.bars_without_sub_bars:,} bars had no 1-minute data and were filled from their own OHLC.")
     if res.bars_with_partial_sub_bars:
@@ -333,9 +358,12 @@ def run_cmd(
                  "commission": commission, "slippage": slippage, "capital": capital, "inputs": vars(strategy.p),
                  "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)}  # fmt: skip
     meta_json["contract_rolls"] = rolls
-    (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **metrics}), indent=2, default=str) + "\n", encoding="utf-8")
-    report_path = write_report(res, bars, out / "report.html", metrics, meta) if report else None
+    meta_json["session_exposure"] = exposure
+    mc_json = {} if mc is None else {"monte_carlo": mc if isinstance(mc, dict) else mc.summary()}
+    (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **metrics, **mc_json}), indent=2, default=str) + "\n", encoding="utf-8")
+    report_path = write_report(res, bars, out / "report.html", metrics, meta, monte_carlo=mc) if report else None
     t3 = time.perf_counter()
+    mc_seconds = mc.seconds if mc is not None and not isinstance(mc, dict) else 0.0
 
     typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz})")
     typer.echo(f"  bars: {len(bars):,}  {bars.index[0]} -> {bars.index[-1]}" + (f"  ({history_from} before {symbol}'s first bar)" if history_from else ""))
@@ -350,9 +378,26 @@ def run_cmd(
         typer.echo(f"  bars without (complete) 1-minute data (OHLC fallback): {res.bars_without_sub_bars + res.bars_with_partial_sub_bars}")
     if rolls["trades_held_across"]:
         typer.echo(f"  trades held across a contract roll (unadjusted series): {rolls['trades_held_across']}")
+    if exposure["trades_held_past_close"]:
+        typer.echo(f"  trades held past their session's scheduled close: {exposure['trades_held_past_close']} "
+                   f"({_trade_list(exposure['past_close_trade_nos'], 10)})")  # fmt: skip
+    if exposure["trades_held_across_gap"]:
+        typer.echo(f"  trades held across a data gap: {exposure['trades_held_across_gap']} ({_trade_list(exposure['gap_trade_nos'], 10)})")
     if pos is not None:
         typer.echo(f"  open position at the end: {pos.direction:+d} x{pos.qty}")
-    typer.echo(f"  time: load {t1 - t0:.1f} s + backtest {t2 - t1:.1f} s + report {t3 - t2:.1f} s = {t3 - t0:.1f} s")
+    if isinstance(mc, dict):
+        typer.echo(f"  monte carlo: skipped ({mc['skipped']})")
+    elif mc is not None:
+        rs, ro = mc.method_summary("resample"), mc.method_summary("reorder")
+        u = lambda v: fmt_value(v, "usd")  # noqa: E731
+        typer.echo(f"  monte carlo ({mc.sims:,} runs, close-to-close DD {u(mc.max_dd)}): "
+                   f"resample net P5 {u(rs['net_profit']['p5'])} / P50 {u(rs['net_profit']['p50'])} / P95 {u(rs['net_profit']['p95'])}, "
+                   f"max DD P5 {u(rs['max_drawdown']['p5'])}, P(net <= 0) {rs['p_net_le_0']:.1%}; "
+                   f"reorder max DD P5 {u(ro['max_drawdown']['p5'])}, P(DD worse than backtest) {ro['p_dd_worse_than_backtest']:.1%}")  # fmt: skip
+        if mc.dd_limit is not None:
+            typer.echo(f"  P(max DD reaches {u(mc.dd_limit)}): resample {rs['p_dd_reaches_limit']:.1%}, reorder {ro['p_dd_reaches_limit']:.1%}")
+    mc_time = f" + monte carlo {mc_seconds:.1f} s" if mc_seconds else ""
+    typer.echo(f"  time: load {t1 - t0:.1f} s + backtest {t2 - t1:.1f} s{mc_time} + report {t3 - t2 - mc_seconds:.1f} s = {t3 - t0:.1f} s")
     typer.echo(f"Wrote {path}, {out / 'metrics.json'}" + (f", {report_path}" if report_path else ""))
     if report_path and open_report:
         _open(report_path)
@@ -572,7 +617,7 @@ def wfo_cmd(
 
     from guban.config import get_contract
     from guban.engine import Costs
-    from guban.metrics import ROLL_NOTE, jsonable, roll_summary
+    from guban.metrics import ROLL_NOTE, jsonable, roll_summary, session_exposure
     from guban.optimize import METRICS, TooManyCombinations
     from guban.report import fmt_value
     from guban.wfo import walk_forward
@@ -609,6 +654,8 @@ def wfo_cmd(
     rolls = roll_summary(wf.trades, bars)
     if rolls["trades_held_across"]:
         notes.append(ROLL_NOTE.format(n=rolls["trades_held_across"], nos=_trade_list(rolls["trade_nos"])))
+    exposure = session_exposure(wf.trades, bars)
+    notes += _exposure_notes(exposure)
     if s["combo"].isna().any():
         notes.append(f"{int(s['combo'].isna().sum())} window(s) had no combination with ≥ {min_trades:,} in-sample trades and sat out (flat).")
     tr = wf.trades
@@ -640,6 +687,7 @@ def wfo_cmd(
         "walk_forward_efficiency": p["wfe"], "is_net_per_year": p["is_net_per_year"], "oos_net_per_year": p["oos_net_per_year"],
         "boundary_trades": wf.boundary_trades,
         "contract_rolls": rolls,
+        "session_exposure": exposure,
         "windows": wf.summary_records(),
         "oos": wf.metrics,
     }  # fmt: skip

@@ -5,7 +5,10 @@
 - Bar series: open, high, low, close, volume, time (HHMM int, MC `Time`), date (calendar date of the bar
   close, MC `Date`), session_date (trading date), timestamp (pd.Timestamp), contract (the contract month of
   an unadjusted continuous series, e.g. "202609", or None when the bars have no contract column; compare
-  contract[0] with contract[1] to see a roll coming and flatten before it). All support [n] lookback.
+  contract[0] with contract[1] to see a roll coming and flatten before it), session_close (when the bar's
+  session is scheduled to close, a pd.Timestamp in chart time: earlier on the exchange's early-close days from
+  config/calendar.toml, which are published in advance; None when the bars have no session_close column).
+  All support [n] lookback.
 - buy / sell / sell_short / buy_to_cover place orders for the NEXT bar: at="market" (the next bar's open),
   or at="stop" / at="limit" with a price (filled intrabar; see guban.engine.backtest). An order lives for
   one bar only; re-issue it on every bar you want it active.

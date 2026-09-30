@@ -45,19 +45,26 @@ uv run guban bars --symbol NQ --tf 5m --session eth
 ## 3. run — a single backtest
 **Vault Break on NQ** (run 2026-09-29; 1 NQ with a 50-pt target and stop, same point distances as the MC run):
 ```
-uv run guban run strategies/vault_break.py --symbol NQ --tf 5m --session eth --tz America/Chicago --commission 2.25 --slippage 5 --set take_profit_usd=1000 --set stop_loss_usd=1000 --set num_contracts=1 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620 --out reports/vault_break_nq
+uv run guban run strategies/vault_break.py --symbol NQ --tf 5m --session eth --tz America/Chicago --commission 2.25 --slippage 5 --set take_profit_usd=1000 --set stop_loss_usd=1000 --set num_contracts=1 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620 --set earliest_entry=945 --set latest_entry=1500 --set flatten_time=1550 --set flatten_early_close=false --out reports/vault_break_nq
 ```
 Result: 264,679 bars, 744 trades, net 63,441.00, PF 1.20, max drawdown −14,726.25, 1 ambiguous fill, ~5 s.
 Costs are the prop-firm notebook's NQ rates ($2.25 commission + $5 slippage per contract per round trip).
 
 **Vault Break MNQ, the MC parity run** (5 MNQ, $500 target and stop = 50 pts, MC's recovered costs):
 ```
-uv run guban run strategies/vault_break.py --symbol MNQ --history-from NQ --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620 --out reports/vault_break_mnq
+uv run guban run strategies/vault_break.py --symbol MNQ --history-from NQ --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620 --set earliest_entry=945 --set latest_entry=1500 --set flatten_time=1550 --set flatten_early_close=false --out reports/vault_break_mnq
 ```
 Expected: 737 trades, net 30,891.70, max drawdown −7,315.00.
 
 Notes:
 - Outputs: `trades.csv` (MC trade-export layout + engine columns), `metrics.json`, `report.html`. Add `--open` to open the report, or `--no-report` to skip it.
+- **Trade Monte Carlo (on by default):** every run also simulates its own trades two ways, side by side in the report's "Monte Carlo" section and under `monte_carlo` in `metrics.json`:
+  - resample: n trades drawn with replacement (net profit and drawdown vary; gives P(net ≤ 0));
+  - reorder: the same trades shuffled (net fixed; only the drawdown varies).
+  - Drawdowns are close-to-close, so compare them with the backtest's close-to-close max drawdown (printed on the `monte carlo` line), not the intraday one.
+  - Flags: `--mc-sims` (default 10000; `0` turns it off), `--mc-seed` (default 42), `--mc-dd-limit USD` (adds "chance the max drawdown reaches $X", e.g. a prop-firm limit).
+  - MNQ parity run: resample net P5 9,524.65 / P50 30,819.55 / P95 51,851.28, P(net ≤ 0) 0.9%; reorder max DD P5 −11,697.53 vs backtest −7,081.10; ~0.7 s.
+  - This is not `propfirm` (which simulates a prop-firm evaluation's rules).
 - `--set name=value` overrides a strategy input (repeatable). Unknown names are rejected.
 - `--history-from NQ` prepends NQ bars before MNQ's first bar. Use it for MNQ runs only.
 - `--contract` sets the P&L spec when it differs from the data symbol (for example NQ data priced as MNQ). The default folder name becomes `NQ-MNQ`.

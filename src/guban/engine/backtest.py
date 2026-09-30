@@ -506,6 +506,16 @@ def _map_sub_bars(bars: pd.DataFrame, sub: pd.DataFrame) -> tuple[np.ndarray, np
     return starts, ends, sub, partial
 
 
+def _session_close(bars: pd.DataFrame, idx: pd.DatetimeIndex) -> list:
+    """The bars' session_close column in the chart time zone (None per bar without one)."""
+    if "session_close" not in bars.columns:
+        return [None] * len(bars)
+    sc = pd.DatetimeIndex(bars["session_close"])
+    if sc.tz is None:
+        raise ValueError("bars column 'session_close' must be tz-aware timestamps (load_bars adds it)")
+    return list(sc.tz_convert(idx.tz))
+
+
 def run_backtest(
     strategy: Strategy,
     bars: pd.DataFrame,
@@ -555,6 +565,7 @@ def run_backtest(
         "session_date": pd.to_datetime(bars["session_date"]).dt.date.tolist() if "session_date" in bars.columns else list(idx.date),
         "timestamp": times,
         "contract": bars["contract"].astype(str).tolist() if "contract" in bars.columns else [None] * n,
+        "session_close": _session_close(bars, idx),
     }
 
     def ohlc_path(i: int) -> Path_:

@@ -6,6 +6,9 @@ Conventions (MultiCharts):
 - Only 1-minute bars inside the session are used. Minutes with no data are not filled; a bin with no
   1-minute bars produces no bar.
 - Daily bars are one per session, labeled at the session close time on the session's trading date.
+- load_bars adds `session_close`: when the bar's session is scheduled to close, i.e. the session template's end on
+  its trading date, or the exchange's earlier halt on a scheduled early-close day (config/calendar.toml). It is
+  published in advance, so strategies may use it (flatten before a holiday close) without looking ahead.
 
 Bin arithmetic is done in Eastern wall-clock minutes. Sessions never span the 02:00 Sunday DST switch
 (Globex is closed then), so wall-clock and elapsed minutes agree inside a session.
@@ -19,7 +22,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from guban.config import Session, get_session
+from datetime import date, time
+
+from guban.config import Session, get_contract, get_early_closes, get_session
 from guban.data.parquet import read_fingerprint, write_parquet
 
 TZ = "America/New_York"
@@ -129,6 +134,8 @@ def load_bars(
     rebuild=True, or when the cached file is unreadable or malformed) it is rebuilt and replaced atomically.
     tz: chart time zone for the returned index (e.g. "America/Chicago" for an MC chart in CME exchange time).
     Sessions and bins are always built in Eastern time; this only relabels the same instants.
+    The `session_close` column comes from the symbol's calendar at load time (not cached): edits to
+    config/calendar.toml apply at once.
     """
     source = Path(data_dir) / symbol / "1m.parquet"
     if not source.exists():
@@ -145,7 +152,28 @@ def load_bars(
     if bars is None:
         bars = resample(pd.read_parquet(source), timeframe, sess)
         write_parquet(bars, cached, fp)
-    return bars.tz_convert(tz) if tz else bars
+    bars = bars.assign(session_close=session_closes(bars["session_date"], sess, get_early_closes(_calendar_of(symbol))))
+    if tz:
+        bars = bars.tz_convert(tz)
+        bars["session_close"] = bars["session_close"].dt.tz_convert(tz)
+    return bars
+
+
+def _calendar_of(symbol: str) -> str | None:
+    try:
+        return get_contract(symbol).calendar
+    except KeyError:  # data under a name that is not in config/contracts.toml: no early closes known
+        return None
+
+
+def session_closes(session_dates: pd.Series, session: Session, early: dict[date, time]) -> pd.Series:
+    """Per bar, when its session is scheduled to close (tz-aware Eastern): the template end on the trading date,
+    or the earlier halt time listed in `early` (trading date -> Eastern time) for that date."""
+    days = pd.to_datetime(session_dates)
+    uniq = days.drop_duplicates()
+    closes = {d: pd.Timestamp.combine(d.date(), min(early.get(d.date(), session.end), session.end)) for d in uniq}
+    out = days.map(closes)
+    return pd.Series(pd.DatetimeIndex(out).tz_localize(TZ), index=session_dates.index, name="session_close")
 
 
 def cache_fingerprint(source: Path, timeframe: str, session: Session) -> dict:

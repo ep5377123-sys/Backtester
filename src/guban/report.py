@@ -1,5 +1,6 @@
-"""Self-contained HTML backtest report (R6): summary metrics, equity curve, drawdown, monthly net profit, a
-price chart with trades, and the trade list. plotly.js is inlined, so the file opens offline.
+"""Self-contained HTML backtest report (R6): summary metrics, equity curve, drawdown, a trade Monte Carlo (Phase 11,
+guban.montecarlo), monthly net profit, a price chart with trades, and the trade list. plotly.js is inlined, so the
+file opens offline.
 
 Charts are drawn in the browser from compact JSON:
 - equity and drawdown: one point per session (equity at the session's last bar; the session's worst intraday
@@ -28,7 +29,14 @@ MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", 
 
 
 def write_report(
-    result, bars: pd.DataFrame, path: str | Path, metrics: dict, meta: dict, sections: list[str] | None = None, bands: list[dict] | None = None
+    result,
+    bars: pd.DataFrame,
+    path: str | Path,
+    metrics: dict,
+    meta: dict,
+    sections: list[str] | None = None,
+    bands: list[dict] | None = None,
+    monte_carlo=None,
 ) -> Path:
     """Write report.html for a BacktestResult run on `bars` (the frame passed to run_backtest).
 
@@ -36,6 +44,7 @@ def write_report(
     result.equity may cover only some of the bars (a stitched walk-forward curve); trade bar numbers index `bars`.
     sections: extra HTML sections placed after the header. bands: [{"x0", "x1", "xm": "YYYY-MM-DD", "label"}]
     periods marked on the equity and drawdown charts (every other one shaded; x1 exclusive).
+    monte_carlo: a guban.montecarlo.MonteCarloResult (a section after the drawdown chart), {"skipped": reason}, or None.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,6 +59,7 @@ def write_report(
         "equity": _r(daily.to_numpy(), 2),
         "dd": _r(daily_dd.to_numpy(), 2),
         "bands": bands or [],
+        "mc": monte_carlo.report_data() if monte_carlo is not None and not isinstance(monte_carlo, dict) else None,
         **_trade_windows(tr, bars, result.spec.tick_size if result.spec else 0.01),
     }
     band_cap = " Labels and alternate shading mark the out-of-sample windows." if bands else ""
@@ -67,6 +77,7 @@ def write_report(
         "<div id='equity' class='chart'></div></section>",
         "<section><h2>Drawdown</h2><p class='cap'>Worst intraday drawdown each session, from the running equity peak (tracked along the intrabar path), USD.</p>"
         "<div id='drawdown' class='chart short'></div></section>",
+        _monte_carlo_html(monte_carlo),
         _summary_table(metrics),
         _monthly_table(tr),
         _viewer_html(len(tr)),
@@ -212,6 +223,56 @@ def _summary_table(m: dict) -> str:
     )  # fmt: skip
 
 
+def _monte_carlo_html(mc) -> str:
+    if mc is None:
+        return ""
+    if isinstance(mc, dict):
+        return f"<section id='monte-carlo'><h2>Monte Carlo</h2><p class='muted'>Monte Carlo skipped: {html.escape(mc['skipped'])}.</p></section>"
+    rs, ro = mc.method_summary("resample"), mc.method_summary("reorder")
+    usd = lambda v: fmt_value(v, "usd")  # noqa: E731
+    pct = lambda v: fmt_value(v, "pct")  # noqa: E731
+
+    def stats(items: list[tuple[str, str]]) -> str:
+        return "<div class='mc-stats'>" + "".join(f"<div><div class='k'>{k}</div><div class='v'>{v}</div></div>" for k, v in items) + "</div>"
+
+    limit = [(f"Max DD reaches {usd(mc.dd_limit)}", None)] if mc.dd_limit is not None else []
+    cols = {
+        "resample": ("Resample", f"Each run draws {mc.trades:,} trades from the list at random, with replacement: net profit and drawdown both vary.",
+                     [("Net profit ≤ 0", pct(rs["p_net_le_0"])), ("Max DD deeper than backtest", pct(rs["p_dd_worse_than_backtest"]))]
+                     + [(k, pct(rs["p_dd_reaches_limit"])) for k, _ in limit]),
+        "reorder": ("Reorder", f"Each run shuffles the same {mc.trades:,} trades: net profit is the backtest's in every run; only the path varies.",
+                    [("Net profit (every run)", usd(mc.net)), ("Max DD deeper than backtest", pct(ro["p_dd_worse_than_backtest"]))]
+                    + [(k, pct(ro["p_dd_reaches_limit"])) for k, _ in limit]),
+    }  # fmt: skip
+    col_html = []
+    for name, (title, cap, items) in cols.items():
+        net_chart = (f"<p class='cap mc-label'>Net profit per run (dashed: backtest)</p><div id='mc-net-{name}' class='chart short'></div>"
+                     if name == "resample" else "")  # fmt: skip
+        col_html.append(
+            f"<div class='mc-col'><h3>{title}</h3><p class='cap'>{cap}</p>{stats(items)}"
+            f"<p class='cap mc-label'>Cumulative net profit by trade: 5th–95th and 25th–75th percentile bands, median, backtest</p>"
+            f"<div id='mc-band-{name}' class='chart'></div>"
+            f"<p class='cap mc-label'>Max drawdown per run (dashed: backtest)</p><div id='mc-dd-{name}' class='chart short'></div>{net_chart}</div>"
+        )
+    heads = "".join(f"<th>{'Median' if p == 50 else f'{p}th'}</th>" for p in (5, 25, 50, 75, 95))
+    rows = [("Resample · net profit", rs["net_profit"], mc.net), ("Resample · max drawdown", rs["max_drawdown"], mc.max_dd),
+            ("Reorder · max drawdown", ro["max_drawdown"], mc.max_dd)]  # fmt: skip
+    body = "".join(
+        f"<tr><td class='l'>{label}</td>" + "".join(f"<td>{usd(v)}</td>" for v in vals.values()) + f"<td class='b'>{usd(bt)}</td></tr>"
+        for label, vals, bt in rows
+    )
+    return (
+        "<section id='monte-carlo'><h2>Monte Carlo</h2>"
+        f"<p class='cap'>{mc.sims:,} runs per method on this backtest's {mc.trades:,} trades (net of costs), seed {mc.seed}. "
+        f"Drawdowns here are close-to-close (closed-trade equity from 0): compare them with the backtest's close-to-close max drawdown, "
+        f"{usd(mc.max_dd)}, not the intraday figure in the tiles above. Trades are drawn one at a time, so trades that tend to win or lose "
+        "together (for example on the same day) are treated as independent, which can make drawdowns look milder than they are.</p>"
+        f"<div class='mc-grid'>{''.join(col_html)}</div>"
+        f"<div class='wrap'><table class='mc-table'><tr><th class='l'>Percentile of runs</th>{heads}<th>Backtest</th></tr>{body}</table></div>"
+        "<p class='cap'>Drawdowns are negative, so the 5th percentile is the deepest 5% of runs.</p></section>"
+    )
+
+
 def _monthly_table(tr: pd.DataFrame) -> str:
     if tr.empty:
         return ""
@@ -300,6 +361,12 @@ button, input, select { font:inherit; color:var(--ink); background:var(--page); 
 button { cursor:pointer; } button:hover { border-color:var(--ink2); } input[type=number] { width:90px; }
 .tinfo { color:var(--ink2); font-size:13px; }
 .notes { margin:0; padding-left:18px; color:var(--ink2); }
+h3 { font-size:14px; margin:0 0 2px; }
+.mc-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:24px; margin:12px 0; }
+@media (max-width:800px) { .mc-grid { grid-template-columns:minmax(0, 1fr); } }
+.mc-stats { display:flex; flex-wrap:wrap; gap:8px 24px; margin:8px 0 12px; }
+.mc-stats .k { font-size:12px; color:var(--ink2); } .mc-stats .v { font-size:18px; font-weight:600; }
+.mc-label { margin:8px 0 0; }
 """
 
 _JS = r"""
@@ -326,6 +393,38 @@ _JS = r"""
       hovertemplate: '%{x}<br>Equity %{y:,.2f}<extra></extra>' }], layout(c, B.length ? { shapes, annotations: labels, margin: { l: 64, r: 16, t: 22, b: 36 } } : {}), cfg);
     Plotly.react('drawdown', [{ x: D.days, y: D.dd, type: 'scatter', mode: 'lines', fill: 'tozeroy', line: { color: c.bad, width: 2 },
       fillcolor: c.bad + '33', hovertemplate: '%{x}<br>Drawdown %{y:,.2f}<extra></extra>' }], layout(c, { shapes }), cfg);
+  }
+
+  // --- Monte Carlo ---
+  function drawHist(id, h, color, actual, label, limit) {
+    const c = css(), e = h.edges, xs = h.counts.map((_, i) => (e[i] + e[i + 1]) / 2);
+    const vline = (x, dash, color) => ({ type: 'line', xref: 'x', yref: 'paper', x0: x, x1: x, y0: 0, y1: 1, line: { color, width: 1.5, dash } });
+    const note = (x, text) => ({ x, y: 1, xref: 'x', yref: 'paper', yanchor: 'bottom', text, showarrow: false, font: { size: 10, color: c.ink2 } });
+    const shapes = [vline(actual, 'dash', c.ink)], annotations = [note(actual, 'Backtest')];
+    if (limit != null) { shapes.push(vline(-limit, 'dot', c.muted)); annotations.push(note(-limit, 'Limit')); }
+    Plotly.react(id, [{ type: 'bar', x: xs, y: h.counts, width: e[1] - e[0], marker: { color, line: { width: 0 } }, opacity: 0.85,
+      customdata: h.counts.map((_, i) => [e[i], e[i + 1]]),
+      hovertemplate: `${label} %{customdata[0]:,.0f} to %{customdata[1]:,.0f}<br>%{y:,} runs<extra></extra>` }],
+      layout(c, { shapes, annotations, bargap: 0, hovermode: 'closest', margin: { l: 56, r: 16, t: 22, b: 36 } }), cfg);
+  }
+  function drawMC() {
+    const M = D.mc; if (!M) return;
+    const c = css(), x = M.x;
+    for (const name of ['resample', 'reorder']) {
+      const m = M[name], b = m.bands;
+      const band = (lo, hi, alpha) => [
+        { x, y: lo, type: 'scatter', mode: 'lines', line: { width: 0 }, hoverinfo: 'skip' },
+        { x, y: hi, type: 'scatter', mode: 'lines', line: { width: 0 }, fill: 'tonexty', fillcolor: c.s1 + alpha, hoverinfo: 'skip' }];
+      const q = x.map((_, j) => [b[0][j], b[1][j], b[3][j], b[4][j]]);
+      Plotly.react('mc-band-' + name, [...band(b[0], b[4], '26'), ...band(b[1], b[3], '4d'),
+        { x, y: b[2], type: 'scatter', mode: 'lines', line: { color: c.s1, width: 2 }, customdata: q,
+          hovertemplate: 'After %{x:,} trades<br>95th %{customdata[3]:,.2f}<br>75th %{customdata[2]:,.2f}<br>Median %{y:,.2f}' +
+            '<br>25th %{customdata[1]:,.2f}<br>5th %{customdata[0]:,.2f}<extra></extra>' },
+        { x, y: M.path, type: 'scatter', mode: 'lines', line: { color: c.ink, width: 1.5 }, hovertemplate: 'Backtest %{y:,.2f}<extra></extra>' }],
+        layout(c, { margin: { l: 56, r: 16, t: 8, b: 36 } }), cfg);
+      drawHist('mc-dd-' + name, m.dd_hist, c.bad, M.dd, 'Max drawdown', M.limit);
+      if (m.net_hist) drawHist('mc-net-' + name, m.net_hist, c.s1, M.net, 'Net profit', null);
+    }
   }
 
   // --- trade viewer ---
@@ -394,7 +493,7 @@ _JS = r"""
       go(+tr.dataset.i); document.getElementById('viewer-sec').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
   }
 
-  function drawAll() { drawCurves(); drawViewer(); }
+  function drawAll() { drawCurves(); drawMC(); drawViewer(); }
   wire(); drawTable(); drawAll();
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawAll);
   new MutationObserver(drawAll).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });

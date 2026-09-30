@@ -77,8 +77,12 @@ that `run`, `optimize` and `wfo` share: data, costs, and the inputs of the MC ru
 $vb = @('--symbol','MNQ','--history-from','NQ','--tf','5m','--session','eth','--tz','America/Chicago',
         '--commission','0.40','--slippage','0.04',
         '--set','take_profit_usd=500','--set','stop_loss_usd=500','--set','num_contracts=5',
-        '--set','atr_seed_sum=171120','--set','atr_seed_count=620','--set','sess_count_seed=620')
+        '--set','atr_seed_sum=171120','--set','atr_seed_count=620','--set','sess_count_seed=620',
+        '--set','earliest_entry=945','--set','latest_entry=1500','--set','flatten_time=1550','--set','flatten_early_close=false')
 ```
+
+The last line pins the MC chart's Central-time entry/flatten inputs (the strategy's defaults are now Eastern) and turns
+off the scheduled early-close flatten, which the MC strategy does not have.
 
 ### 1. import: build the 1-minute store
 
@@ -91,7 +95,9 @@ uv run guban import Database/MNQ-CME --symbol MNQ --roll expiry
 - Prints the first and last bar, the bar count and the missing session days.
 - `--roll expiry` switches contracts on the Wednesday of expiration week, like MC. `--roll volume` (the default) trades
   the contract that had the most volume in the previous session. The series is unadjusted either way, so `run` and
-  `wfo` list any trade held across a roll (its P&L includes the gap between the contracts).
+  `wfo` list any trade held across a roll (its P&L includes the gap between the contracts). They also list trades
+  held past their session's scheduled close, and trades held across missing bars (a data gap inside a session, or
+  a session whose data stops before its scheduled close). These are notes in the report and `session_exposure` in the JSON.
 - Every `.data` file is checked while it is read (whole records, sane prices and volume, times inside the session);
   a bad file stops the import with its name and the record's byte offset.
 - Optional: `guban bars --symbol NQ --tf 5m --session rth` builds and caches strategy bars and prints a per-session summary. `run` builds these caches on its own, and rebuilds them when `1m.parquet` or the session in `config/sessions.toml` changes.
@@ -103,8 +109,14 @@ uv run guban run strategies/vault_break.py @vb --out reports/vault_break_mnq --o
 ```
 
 - Writes `trades.csv` (MC trade-export layout plus guban's own columns), `metrics.json`, and a self-contained
-  `report.html`. The report has KPIs, equity and drawdown, the performance summary, monthly net, a trade viewer and the
-  trade list, and it opens offline.
+  `report.html`. The report has KPIs, equity and drawdown, a trade Monte Carlo, the performance summary, monthly net, a
+  trade viewer and the trade list, and it opens offline.
+- **Trade Monte Carlo.** Every run simulates its own trades 10,000 times two ways, shown side by side: *resample* draws
+  the same number of trades with replacement (how lucky was the net profit?), *reorder* shuffles the same trades (how
+  bad could the drawdown have been?). The section has equity bands with the actual path, drawdown and net-profit
+  histograms, and a percentile table; `metrics.json` gets the numbers under `monte_carlo`. Drawdowns are close-to-close
+  (a trade list has no intraday path), and trades are drawn one at a time. `--mc-sims 0` turns it off, `--mc-seed`
+  sets the seed (default 42), `--mc-dd-limit 2500` adds the chance the max drawdown reaches $2,500.
 - Expected result: 737 trades, net 30,891.70, max drawdown −7,315.00, about 3 s. The max drawdown is peak to valley
   along the intrabar equity path, so a rise and a fall inside one bar both count.
 - `--history-from NQ` fills in NQ bars before MNQ's first bar, so long-memory indicators warm up. The `atr_seed_*`
@@ -216,8 +228,11 @@ uv run guban run strategies/opening_range.py --symbol NQ --tf 5m --session rth -
 
 - **Inputs:** `inputs` holds the defaults. They are read as `self.p.<name>` and overridden with `--set name=value`.
   `optimize` and `wfo` sweep them with `--grid`.
-- **Series:** `open high low close volume time date session_date timestamp contract`. `[0]` is the current bar and `[n]` is n
-  bars ago. Looking back before bar 1 raises. `time` is HHMM in the chart time zone (`--tz`), like MC's `Time`.
+- **Series:** `open high low close volume time date session_date timestamp contract session_close`. `[0]` is the current
+  bar and `[n]` is n bars ago. Looking back before bar 1 raises. `time` is HHMM in the chart time zone (`--tz`), like
+  MC's `Time`. `session_close` is when the bar's session is scheduled to close (a timestamp in chart time): the session
+  template's end, or the exchange's early halt on the days listed in `config/calendar.toml` (published in advance, so
+  using it is not look-ahead). Use it to be flat before a holiday close; `strategies/vault_break.py` shows how.
 - **Orders:** `buy` / `sell_short` open a position. `sell` / `buy_to_cover` close it (all contracts by default).
   `at="market"` (default), `"stop"` or `"limit"` with `price=`. Orders placed in `on_bar` are for the **next bar**,
   and they live for one bar. An opposite entry reverses the position. There is no pyramiding.
@@ -266,6 +281,9 @@ traceback instead.
   here before you import or run it.
 - `config/sessions.toml`: session templates. `rth` is 09:30–16:00 ET; `eth` is the 24-hour Globex session, 18:00–17:00
   ET. The timeframe must divide the session length.
+- `config/calendar.toml`: scheduled early closes per exchange calendar (13:00 ET on CME holidays, 13:15 ET half days,
+  Good Friday mornings), named by `calendar` in `contracts.toml`. They set each bar's `session_close`. Add each new
+  year's dates from CME's holiday calendar (2023–2026 are listed and were checked against the NQ data).
 - `config/propfirm/<rules>.toml`: prop-firm rules, costs, simulation settings and degradation scenarios.
   `apex_50k_eod` is copied from the notebook; review its values (see below).
 
@@ -278,6 +296,8 @@ traceback instead.
   trades that don't match in the parity window are 0.5–2.75-point price differences between the two data sources.
 - **Prop-firm rules need review.** `apex_50k_eod` is labeled 50K but uses the notebook's $25,000 / $1,250 target /
   $1,000 drawdown values. The report's notes list this and the notebook's other quirks.
+- **The trade Monte Carlo treats trades as independent.** Trades that tend to win or lose together (several on one
+  day) are drawn separately, which can make its drawdowns look milder. A whole-day mode is not built yet.
 - **Out of scope for v1:** multi-symbol portfolios, tick-level fills, running `.el` files directly, and live trading.
   Other MC strategies get ported by hand, one at a time, and each one is done only when `guban compare` passes.
 

@@ -224,6 +224,58 @@ ROLL_NOTE = ("{n} trade(s) were held across a contract roll. The continuous seri
              "between the two contracts is part of their P&L: {nos}.")
 
 
+def data_gaps(bars: pd.DataFrame) -> list[int]:
+    """Bar numbers k where strategy bars are missing just before bar k: bars k-1 and k are in one session but more
+    than one bar length apart (bar length: the most common spacing inside sessions), or bar k-1 is the last bar of a
+    session that is scheduled to close more than one bar length later (bars' session_close column). A scheduled early
+    close is not a gap. Without a session_date column every pair of bars counts as one session."""
+    n = len(bars)
+    if n < 2:
+        return []
+    t = bars.index.as_unit("ns").asi8
+    step = np.diff(t)
+    sess = pd.to_datetime(bars["session_date"]).to_numpy() if "session_date" in bars.columns else np.zeros(n)
+    same = sess[1:] == sess[:-1]
+    if not same.any():
+        return []
+    bar_len = pd.Series(step[same]).mode().iat[0]
+    gap = same & (step > bar_len)
+    if "session_close" in bars.columns:
+        close = pd.DatetimeIndex(bars["session_close"]).as_unit("ns").asi8
+        gap |= ~same & (close[:-1] - t[:-1] > bar_len)  # the session's data stopped before its scheduled close
+    return (np.flatnonzero(gap) + 1).tolist()
+
+
+def session_exposure(trades: pd.DataFrame, bars: pd.DataFrame) -> dict:
+    """Trades held past the scheduled close of the session they were entered in (bars' session_close; they carry the
+    reopen gap), and trades held across a data gap (data_gaps), for metrics.json: {"trades_held_past_close",
+    "past_close_trade_nos", "data_gaps": [{"after", "before"}], "trades_held_across_gap", "gap_trade_nos"}."""
+    gaps = data_gaps(bars)
+    past = across = pd.Series(False, index=trades.index, dtype=bool)
+    if len(trades):
+        entry, exit_ = trades["entry_bar"].to_numpy(int), trades["exit_bar"].to_numpy(int)
+        if "session_close" in bars.columns:
+            close = pd.DatetimeIndex(bars["session_close"])[entry]
+            past = pd.Series(np.asarray(pd.DatetimeIndex(trades["exit_time"]) > close), index=trades.index)
+        if gaps:
+            k = np.asarray(gaps)
+            across = pd.Series([bool(((e < k) & (k <= x)).any()) for e, x in zip(entry, exit_)], index=trades.index)
+    nos = trades["trade_no"] if len(trades) else pd.Series([], dtype=int)
+    return {
+        "trades_held_past_close": int(past.sum()),
+        "past_close_trade_nos": [int(n) for n in nos[past]],
+        "data_gaps": [{"after": bars.index[k - 1], "before": bars.index[k]} for k in gaps],
+        "trades_held_across_gap": int(across.sum()),
+        "gap_trade_nos": [int(n) for n in nos[across]],
+    }
+
+
+PAST_CLOSE_NOTE = ("{n} trade(s) were held past the scheduled close of the session they were entered in (the session "
+                   "template's end, or an early close in config/calendar.toml), through the reopen gap: {nos}.")
+GAP_NOTE = ("{n} trade(s) were held across missing bars (a data gap inside a session, or a session whose data stops "
+            "before its scheduled close); the strategy could not act until data resumed: {nos}.")
+
+
 def jsonable(obj):
     """Metrics (or any nested dict/list) -> JSON-safe values: inf/NaN -> None, timestamps -> ISO strings."""
     if isinstance(obj, dict):

@@ -42,3 +42,24 @@ def test_contract_spec_rejects_invalid_point_value_and_tick(field, bad):
     kw = dict(symbol="X", name="x", point_value=2.0, tick_size=0.25) | {field: bad}
     with pytest.raises(ValueError, match=field):
         ContractSpec(**kw)
+
+
+def test_every_contract_names_a_calendar_with_its_early_closes():
+    from datetime import date
+
+    from guban.config import _contracts, get_early_closes
+
+    for spec in _contracts(None).values():
+        closes = get_early_closes(spec.calendar)
+        assert closes[date(2024, 12, 24)] == time(13, 15) and closes[date(2024, 7, 4)] == time(13, 0)
+    assert get_early_closes(None) == {}
+    with pytest.raises(KeyError, match="calendar.toml"):
+        get_early_closes("nyse")
+
+
+def test_calendar_rejects_bad_entries(tmp_path):
+    from guban.config import get_early_closes
+
+    (tmp_path / "calendar.toml").write_text('[x.early_close]\n"2024-12-24" = "1:15 pm"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        get_early_closes("x", tmp_path)
