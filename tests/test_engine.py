@@ -144,6 +144,69 @@ def test_orders_last_one_bar_and_last_bar_orders_never_fill():
 # --- position rules -------------------------------------------------------------------------------
 
 
+def test_close_order_fills_at_the_signal_bars_close():
+    """at="close" is MC's `this bar on close`: it fills at the close of the bar that placed it, even the last one."""
+    bars = make_bars([100, 101, 102, 103, 104], closes=[100.5, 101.25, 102.5, 103.75, 104.25])
+    res = run({1: [("buy", dict(name="L", at="close"))], 2: [("sell", dict(name="X", at="close"))],
+               3: [("sell_short", dict(name="S", at="close"))], 4: [("buy_to_cover", dict(name="C", at="close"))]}, bars)  # fmt: skip
+    long_, short = res.trades.itertuples()
+    assert (long_.entry_bar, long_.entry_time, long_.entry_price) == (1, bars.index[1], 101.25)
+    assert (long_.exit_bar, long_.exit_time, long_.exit_price, long_.exit_name) == (2, bars.index[2], 102.5, "X")
+    assert (short.entry_bar, short.entry_price, short.exit_bar, short.exit_price) == (3, 103.75, 4, 104.25)
+    assert res.open_position is None
+    assert res.equity.iloc[1] == 0.0  # entered at the close: no open P&L yet at that close
+
+
+def test_close_order_position_is_visible_from_the_next_bar():
+    states = []
+
+    class S(Strategy):
+        def on_bar(self):
+            if self.current_bar == 1:
+                self.buy(qty=2, at="close")
+            states.append((self.market_position, self.entry_price, self.bars_since_entry))
+
+    run_backtest(S(), make_bars([100, 101, 102]), NQ)
+    assert states == [(0, None, None), (1, 100.5, 1), (1, 100.5, 2)]
+
+
+def test_big_point_value_is_the_traded_contracts():
+    seen = []
+
+    class S(Strategy):
+        def on_bar(self):
+            seen.append(self.big_point_value)
+
+    run_backtest(S(), make_bars([100]), NQ)
+    assert seen == [20.0]
+
+
+def test_close_orders_are_market_fills_for_costs_and_slippage():
+    bars = make_bars([100, 101, 102, 103])
+    res = run({0: [("buy", dict(at="close"))], 2: [("sell", dict(at="close"))]}, bars, Costs(commission=1.22, slippage=0.04, slippage_ticks=1))
+    (t,) = res.trades.itertuples()
+    assert (t.entry_price, t.exit_price) == (100.75, 102.25)  # closes 100.5 / 102.5, one tick against
+    assert t.slippage == pytest.approx(0.04)  # half the USD slippage on each side
+    assert t.net_pnl == pytest.approx(1.5 * 20 - 1.22 - 0.04)
+
+
+def test_close_entry_exits_start_on_the_next_bar_and_mix_with_next_bar_orders():
+    bars = make_bars([100, 90, 100, 100], closes=[100.5, 95, 100.5, 100.5])  # bar 1 low 89 is before the entry
+    res = run({1: [("buy", dict(at="close")), ("set_stop_loss", dict(amount=20 * 4))],
+               2: [("sell", dict(name="next open"))]}, bars)  # fmt: skip
+    (t,) = res.trades.itertuples()
+    assert (t.entry_bar, t.entry_price) == (1, 95.0)  # the stop (91) was not live on bar 1's path
+    assert (t.exit_bar, t.exit_price, t.exit_name) == (3, 100.0, "next open")
+
+
+def test_close_orders_do_not_fill_before_trade_from():
+    bars = make_bars([100, 101, 102, 103])
+    plan = {0: [("buy", dict(at="close"))], 1: [("buy", dict(at="close"))], 2: [("buy", dict(at="close"))]}
+    res = run_backtest(Script(plan=plan), bars, NQ, trade_from=2)
+    assert res.trades.empty
+    assert (res.open_position.entry_bar, res.open_position.entry_price) == (2, 102.5)
+
+
 def test_reversal_closes_and_opens_at_the_same_fill():
     bars = make_bars([100, 101, 102, 103, 104])
     res = run({0: [("buy", dict(name="L", qty=2))], 2: [("sell_short", dict(name="S", qty=1))]}, bars)
@@ -235,6 +298,8 @@ def test_strategy_exception_names_bar_and_position():
 def test_bad_orders_and_bars_fail_loudly():
     with pytest.raises(StrategyError, match="not supported"):
         run({0: [("buy", dict(at="moc"))]}, make_bars([1, 2]))
+    with pytest.raises(StrategyError, match="close orders take no price"):
+        run({0: [("buy", dict(at="close", price=1.0))]}, make_bars([1, 2]))
     with pytest.raises(StrategyError, match="positive int"):
         run({0: [("buy", dict(qty=0))]}, make_bars([1, 2]))
     with pytest.raises(ValueError, match="missing columns"):

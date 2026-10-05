@@ -11,7 +11,9 @@
   All support [n] lookback.
 - buy / sell / sell_short / buy_to_cover place orders for the NEXT bar: at="market" (the next bar's open),
   or at="stop" / at="limit" with a price (filled intrabar; see guban.engine.backtest). An order lives for
-  one bar only; re-issue it on every bar you want it active.
+  one bar only; re-issue it on every bar you want it active. at="close" is MC's `this bar on close`: it fills
+  at the close of the bar that placed it, right after on_bar() returns (a market fill for slippage and costs),
+  so market_position shows it from the next bar on.
 - set_stop_loss / set_profit_target (MC SetStopLoss / SetProfitTarget, per position, in USD) stay in force
   until changed or cleared with None, and apply to every position from its entry fill onward.
 - Plain instance attributes play the role of intrabarpersist variables; self.series() gives a variable
@@ -38,7 +40,7 @@ if TYPE_CHECKING:
     from guban.engine.backtest import Broker
 
 BUY, SELL, SELL_SHORT, BUY_TO_COVER = "buy", "sell", "sell_short", "buy_to_cover"
-ORDER_KINDS = ("market", "stop", "limit")
+ORDER_KINDS = ("market", "stop", "limit", "close")
 
 
 class StrategyError(RuntimeError):
@@ -83,7 +85,7 @@ class Strategy:
         self._vars.append(v)
         return v
 
-    # --- orders (fill on the next bar) --------------------------------------------------------------
+    # --- orders (fill on the next bar, or at this bar's close with at="close") ---------------------------
     def buy(self, name: str = "Buy", qty: int = 1, at: str = "market", price: float | None = None) -> None:
         """Enter long. Reverses a short position; ignored while already long (no pyramiding)."""
         self._order(BUY, name, qty, at, price)
@@ -105,9 +107,9 @@ class Strategy:
             raise RuntimeError("orders can only be placed while a backtest is running")
         if at not in ORDER_KINDS:
             raise ValueError(f"order type {at!r} not supported; use one of {ORDER_KINDS}")
-        if at == "market":
+        if at in ("market", "close"):
             if price is not None:
-                raise ValueError("market orders take no price")
+                raise ValueError(f"{at} orders take no price")
         elif price is None or not math.isfinite(price):
             raise ValueError(f"{at} orders need a finite price, got {price!r}")
         entry = action in (BUY, SELL_SHORT)
@@ -148,6 +150,11 @@ class Strategy:
     def bars_since_entry(self) -> int | None:
         pos = self._broker.position
         return None if pos is None else self._clock.i - pos.entry_bar
+
+    @property
+    def big_point_value(self) -> float:
+        """USD per point per contract of the traded contract (MC BigPointValue)."""
+        return self._broker.spec.point_value
 
     @property
     def current_bar(self) -> int:

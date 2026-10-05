@@ -27,6 +27,10 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - Default fill mode = 1-minute Bar Magnifier; OHLC-path mode kept for comparison.
 - Engine: `guban.engine` — subclass `Strategy`, run with `run_backtest(strategy, bars, spec, Costs(...))`.
   No pyramiding; opposite entry reverses; costs are USD per contract per round trip (MC style). Details in PLAN.md "Phase 3 results".
+- `at="close"` = MC `this bar on close`: fills at the placing bar's close right after `on_bar()` (market fill for costs; exits
+  cover it from the next bar). `self.big_point_value` = MC BigPointValue. IVB port + its MC audit: PLAN.md "IVB parity audit".
+- `tests/test_ledger.py` pins trade-ledger integrity (every signal fills once, every fill is one row, contracts add up,
+  both fill modes). Any change to order handling or the ledger must keep it green.
 - Intrabar fills: pass `sub_bars=load_bars(sym, "1m", session)` for magnifier mode (else OHLC path). Stop/limit orders via
   `at="stop"|"limit", price=`; `set_stop_loss`/`set_profit_target` persist until set to None. Details in PLAN.md "Phase 4 results".
 - `data/` (Parquet) and `reports/` are generated and git-ignored.
@@ -56,4 +60,5 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 
 ## Correctness gate
 A ported strategy is "done" only when `guban compare` against its MC export shows ≥95% trades matched,
-prices within 1 tick, and net profit within 3%.
+prices within 1 tick, and net profit within 3%. Exception: IVB (`strategies/ivb.py`) — the user waived MC parity
+(2026-10-05); it is accepted on the ledger-integrity check (PLAN.md Phase 12).

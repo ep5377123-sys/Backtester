@@ -250,6 +250,11 @@ class VaultBreak(Strategy):
       `monte_carlo` block in `metrics.json`; Vault Break trades/net unchanged; MC ≤ 2 s; full `pytest` green.
       Steps: core module `guban/montecarlo.py` + tests; `run` flags and `metrics.json`; report section; real run, docs, commit.
       Covers: R12
+- [x] Phase 12: IVB port, `at="close"` orders, trade-ledger integrity (done 2026-10-05 — see "IVB parity audit" below)
+      Done when: `strategies/ivb.py` runs on NQ 1-min; an independent replay of its rules reproduces every trade; ledger
+      tests prove each signal fills once and each fill is recorded once (both fill modes); full `pytest` green.
+      MC parity (S3-style gate) waived by the user on 2026-10-05: "You don't need to compare it to MultiCharts."
+      Covers: R3, R11 (ledger integrity)
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -653,3 +658,49 @@ It is separate from the prop-firm Monte Carlo (`guban propfirm`), which is uncha
 - **Tests:** `tests/test_montecarlo.py` (17: drawdown = compute_metrics' close-to-close, per-run hand checks, reorder
   net constant, determinism, batch-size invariance, zero spread, percentile order, band sampling, summary shape, flag
   validation) and 6 CLI tests (default on, determinism/seed, off, skipped, 3 bad-flag cases). Full suite: 255 passed.
+
+## IVB parity audit (2026-10-05)
+Audit of the engine against a second MC strategy, using the user's MC trade export `IVB 1 min.csv` (886 trades,
+2021-01-05 → 2026-09-22, entry rows only, MNQ). The .el source name is unknown, so `strategies/ivb.py` was rebuilt
+from the user's description (long only, 1-minute close above the opening range, stop at the IVB low, 1:1 target) plus
+rules recovered from the export and the data:
+- IVB = high/low of the 1-min bars labeled 08:31–09:00 CT; entry = the first bar closing above the IVB high, at that
+  bar's close (540/584 MC entries), signal bars through 12:00 CT, 1 trade a day; size = floor($1,000 / ((entry − IVB
+  low) × BigPointValue)) (562/584); time exit at the close of the 14:00 CT bar (395/584 exits within a tick vs ≤ 243 for
+  any other minute); costs commission 1.22 + slippage 0.04 USD per contract.
+- **Engine additions:** `at="close"` orders (MC `this bar on close`) and `Strategy.big_point_value`; 6 tests.
+  Full suite: 261 passed.
+- **Parity run:** `uv run guban run strategies/ivb.py --symbol MNQ --history-from NQ --tf 1m --session eth --tz America/Chicago --commission 1.22 --slippage 0.04 --set flatten_early_close=false --out reports/ivb_mnq`
+  (584 trades, 15.6 s).
+- **MNQ-data window** (`guban compare ... --contract MNQ --tf 1m --start 2025-06-08 --end 2026-09-17`): 199/199 matched
+  (100%), prices within 1 tick 97.0%, net −8.25% (MC 3,541.10 / ours 3,249.00) → S3 FAILS on net only. 284.60 of the
+  292.10 gap is two data-side trades: 2025-11-28 (12:15 CT early close, no 14:00 bar: we hold to the Sunday reopen;
+  MC's implied exit 25,522.50 matches neither our 12:15 close nor the reopen) and 2026-05-14 (DeepCharts feed gap over
+  14:00 CT). Without them the net differs by ≈ −0.2%.
+- **Whole overlap** (2022-12-29 → 2026-09-17, NQ prices stand in before 2025-06-08): 570/583 matched (97.8%), net
+  +0.51%, but prices within 1 tick 62.5%: NQ 1-min closes differ from MNQ's by 1–3 ticks (NQ period 43.9% vs MNQ period
+  97.0%), and all 13 unmatched trades are NQ-period breakouts shifted by a bar.
+- **Open:** (1) MC rolled MNQ Jun→Sep 2025 one session earlier than our store (MC on 202509 on Tue 2025-06-17; ours
+  rolls at Tue 17:00 CT). Only one trade is affected and no other roll-week Tuesday has a trade, so it is unconfirmed
+  whether this is systematic. (2) Flattening before early closes (`flatten_early_close=true`) does not match MC (MNQ
+  window prices 95.0%, net −16.4%), so the parity run keeps it off; what MC does on those days is unresolved.
+  Both are **parked**: the user waived MC parity for IVB (2026-10-05), so they are not worked on unless asked.
+- **Ledger integrity check (2026-10-05, user asked: no trade counted twice, none missed when the signal appears).**
+  Code read of the order/fill/ledger path (`Broker._execute`, `_close`, `_fire`, `fill_on_close`, `tradelist`,
+  `metrics`): an order is removed from the live list when it fills, exits only fire against a matching position, a
+  reversal closes and opens at one fill, and every closed lot is one ledger row. No bug found; no engine change.
+  - Real run `guban run strategies/ivb.py --symbol NQ --tf 1m --session eth --tz America/Chicago --commission 1.22
+    --slippage 0.04` (defaults, `flatten_early_close=true`): 589 trades, net 115,488.96 (TimeX 249, TP 180, SL 160).
+    An independent replay of the docstring rules (no engine or strategy code) gives the same 589 trades: entry bar,
+    price, contracts, exit bar, price, name, gross and net P&L all equal. 589 signal days, 589 trades: no signal day
+    without a trade, no trade without a signal, every entry on the day's first breakout bar. Ledger: trade ids 1..N,
+    no duplicate rows or entry times, no overlap, ≤ 1 entry a day, cum P&L = running sum, metrics.json totals =
+    trades.csv. Trade #533 (2026-05-14) exits at 17:01 CT because the DeepCharts data stops at 13:22 CT that day (no
+    14:00 bar); flagged by the run as held past close / across a gap. Correct given the data.
+  - `tests/test_ledger.py` (9 tests, ohlc + magnifier on a synthetic 1-min random walk → 5-min bars): an IVB-style
+    strategy's trade entries equal its signal bars exactly; random orders of every kind (market/close/stop/limit,
+    reversals, partial exits, stop loss/target) with unique names → each entry and exit order fills at most once,
+    each closed position's rows sum to its entry qty, every position seen at a close is recorded, reversal exits start
+    the next position at the same fill, final equity = net + open P&L; stop + target + market exit in one bar → one
+    exit. Mutation check: injecting a duplicated or a dropped ledger row fails both tests in both modes.
+    Full suite: 270 passed.

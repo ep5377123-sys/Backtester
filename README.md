@@ -235,11 +235,13 @@ uv run guban run strategies/opening_range.py --symbol NQ --tf 5m --session rth -
   using it is not look-ahead). Use it to be flat before a holiday close; `strategies/vault_break.py` shows how.
 - **Orders:** `buy` / `sell_short` open a position. `sell` / `buy_to_cover` close it (all contracts by default).
   `at="market"` (default), `"stop"` or `"limit"` with `price=`. Orders placed in `on_bar` are for the **next bar**,
-  and they live for one bar. An opposite entry reverses the position. There is no pyramiding.
+  and they live for one bar. `at="close"` is MC's `this bar on close`: it fills at the close of the bar that placed it,
+  as a market fill, and `market_position` shows it from the next bar on. An opposite entry reverses the position.
+  There is no pyramiding.
 - **Exits:** `set_stop_loss(usd)` / `set_profit_target(usd)` are per-position dollars, as in MC. They are live from the
   entry fill onward and persist until set to `None`.
 - **State:** `market_position` (−1/0/1), `current_contracts`, `entry_price`, `bars_since_entry`, `current_bar`
-  (1-based).
+  (1-based), `big_point_value` (USD per point per contract, MC's `BigPointValue`).
 - **Costs:** `--commission` / `--slippage` are USD per contract per round trip. Slippage is charged half per market or
   stop fill and none on limit fills (MC behavior).
 - **Rules for `optimize` / `wfo`:** define the class at the top level of its file, because worker processes re-import
@@ -249,6 +251,8 @@ uv run guban run strategies/opening_range.py --symbol NQ --tf 5m --session rth -
   guban prints where it failed (for `on_bar`: the bar, its timestamp and the position) and the failing line of your file.
 
 `strategies/vault_break.py` is the reference port: a literal, line-by-line translation of `sc_Vaultc20Break.el`.
+`strategies/ivb.py` (IVB 1-min, long-only opening-range breakout) shows `at="close"` entries and stop/limit exits; run it
+on 1-minute bars in exchange time: `--tf 1m --session eth --tz America/Chicago --commission 1.22 --slippage 0.04`.
 
 ## Outputs, run folders and exit codes
 

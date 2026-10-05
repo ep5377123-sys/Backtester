@@ -4,7 +4,9 @@ For each strategy bar i:
   1. Orders placed on bar i-1 become active at bar i's open and live for bar i only. Market orders fill at
      the open, in placement order. Stop and limit orders, and the set_stop_loss / set_profit_target exits of
      the open position, are then checked along bar i's intrabar price path (below).
-  2. Series point at bar i and on_bar() runs. The orders it places are for bar i+1 only.
+  2. Series point at bar i and on_bar() runs. The orders it places are for bar i+1 only, except at="close"
+     orders (MC `this bar on close`), which fill right away at bar i's close, in placement order, as market
+     fills (slipped, half the USD slippage). Stop loss / profit target cover such an entry from bar i+1 on.
   3. Equity (closed net P&L + open gross P&L) is marked at bar i's close.
 
 Intrabar path. fill_mode="magnifier" walks bar i's 1-minute sub-bars in order; fill_mode="ohlc" treats bar i
@@ -112,7 +114,7 @@ class Order:
     action: str
     name: str
     qty: int | None
-    kind: str  # market | stop | limit
+    kind: str  # market | stop | limit | close
     bar: int  # bar index the order was placed on
     price: float | None = None  # stop/limit price
 
@@ -158,6 +160,15 @@ class Broker:
 
     def submit(self, action: str, name: str, qty: int | None, kind: str, bar: int, price: float | None = None) -> None:
         self.pending.append(Order(action, name, qty, kind, bar, price))
+
+    def fill_on_close(self, close: float) -> None:
+        """Fill the at="close" orders just placed (MC `this bar on close`) at `close`, as market fills."""
+        orders = [o for o in self.pending if o.kind == "close"]
+        if orders:
+            self.pending = [o for o in self.pending if o.kind != "close"]
+            self._sub, self._walking = None, False
+            for o in orders:
+                self._execute(o, close, slip=True)
 
     def has_exits(self) -> bool:
         """True while a position is open and a stop loss or profit target is set."""
@@ -611,6 +622,10 @@ def run_backtest(
             # bar numbers are 1-based, as the strategy sees them (current_bar, MC CurrentBar)
             state = "flat" if pos is None else f"{pos.direction:+d} x{pos.qty} @ {pos.entry_price} since bar {pos.entry_bar + 1}"
             raise StrategyError(f"{type(strategy).__name__}.on_bar failed at bar {i + 1} ({times[i]}), position {state}: {e!r}") from e
+        if i >= trade_from:
+            broker.fill_on_close(closes[i])
+        else:  # warm-up: a close order would fill before trade_from
+            broker.pending = [o for o in broker.pending if o.kind != "close"]
         if i + 1 in ends:
             snaps[i + 1] = broker.flattened_end(closes[i])
         if flatten_at_end and i == n - 1:
