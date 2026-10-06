@@ -68,7 +68,8 @@ Total: 9 of 14.
 - **Tick-level backtesting and tick Bar Magnifier** — needs tick exports. It is parked until the 1-min parity tolerance proves insufficient.
 - **Genetic or Bayesian optimizer** — grid search only in v1.
 - **Live or paper trading, broker connectivity (Rithmic)** — not a backtester concern.
-- **Porting the other ~29 strategies** — done later, one at a time, using the same parity workflow.
+- **Porting the other ~29 MC strategies** — dropped by the user (2026-10-05): they are disregarded completely. New
+  strategies are written fresh in Python and run directly; there is no MC export to compare them against.
 - **Numba/Cython acceleration** — only if S2's 15-second target is missed.
 
 ## Approach
@@ -190,7 +191,7 @@ class VaultBreak(Strategy):
 | A10 | Prop-firm rules to ship: Apex 50K EOD as in the notebook (including its $25k/$1,250/$1,000 values as written) | Verified from notebook cell 6 | Wrong pass rates | Rules in TOML; the user reviews the values in Phase 9 |
 
 ## Open Items (none blocking)
-- Which of the other ~29 strategies to port next — proceed with none until Vault Break passes parity.
+- ~~Which of the other ~29 strategies to port next~~ — closed 2026-10-05: none; the user runs new strategies instead.
 - Whether MC's magnifier was 1-min or tick — proceed with 1-min. Revisit only if S3 fails because of ambiguous fills.
 - The notebook's Apex values ($25k account labeled "50K") look inconsistent — proceed with them as written and flag them to the user in Phase 9.
 
@@ -255,6 +256,11 @@ class VaultBreak(Strategy):
       tests prove each signal fills once and each fill is recorded once (both fill modes); full `pytest` green.
       MC parity (S3-style gate) waived by the user on 2026-10-05: "You don't need to compare it to MultiCharts."
       Covers: R3, R11 (ledger integrity)
+- [x] Phase 13: POC-shift study on tick data, reusable research core (done 2026-10-05 — NOT REAL on both sides; see "Phase 13 results" below)
+      Done when: `uv run python research/poc_shift.py` prints an up and a down verdict (REAL / NOT REAL) under the
+      pre-registered rule and writes `reports/poc_shift/{days.csv,triples.csv,results.json,report.html}`; the
+      tick reader, statistics and report live in reusable modules; full `pytest` green.
+      Covers: R13
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -704,3 +710,65 @@ rules recovered from the export and the data:
     the next position at the same fill, final equity = net + open P&L; stop + target + market exit in one bar → one
     exit. Mutation check: injecting a duplicated or a dropped ledger row fails both tests in both modes.
     Full suite: 270 passed.
+
+## Phase 13 plan: POC-shift study on tick data (approved 2026-10-05)
+Question (user): on NQ, when day D-1's RTH POC is above D-2's, is D's RTH POC above D-1's more often than on an
+average day (and the mirror case for down)? First study run outside the engine; the reusable parts are split out
+from the start so later studies only define their signal and outcome. A `guban study` command and `Study` base class
+are **parked** until a second study exists (user, 2026-10-05).
+- **Decisions (user):** fair value = the RTH POC (09:30–16:00 ET); POCs from **tick data**, using only clean days;
+  the minute-bar POC is a secondary run over the full minute history (2022-12-28 →) and measures how often it agrees
+  with tick. **Verdict rule**, per side: REAL only if (1) P(D up | D-1 shifted up) beats the base rate P(D up) by
+  ≥ 3 pp, (2) a one-sided exact binomial test against the base rate gives p < 0.05, and (3) the gap is positive in
+  every calendar year (2023's ~30 sessions pooled into 2024). Everything else is labeled secondary.
+- **Tick store (verified 2026-10-05):** `Database/NQ-CME/<YYYYMM>/Tick/<YYYYMMDD>.data` for 202312–202612, sessions
+  2023-11-16 → 2026-09-23 (737 front-month sessions; 309 of 1,309 files empty). Record = 57 bytes: i8 .NET ticks
+  (ET wall-clock, trade time), f8 price, f8 bid, f8 ask, i4 size, i4 size (dup), i4 cumulative volume (its diff ==
+  size), i4 ×3 zero, u1 flag (1). Files run 18:00 ET → ~16:59 ET next day. Quality vs the minute files: most sessions
+  match the minute volume exactly; 20 end at 09:29:59 (no RTH), ~25 (Jan 2024) carry ~1.2× the volume, 3 carry ~3×,
+  ~20 (mostly 2026) differ by 2–40%.
+- **Defaults:** contract per session from the existing `choose_contracts` (volume roll); triples whose three days
+  span different contracts are dropped (calendar spread ≠ a POC shift); D-1 = the previous session with data;
+  early-close days count, RTH ending at the scheduled close; POC ties → the price nearest the RTH range midpoint;
+  a zero shift is "flat" and kept out of the rates; minute POC spreads each 1-min bar's volume evenly over its
+  0.25 ticks from low to high; no new dependencies (exact binomial from `math`); stop with an error if < 500 clean days.
+- **Clean day:** tick file non-empty, last RTH trade within 2 min of the RTH close, RTH tick volume within ±2% of the
+  same contract's RTH minute volume.
+- **R13.** WHEN `research/poc_shift.py` runs, THE SYSTEM SHALL build (and cache) per-day RTH volume-at-price from tick
+  data, compute tick and minute POCs, apply the clean-day and roll rules (reporting drop counts per reason), and
+  report per side: base rate, conditional rate, gap, p-value, per-year gaps and the verdict; plus secondary tables
+  (2×2 signal × outcome, shift-size buckets ≤5/5–20/20–50/>50 pts, "RTH close > open on D"), minute-vs-tick agreement,
+  and the minute-history study.
+- **Layout:** `src/guban/data/ticks.py` (reader + checks + RTH volume-at-price, cache `data/NQ/vap_rth_tick.parquet`);
+  `src/guban/research/` (reusable: `profile.py` POC/value area, `stats.py` rates/binomial/verdict/per-year,
+  `report.py` HTML); `research/poc_shift.py` (study-specific signal/outcome + runner, output `reports/poc_shift/`).
+- **Build steps:** (1) confirm the half-day close rule and that tick times are ET (one clean day's RTH tick volume ==
+  RTH minute volume); (2) tick reader + cache + clean-day rule, `tests/test_ticks.py`; (3) POCs and triples,
+  `tests/test_research.py`; (4) statistics and verdict (binomial checked by hand: n=10, k=8, p=0.5 → 0.0547);
+  (5) minute comparison, report, docs, commit.
+
+## Phase 13 results (2026-10-05)
+- **Answer: NOT REAL on both sides.** Tick POCs, 2023-11-21 → 2026-09-23, 594 observations (595 triples, 1 flat outcome):
+  - Up: P(D POC up | D-1 shifted up) = 55.0% (182/331) vs base 56.6% (336/594), gap −1.6 pp, p = 0.74.
+  - Down: P(D POC down | D-1 shifted down) = 41.2% (108/262) vs base 43.4%, gap −2.2 pp, p = 0.78.
+  - Every year's gap is negative on both sides (up: 2023-24 −1.3, 2025 −2.1, 2026 −1.7 pp; down: −1.8, −3.5, −1.8 pp):
+    a POC shift is followed by another shift the same way slightly *less* often than on an average day.
+  - Secondary, all agree: minute POCs 2023-01-03 → 2026-09-23 (928 obs) up 57.4% vs 56.9% (p 0.42), down 43.8% vs 43.1%
+    (p 0.41); RTH close vs open on D +1.0 / +1.1 pp (p 0.38). Value-area relationship: D's POC rose most often after an
+    "overlapping higher" (60.9%, n 128) or a "lower" (59.8%, n 117) D-1 value area — not tested, descriptive only.
+  - The shift-size buckets (A8: 5/20/50 pts) are too fine for NQ: 268 of 331 up-shifts and 198 of 262 down-shifts are
+    > 50 pts. Secondary only; widen them if the table is used.
+- **Data:** 964 RTH trading days in the store, 678 clean tick days (no tick file before 2023-11: 229; tick volume ≠
+  minute volume: 38; no RTH ticks: 18; ticks end early: 1). Tick triples dropped: 346 touch an unclean day, 21 span a
+  roll. Independent check: 6 random clean days' POCs recomputed from the raw files with pandas match exactly, and the
+  rates recomputed from `triples.csv` match.
+- **Minute vs tick POC:** within 2 pts on 37.8% of 678 days (median 3.25 pts, 90th pct 61 pts: the even-spread
+  approximation sometimes picks the other peak of a two-humped profile), yet the shift direction agrees on 95.0% of
+  triples (outcome 94.8%). For direction studies the minute history is a usable stand-in; for POC prices it is not.
+- **Tick format change found:** from 2026-05-26 11:23 ET the feed fills the last two i4 fields, the flag is mostly 0,
+  and size-0 records appear (5–25% of a session). Summed `size` still matches the minute volume within ~1%, so the
+  reader accepts size 0 (rejects only negative sizes); the cumulative-volume field no longer tracks size and is unused.
+- **Layout as planned:** `src/guban/data/ticks.py`, `src/guban/research/{days,profile,stats,report}.py`,
+  `research/poc_shift.py`. First run ~3.5 min (964 tick files), then ~20 s from the cache. Report checked in headless
+  Edge (light 1280 px, dark 600 px). Tests: `tests/test_ticks.py` (11), `tests/test_research.py` (16). Full suite:
+  297 passed.

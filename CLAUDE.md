@@ -44,6 +44,13 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - MC costs: `Costs(commission, slippage)` USD per contract per round trip; slippage is charged half per market/stop fill, none on limit fills (MC behavior).
 - CLI conventions (`guban/cli.py`, Phase 10): `run`/`optimize`/`wfo` share module-level option objects (`SYMBOL`, `TZ`, `FILL_MODE`, ... — add new shared flags there, not per command; `tests/test_cli.py` checks they stay identical). `--out` is always a folder; default folders come from `run_dir()`. Commands are wrapped in `@_friendly`: expected failures (KeyError/ValueError/OSError/RuntimeError incl. `StrategyError`) print `Error: ...` (+ the strategy's own frames, also from worker processes) and exit 2; `compare` FAIL exits 1; `GUBAN_DEBUG=1` re-raises. Library code should raise those types with a message that names the fix. User docs: README.md.
 
+- Statistical studies (Phase 13) run outside the engine and may look ahead: reusable core in `guban/research/` (`days`: contract
+  + RTH window per trading day from the store; `profile`: POC/value area from trades or 1-min bars; `stats`: base vs conditional
+  rate, exact one-sided binomial, per-year gaps, `verdict`; `report`: study HTML); each study is a script in `research/`
+  (first: `research/poc_shift.py` → `reports/poc_shift/`). Tick store reader + RTH volume-at-price cache: `guban/data/ticks.py`
+  (57-byte records; some sessions are defective, so keep a day only if its RTH tick volume matches the minute volume within 2%).
+  A `guban study` command is parked until a second study exists.
+
 ## Data
 - Source store: `Database/<SYM>-CME/<YYYYMM contract>/Minute/<YYYYMMDD>.data` (binary, git-ignored, ~42 GB incl. Tick). It comes from **DeepCharts (dxFeed data)**, not MultiCharts (user, 2026-09-29) — so small price differences vs MC's feed are expected. Format documented in `src/guban/data/importer.py`.
 - `uv run guban import Database/NQ-CME --symbol NQ` → `data/NQ/1m.parquet` (unadjusted continuous; volume roll decided from the previous session's volume).
@@ -57,6 +64,11 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 
 ## Git
 - Commit after every completed PLAN.md phase (tests green, phase checkbox + results section updated), one commit per phase.
+
+## New strategies (user, 2026-10-05)
+- The user's existing MC strategies are disregarded completely: don't port them or suggest porting them. New strategies
+  are written fresh in Python (`strategies/*.py`) and run with `guban run`; they have no MC export, so the correctness
+  gate below doesn't apply to them. Verify them with the ledger checks instead (signals vs trades, `tests/test_ledger.py`).
 
 ## Correctness gate
 A ported strategy is "done" only when `guban compare` against its MC export shows ≥95% trades matched,
