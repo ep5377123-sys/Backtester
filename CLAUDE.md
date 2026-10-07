@@ -61,6 +61,16 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - MC strategies (PowerLanguage source): `C:\ProgramData\TS Support\MultiCharts64\StudyServer\Studies\SrcEl\Strategies\`
 - MC trade-list exports (parity oracle): `D:\Multi Charts\Performance Reports\CSV Data\*.csv` (the user converts MC's Strategy Performance Report Excel export to this CSV; guban also reads the `.xlsx` List of Trades directly)
 - Prop-firm notebook being ported: `D:\Multi Charts\25k Prop Firm Accurate Rules.ipynb`
+- DeepCharts live folder `D:\Deepchart\Database` (still being written by the app): only `guban store build` reads it.
+
+## Shared market-data store (Phase 14)
+- `D:\Market Data\` is shared with the Research Pipeline (`D:\Research Pipeline`): write-once, read-only Parquet per
+  contract session (`<SYM>/{minute,tick}/<contract>/<YYYYMMDD>.parquet`), `manifest.csv`, per-symbol `quality.csv` and
+  `roll_calendar.csv`; schema + rules in its `README.md` (generated from `guban/store/build.py`). Never edit or
+  delete files there by hand; `guban store build [--symbol ..] [--rebuild SYM:YYYYMMDD]` adds finished sessions and
+  reports changed sources, `guban store verify` checks SR3. Settings: `config/store.toml`. Code: `guban/store/`
+  (`bars.py` = per-session rules, tested in `tests/test_store.py`). Changing a bar rule means rebuilding the
+  affected sessions (`--rebuild`) — say so before doing it, the pipeline reads the same files.
 
 ## Git
 - Commit after every completed PLAN.md phase (tests green, phase checkbox + results section updated), one commit per phase.

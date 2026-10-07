@@ -18,17 +18,20 @@ import pyarrow.parquet as pq
 KEY = b"guban.fingerprint"
 
 
-def write_parquet(df: pd.DataFrame, path: str | Path, fingerprint: dict | None = None) -> Path:
-    """Write `df` to `path` atomically; `fingerprint` (JSON-able) is stored in the file's schema metadata."""
+def write_parquet(
+    df: pd.DataFrame, path: str | Path, fingerprint: dict | None = None, compression: str = "snappy", index: bool | None = None
+) -> Path:
+    """Write `df` to `path` atomically; `fingerprint` (JSON-able) is stored in the file's schema metadata.
+    index=False leaves the DataFrame index out (the market-data store keeps time in a column)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    table = pa.Table.from_pandas(df)
+    table = pa.Table.from_pandas(df, preserve_index=index)
     if fingerprint is not None:
         table = table.replace_schema_metadata({**(table.schema.metadata or {}), KEY: json.dumps(fingerprint, sort_keys=True).encode()})
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         with open(tmp, "wb") as f:
-            pq.write_table(table, f)
+            pq.write_table(table, f, compression=compression)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)

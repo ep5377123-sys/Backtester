@@ -261,6 +261,14 @@ class VaultBreak(Strategy):
       pre-registered rule and writes `reports/poc_shift/{days.csv,triples.csv,results.json,report.html}`; the
       tick reader, statistics and report live in reusable modules; full `pytest` green.
       Covers: R13
+- [x] Phase 14: Shared market-data store at `D:\Market Data\` (done 2026-10-06 — see "Phase 14 results" below; build steps 1–3)
+      Done when: `guban store build` has written every finished session of NQ, MNQ, ES, GC, BTC; `guban store verify`
+      meets SR3 per symbol; a second build writes 0 files; full `pytest` green.
+      Covers: SR1–SR5
+- [ ] Phase 15: Guban reads the store; GC/BTC specs, costs, calendars (see "Phase 14–15 plan" below — build steps 4–7)
+      Done when: `guban import --symbol <SYM>` builds all five symbols from the store; Vault Break MC compare still passes
+      the S3 gate; `guban run` works on every symbol; `research/poc_shift.py` runs on store ticks; full `pytest` green.
+      Covers: SR6–SR9, SR11
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -772,3 +780,181 @@ are **parked** until a second study exists (user, 2026-10-05).
   `research/poc_shift.py`. First run ~3.5 min (964 tick files), then ~20 s from the cache. Report checked in headless
   Edge (light 1280 px, dark 600 px). Tests: `tests/test_ticks.py` (11), `tests/test_research.py` (16). Full suite:
   297 passed.
+
+## Phase 14–15 plan: shared market-data store (approved 2026-10-06)
+Goal (user): Guban and the Research Pipeline (`D:\Research Pipeline`) read the **same processed data** for NQ, MNQ, ES, GC
+and BTC from one write-once store at `D:\Market Data\`, built from the DeepCharts folder `D:\Deepchart\Database`
+(read-only, still being written by the app). Each 1-minute bar comes from **ticks where valid ticks exist**, else from
+the DeepCharts minute records. The pipeline gets the same five symbols. Pipeline-side work is planned in its own
+`PLAN.md` ("Shared data store" phases SD1–SD3) and follows its rules (one phase per commit, Ariel's go-ahead between).
+
+- **Interview (2026-10-06, 9 questions):** source = `D:\Deepchart\Database`; symbols = all five; minute + tick,
+  tick-built bars preferred; one shared processed store; pipeline gets all five symbols; a write-once store replaces the
+  pipeline's frozen raw snapshot; commissions researched online; slippage 0.5 tick per side for every symbol; plan approved.
+- **Source facts (verified 2026-10-06, `ls`):** `BTC-CME`, `ES-CME`, `GC-COMEX`, `MNQ-CME`, `NQ-CME`, 83 GB, each
+  `<contract>/{Minute,Tick}/<YYYYMMDD>.data`. Minute from NQ 2018-12-30, ES 2019-12-29, BTC 2020-01-05, GC 2021-01-03,
+  MNQ 2025-06-08; ticks from 2023-11-16 (MNQ 2025-11-30). Latest sessions 2026-10-04/05 (the newest is in progress).
+- **Known tick quirks (Phase 13 + pipeline `docs/data_notes.md`):** ~25 Jan-2024 sessions carry ~1.2× the minute volume,
+  3 carry ~3×, ~20 (mostly 2026) differ 2–40%, 20 end at 09:29:59; from 2026-05-26 11:23 ET size-0 records appear and the
+  cumulative-volume field (`seq`) stops tracking size; tick bid/ask is a side marker, not a real quote, before 2025-11.
+  → Store `seq` as-is but document it as unreliable from 2026-05-26; drop size-0 records when building bars.
+
+### Store layout (contract between the two projects; also written to `D:\Market Data\README.md`)
+```
+D:\Market Data\
+  README.md, manifest.csv       schema contract; one manifest row per stored session file (source path, bytes, sha256, built_at, bar source)
+  <SYM>\minute\<contract>\<YYYYMMDD>.parquet   ts_utc (bar OPEN, UTC), open, high, low, close, volume, ask_vol, bid_vol, contract, source
+  <SYM>\tick\<contract>\<YYYYMMDD>.parquet     ts_utc (ms), price, size, side (+1 at ask, -1 at bid, 0 between), seq, contract
+  <SYM>\roll_calendar.csv       volume roll: front from the session AFTER the new contract first out-trades the old; never back
+  <SYM>\quality.csv             per session: minute volume, tick volume, diff %, bar source, issues
+```
+Each project derives its own view: Guban = New York time, bar-CLOSE label, unadjusted, `--roll volume|expiry`;
+pipeline = additive back-adjustment + holdout guard (trade_date ≥ 2026-01-01).
+
+### Rules
+- **Bar source per session:** tick file present, whole 57-byte records, and session tick volume within 2% of minute volume
+  → bars from ticks (per minute, open label: O first, H max, L min, C last, volume Σsize, ask_vol Σsize side=+1,
+  bid_vol Σsize side=−1); else minute records (minutes whose records hold no volume dropped; all records of a minute
+  with volume merged — *amended 2026-10-06: the opening minute's zero-volume record is its true open, see Phase 14
+  results*). A minute
+  with a minute record but no ticks inside a tick session keeps the minute record. Every bar carries `source`.
+- **Write-once:** build a session only after it has ended (now > file date + 1 day 17:00 ET) and its files are whole
+  records; one Parquet file per session per kind, set read-only; a later source sha256 change for a stored session is
+  reported (`changed_sources`), never overwritten, unless `--rebuild SYM:SESSION`. The DeepCharts folder is opened read-only.
+- **Costs (USD per contract):**
+
+  | Symbol | Commission RT | Per side (pipeline) | Slippage per side (0.5 tick) | Source |
+  |---|---|---|---|---|
+  | NQ | 2.50 | 1.25 | 2.50 | user's existing pipeline value |
+  | MNQ | 2.00 | 1.00 | 0.25 | user's existing pipeline value |
+  | ES | 3.78 | 1.89 | 6.25 | Topstep itemized all-in (help.topstep.com, 2026-10-06) |
+  | GC | 4.32 | 2.16 | 5.00 | Topstep itemized all-in |
+  | BTC | 16.04 | 8.02 | 12.50 | $1.00 commission + 2×$7.50 CME non-member exchange fee (CFTC filing) + 2×$0.02 NFA |
+
+  Guban: per-symbol defaults in `config/contracts.toml`, used when no cost flags are given; explicit flags (MC-parity
+  runs) still win. Slippage RT = 1 tick × tick value, charged MC style (half per market/stop fill).
+
+### Requirements
+- **SR1.** `guban store build` writes only finished, whole-record sessions and lists skipped ones.
+- **SR2.** Valid tick sessions (±2%) are tick-built, others minute-built; `quality.csv` gives each session's source/reason.
+- **SR3.** Tick-built bars reproduce minute volume on ≥ 99% of minutes and OHLC on ≥ 99.9% of minutes in valid sessions
+  (`guban store verify` prints the rates per symbol). *(Restated 2026-10-06 from "every minute": see Step 1 findings.)*
+- **SR4.** A second build with unchanged sources changes no file; a changed source for a stored session is reported.
+- **SR5.** The DeepCharts folder is never opened for writing.
+- **SR6.** `guban import --symbol <SYM>` builds `data/<SYM>/1m.parquet` from the store with Guban's conventions;
+  minute-sourced sessions are identical to the old import.
+- **SR7.** `config/contracts.toml` (and the pipeline's `instruments.yaml`) define all five symbols after the price-grid check.
+- **SR8.** Default costs per the table appear in `metrics.json` when no cost flags are given.
+- **SR9.** `config/calendar.toml` covers early closes for every year of every symbol (equity 2019–2022, `cme_metals`,
+  `cme_crypto`), derived from each session's last bar and spot-checked against CME's holiday calendar.
+- **SR10.** (Pipeline) loaders read all five symbols from the store; the holdout guard still holds.
+- **SR11.** Vault Break still passes the S3 gate on the rebuilt NQ data; `tests/test_ledger.py` stays green.
+
+### Assumptions (verify in step 1)
+| ID | Assumption | If wrong |
+|---|---|---|
+| B1 | GC tick 0.10, $100/pt; BTC tick 5, $5/pt | grid check fails → correct config |
+| B2 | GC/BTC files use NQ's layout and 18:00 → 17:00 ET session window | adapt decoder/session check per symbol |
+| B3 | 2% volume tolerance suits every symbol | tune per symbol from `quality.csv` |
+| B4 | GC RTH 08:20–13:30 ET (`rth_comex`); BTC RTH 09:30–16:00 ET | change in config |
+| B5 | Early closes from the data's last bar are the scheduled closes | correct from CME's holiday calendar |
+| B6 | BTC exchange fee $7.50/side (CFTC filing; date not confirmed) | update the BTC commission |
+| B7 | Volume roll works for GC (bimonthly) and BTC (monthly) | add a per-symbol roll rule |
+| B8 | Guban's `choose_contracts` and the pipeline's rule give the same NQ roll dates | store uses the pipeline's rule; Guban re-checks parity |
+| B9 | The store fits on D: | measure one month per symbol first |
+| B10 | `guban run` takes explicit cost flags, so defaults can sit behind them | adjust the CLI change |
+
+### Build steps (Phase 14 = 1–3, Phase 15 = 4–7; pipeline steps are SD1–SD3 in its own PLAN.md)
+1. **Verify B1, B2, B4, B6, B8, B9, B10.** Read `src/guban/data/ticks.py`, `resample.py`, `cli.py` (cost flags),
+   `research/days.py`; pipeline `src/data/{deepcharts,minutes,rolls,ticks,sessions}.py`, `config/costs.yaml`. Decode one
+   GC and one BTC minute + tick file (price grid, session window); diff both NQ roll calendars; measure one month of
+   store output per symbol and free space on D:; check CME spec/fee pages. Findings appended here.
+2. **Store builder core**, tests first (synthetic bytes): tick bars, minute fallback, 2% rule, skip in-progress/cut-off,
+   write-once, changed-source report, read-only source. `src/guban/store/`, `config/store.toml`, `guban store build|verify`
+   (shared CLI option objects), `D:\Market Data\README.md`.
+3. **Build the store:** NQ first (compare with today's `data/NQ/1m.parquet` on minute-sourced sessions), then MNQ, ES,
+   GC, BTC; review each `quality.csv` and GC/BTC `roll_calendar.csv`. Commit Phase 14.
+4. **Guban import from the store**, GC/BTC specs + cost defaults for all five, `rth_comex` session, bump `CACHE_VERSION`.
+5. **Calendars:** equity 2019–2022, `cme_metals`, `cme_crypto`; link GC/BTC in `contracts.toml`.
+6. **Research ticks from the store:** `guban/data/ticks.py` + VAP cache; `research/poc_shift.py` matches Phase 13 or the
+   differences are listed.
+7. **Regression + docs:** Vault Break MC compare (Phase 5 command) passes S3; if not, add `guban import --bars minute`
+   for parity runs and rerun; `guban run` on all five; update CLAUDE.md, USE.md, README; commit Phase 15.
+
+### Step 1 findings (2026-10-06)
+- **B1 holds.** Every GC price in the sampled files sits on the 0.10 grid (not 0.20), and every BTC price on the 5 grid
+  (not 10), in both minute and tick files. CME specs: GC is 100 oz at $0.10 = $10 per tick → $100/pt; BTC is 5 BTC at
+  $5 = $25 per tick → $5/pt ([CME gold fact card](https://www.cmegroup.com/trading/metals/files/fact-card-gold-futures-options.pdf),
+  [StoneX BTC specs](https://futures.stonex.com/blog/understanding-cme-bitcoin-and-micro-bitcoin-futures-contract-specifications)).
+- **B2 holds for GC (18:00 → 16:59 ET) and fails partly for BTC.** CME runs crypto futures 24/7 since 2026-05-29
+  ([CME press release](https://www.cmegroup.com/media-room/press-releases/2026/6/01/cme_group_announceslaunchof247cryptocurrencyfuturesandoptionstra.html)).
+  From then on, BTC files exist for weekend dates and carry bars up to 17:59 ET (116 files, 0.24% of volume). The
+  decoder needs no change: one file is still one 18:00 → 18:00 day. → The store's "session ended" time is
+  **18:00 ET the next day** (not 17:00), plus 10 min settle. An ambiguous fall-back hour (first on 2026-11-01) is
+  resolved from record order.
+- **B4:** GC settles at 13:30 ET (CME), so `rth_comex` 08:20–13:30 stands. GC early closes in the data end at 14:29 ET.
+- **B6 holds:** the non-member exchange fee for BTC is $7.50 per contract (IBKR's CME fee schedule).
+- **B8: the two roll rules agree on every NQ, MNQ and GC roll.** They differ on 1 ES roll and 27 BTC rolls. In every one of
+  those, the old contract has **no file** in the session where Guban switches. Guban moves to the next contract in that
+  same session; the pipeline's `roll_decisions` keeps the empty old contract as front for one more session, so that
+  session is lost (66 times for BTC, once for ES). → The store uses **Guban's rule** (= the pipeline's rule, plus a
+  same-session switch when the front contract has no file); `roll_calendar.csv` marks those rolls
+  `reason = front has no file`. The pipeline's NQ calendar is unchanged.
+- **B9 holds:** 646 GB free on D:. One month in Parquet (zstd) is 9–16% of the raw tick bytes → about 10 GB of ticks
+  for the five symbols (raw: NQ 21.9, MNQ 22.8, ES 41.8, GC 6.3, BTC 0.3 GB).
+- **B10 holds with a change:** `--commission/--slippage` default to 0.0. Phase 15 makes the default None, which means
+  "use the contract's default costs".
+- **B3 refined: the 2% total alone is not enough.** Tick-built bars vs minute records on sample sessions: before
+  2025-11, volume matches on 100% of minutes and OHLC on all but the 18:00 opening minute (the minute file holds
+  opening records that are not in the ticks). From 2025-12, NQ/ES/MNQ/BTC match volume on 99.7–99.9% of minutes
+  (session totals within 0.01%). GC ticks from 2025-12 miss ~2% of trades spread over most minutes: only ~40% of
+  minutes match, yet some sessions are within 2% overall. Tick timing is aligned: shifting it by ±100 ms makes the
+  match worse. → A session is tick-built only when its total is within 2% **and** ≥ 99% of its minutes match exactly
+  (`config/store.toml` `min_minute_match`). **SR3 restated:** in tick-built sessions, volume matches on ≥ 99% of
+  minutes and OHLC on ≥ 99.9% (it said "every minute", which the 18:00 open and the 2025-12+ feed rule out).
+- **Source facts:** the DeepCharts folder now also holds CL, SI and YM (out of scope). **MNQ files stop at session
+  2026-09-16.** **ES 202609 files stop at session 2026-08-16**, so ES has only the thin back month until the roll.
+  `quality.csv` flags such front sessions `thin`.
+- **Side encoding:** both projects already read minute field 6 as the sell side (`bid_vol`).
+
+Not in scope: deleting `Database/` (42 GB) or the pipeline's frozen snapshot (21 GB), which is the user's call later;
+MES/MGC/MBT (not in the source); expiry roll for GC/BTC; new theses on ES/GC/BTC. Rollback: sources untouched; revert
+the commits and delete `D:\Market Data\`.
+
+## Phase 14 results (2026-10-06)
+- **Built:** `guban store build` (`src/guban/store/{bars,build}.py`, `config/store.toml`, CLI `guban store build|verify`
+  with shared `--symbol/--root/--source` options) wrote `D:\Market Data\`: 9.84 GB, 14,616 files, ~20 min for all
+  five symbols on the process pool (the build keeps Windows awake; a sleeping PC had stretched one run to 3 h).
+
+  | Symbol | Contract sessions | Tick-built | Minute-built | Rolls | Store | SR3 volume / OHLC |
+  |---|---|---|---|---|---|---|
+  | NQ | 2,689 | 871 | 1,818 | 31 | 2.5 GB | 99.92% / 99.98% PASS |
+  | MNQ | 432 | 222 | 210 | 6 | 2.2 GB | 99.70% / 99.94% PASS |
+  | ES | 2,320 | 891 | 1,429 | 27 | 3.6 GB | 99.91% / 99.98% PASS |
+  | GC | 2,278 | 776 | 1,502 | 29 | 0.9 GB | 99.29% / 100.00% PASS |
+  | BTC | 2,429 | 952 | 1,477 | 81 | 0.1 GB | 99.47% / 99.99% PASS |
+
+- **SR1:** only finished, whole-record sessions are written. One is skipped and listed on every build: NQ 202612
+  session 20261005, whose tick file is cut mid-record and has not grown since the session ended.
+- **SR4:** a second build wrote 0 files; a size+mtime snapshot of all 14,616 files was identical before and after.
+  Changed sources are reported (`CHANGED SOURCE ...`), never applied, unless `--rebuild SYM:YYYYMMDD`.
+- **SR5:** the builder reads the source only with `np.fromfile` / `open("rb")`; `test_source_is_never_written` builds
+  from read-only source files and checks their sha256 and mtime afterwards.
+- **Two bar rules amended, from evidence (both reproduce DeepCharts' own minute bars):**
+  1. *Opening minute.* DeepCharts writes a session's first minute as four records: the open (volume 0), the high,
+     the low and the close. Dropping every zero-volume record therefore lost the true open, which equals the first tick.
+     Rule now: drop a minute only when all its records hold no volume; otherwise merge all of them. With this,
+     minute-built NQ sessions are **100.000% identical** to today's `data/NQ/1m.parquet` on all 454,222 compared bars.
+     **The pipeline's `merge_minute_records` has the same defect** (pipeline step SD1 should adopt this rule).
+  2. *Size-0 ticks* (2026-05-26+ feed). Their prices are in DeepCharts' minute OHLC, but their size is not in its
+     volume. Rule now: O/H/L/C from every record, volume from `size`. MNQ's OHLC match went from 99.86% (FAIL) to 99.94%.
+- **Roll volume:** a session whose minute file holds no volume counts its tick volume. GC and BTC have full tick
+  files but empty minute files for 2026-08-18..24; without this they had no front contract.
+- **Reviewed:** GC rolls through its active months (Feb/Apr/Jun/Aug/Dec) at the end of the month before delivery, and
+  BTC rolls monthly near expiry (B7 holds). 66 BTC rolls have `reason = front has no file` (DeepCharts stops
+  recording the old contract a few days early). `thin` flags holiday sessions, BTC's new weekend sessions, and **the ES hole
+  2026-08-17 → ~09-01** (202609 files missing; only 1–3k contracts of 202612 per session). Phase 15 must decide how
+  `guban import` treats thin front sessions.
+- **For Phase 15 (SR6):** minute-built sessions already equal the old import. Tick-built ones differ from it on 0.3% of
+  bars, by design. `--bars minute` (step 7) restores the old import's bars wherever a parity run needs them.
+- Tests: `tests/test_store.py` (23). Full suite: 320 passed.

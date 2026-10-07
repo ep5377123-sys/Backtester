@@ -1,0 +1,28 @@
+# Shared market-data store (Phase 14): built by `guban store build`, read by Guban and the Research Pipeline.
+# Layout and rules: D:\Market Data\README.md (written by the build) and PLAN.md "Phase 14–15 plan".
+
+root = 'D:\Market Data'          # the store (write-once session files)
+source = 'D:\Deepchart\Database' # DeepCharts folder, opened read-only
+
+# A session's 1-minute bars come from its ticks when the tick file is whole, its summed size is within
+# tolerance_pct of the minute volume, and at least min_minute_match of its minutes have exactly the minute
+# record's volume (2025-11+ GC ticks miss ~2% of trades spread over most minutes; NQ/ES match 99.7-100%).
+tolerance_pct = 2.0
+min_minute_match = 0.99
+
+# A file dated D holds the session from 18:00 ET on D; it is built once now >= D + 1 day at session_end (ET) plus
+# settle_minutes, and the file has not been modified for settle_minutes. 18:00, not 17:00: BTC trades 24/7 since
+# 2026-05-29 and its files carry bars up to 17:59.
+session_end = "18:00"
+settle_minutes = 10
+
+# quality.csv flags a front-contract session as thin when its volume is below thin_ratio x the median of the
+# previous 20 front sessions (e.g. ES 202609 files stop on 2026-08-16, leaving only the back month).
+thin_ratio = 0.2
+
+[symbols]   # store symbol = DeepCharts folder
+NQ = "NQ-CME"
+MNQ = "MNQ-CME"
+ES = "ES-CME"
+GC = "GC-COMEX"
+BTC = "BTC-CME"

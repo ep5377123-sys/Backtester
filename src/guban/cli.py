@@ -1,3 +1,4 @@
+import contextlib
 import functools
 import os
 import re
@@ -713,6 +714,103 @@ def wfo_cmd(
     typer.echo(f"Wrote {trades_path}, {csv_paths[0]}, {csv_paths[1]}, {out / 'wfo.json'}, {html_path}")
     if open_report:
         _open(html_path)
+
+
+# ---------------------------------------------------------------------------
+# guban store: the shared market-data store (Phase 14). build and verify share these options.
+
+store_app = typer.Typer(help="Shared market-data store (config/store.toml): build it from DeepCharts, verify it.", no_args_is_help=True)
+app.add_typer(store_app, name="store")
+STORE = "Store"
+STORE_SYMBOLS = typer.Option(None, "--symbol", help="Store symbol, repeatable (default: every symbol in config/store.toml)", rich_help_panel=STORE)
+STORE_ROOT = typer.Option(None, "--root", file_okay=False, help="Store folder (default: config/store.toml root)", rich_help_panel=STORE)
+STORE_SOURCE = typer.Option(None, "--source", file_okay=False, help="DeepCharts Database folder, opened read-only (default: config/store.toml source)", rich_help_panel=STORE)
+
+
+def _store_config(root: Path | None, source: Path | None, **overrides):
+    from dataclasses import replace
+
+    from guban.store import load_store_config
+
+    cfg = load_store_config()
+    given = {k: v for k, v in {"root": root, "source": source, **overrides}.items() if v is not None}
+    return replace(cfg, **given)
+
+
+@contextlib.contextmanager
+def _keep_awake():
+    """Keep Windows from sleeping while a long build runs (a sleeping PC stretched a 5-minute build to 3 hours)."""
+    if sys.platform != "win32":
+        yield
+        return
+    import ctypes
+
+    es_continuous, es_system_required = 0x80000000, 0x00000001
+    ctypes.windll.kernel32.SetThreadExecutionState(es_continuous | es_system_required)
+    try:
+        yield
+    finally:
+        ctypes.windll.kernel32.SetThreadExecutionState(es_continuous)
+
+
+def _store_progress(step: int = 500):
+    def progress(symbol: str, done: int, total: int) -> None:
+        if done % step == 0 or done == total:
+            typer.echo(f"  {symbol}: {done:,}/{total:,}")
+
+    return progress
+
+
+@store_app.command("build")
+@_friendly
+def store_build_cmd(
+    symbols: list[str] = STORE_SYMBOLS,
+    root: Path = STORE_ROOT,
+    source: Path = STORE_SOURCE,
+    rebuild: list[str] = typer.Option([], "--rebuild", help="Rebuild a stored session, SYM:YYYYMMDD (repeatable)", rich_help_panel=STORE),
+    workers: int = WORKERS,
+    settle_minutes: float = typer.Option(None, "--settle-minutes", help="Minutes a session file must be unmodified (default: config)", rich_help_panel=STORE),
+) -> None:
+    """Add every finished session of NQ, MNQ, ES, GC, BTC to the write-once store; list skipped and changed sources."""
+    from guban.store import build_store
+
+    cfg = _store_config(root, source, settle_minutes=settle_minutes)
+    typer.echo(f"Building {cfg.root} from {cfg.source} (read-only)")
+    with _keep_awake():
+        reports = build_store(cfg, symbols or None, rebuild, workers=workers, progress=_store_progress())
+    for r in reports:
+        typer.echo(f"{r.symbol}: built {r.built:,} sessions ({r.tick_built:,} from ticks, {r.built - r.tick_built:,} from minute records), "
+                   f"{r.already:,} already stored, {r.empty:,} empty files, {r.rolls} rolls; {r.files_written:,} files written in {r.seconds:,.0f} s")  # fmt: skip
+        for key, why in r.skipped:
+            typer.echo(f"  skipped {key}: {why}")
+        for key, why in r.changed:
+            typer.echo(f"  CHANGED SOURCE {key}: {why} (not applied; --rebuild {r.symbol}:{key[-8:]} to rebuild)")
+
+
+@store_app.command("verify")
+@_friendly
+def store_verify_cmd(
+    symbols: list[str] = STORE_SYMBOLS,
+    root: Path = STORE_ROOT,
+    source: Path = STORE_SOURCE,
+) -> None:
+    """SR3: tick-built bars vs the DeepCharts minute records, per symbol; check the stored files. Exit 1 on FAIL."""
+    from guban.store import verify_store
+    from guban.store.build import OHLC_TARGET
+
+    cfg = _store_config(root, source)
+    results = verify_store(cfg, symbols or None, progress=_store_progress(200))
+    for v in results:
+        verdict = "PASS" if v.passed else "FAIL"
+        typer.echo(f"{v.symbol}: {verdict}  {v.sessions:,} sessions, {v.tick_sessions:,} tick-built; minutes with equal volume "
+                   f"{v.volume_match:.4%} (target {v.volume_target:.0%}) of {v.minutes:,}, equal OHLC {v.ohlc_match:.4%} "
+                   f"(target {OHLC_TARGET:.1%}) of {v.ohlc_minutes:,}")  # fmt: skip
+        for p in v.problems[:20]:
+            typer.echo(f"  problem: {p}")
+        for c in v.changed[:20]:
+            typer.echo(f"  changed source: {c}")
+    if not all(v.passed for v in results):
+        raise typer.Exit(1)
 
 
 def _floats(text: str | None, flag: str) -> tuple[float, ...] | None:
