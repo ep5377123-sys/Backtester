@@ -14,13 +14,14 @@ from guban.report import fmt_value, write_report
 from guban.wfo import WalkForwardResult
 
 
-def write_wfo_report(wf: WalkForwardResult, path: str | Path, meta: dict) -> Path:
-    """Write wfo.html. meta: as guban.report.write_report."""
+def write_wfo_report(wf: WalkForwardResult, path: str | Path, meta: dict, trade_charts: bool = True, workers: int | None = None) -> Path:
+    """Write wfo.html (and the out-of-sample trades' images in trades/ next to it). meta: as guban.report.write_report."""
     bands = []
     for w in wf.windows:
         mid = w.oos_start + (w.oos_end - w.oos_start) / 2
         bands.append({"x0": f"{w.oos_start:%Y-%m-%d}", "x1": f"{w.oos_end:%Y-%m-%d}", "xm": f"{mid:%Y-%m-%d}", "label": f"W{w.no}"})
-    return write_report(wf.oos_result(), wf.bars, path, wf.metrics, meta, sections=[wfo_section(wf)], bands=bands)
+    return write_report(wf.oos_result(), wf.bars, path, wf.metrics, meta, sections=[wfo_section(wf)], bands=bands,
+                        trade_charts=trade_charts, workers=workers)  # fmt: skip
 
 
 def _d(t) -> str:

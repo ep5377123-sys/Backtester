@@ -1,13 +1,13 @@
-"""Self-contained HTML backtest report (R6): summary metrics, equity curve, drawdown, a trade Monte Carlo (Phase 11,
-guban.montecarlo), monthly net profit, a price chart with trades, and the trade list. plotly.js is inlined, so the
-file opens offline.
+"""Self-contained HTML backtest report (R6): summary metrics, equity curve, drawdown, a trade Monte Carlo (Phases 11
+and 16, guban.montecarlo), monthly net profit, a price chart per trade, and the trade list.
 
-Charts are drawn in the browser from compact JSON:
-- equity and drawdown: one point per session (equity at the session's last bar; the session's worst intraday
-  drawdown, see guban.metrics.intraday_drawdown).
-- price chart: a trade viewer. Each trade is shown on the strategy bars around it, `CONTEXT_BARS` either side;
-  trades close together share one window. Windows longer than `MAX_CANDLES` bars are merged k bars per candle,
-  so a report stays small (a few MB beyond plotly.js) whatever the history length.
+Charts are matplotlib images (Phase 16, guban.charts), so the page is light-only:
+- equity, drawdown and Monte Carlo charts are inline PNGs: report.html opens offline from one file. Equity and
+  drawdown have one point per session (equity at the session's last bar; the session's worst intraday drawdown, see
+  guban.metrics.intraday_drawdown).
+- the price viewer shows one pre-rendered image per trade, `trades/trade_<no>.png` next to the report
+  (guban.trade_charts), loaded when shown; ◀ / ▶, the trade number box and the trade list switch them. A missing
+  image (a --no-trade-charts run) shows the `guban chart` command that draws it.
 """
 
 from __future__ import annotations
@@ -20,12 +20,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from guban.charts import COLORS, MONEY, figure, img_tag, styled, to_data_uri
 from guban.metrics import ACCOUNT_STATS, TRADE_STATS, daily_equity, intraday_drawdown, session_keys
 
-CONTEXT_BARS = 24
-WINDOW_BARS = 600  # trades are grouped into one window while it stays within this many bars
-MAX_CANDLES = 1500
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+MC_BINS = 60
+MC_TITLES = {"resample": "Resample", "reorder": "Reorder", "day": "Whole days"}
 
 
 def write_report(
@@ -37,8 +37,11 @@ def write_report(
     sections: list[str] | None = None,
     bands: list[dict] | None = None,
     monte_carlo=None,
+    trade_charts: bool = True,
+    workers: int | None = None,
 ) -> Path:
-    """Write report.html for a BacktestResult run on `bars` (the frame passed to run_backtest).
+    """Write report.html for a BacktestResult run on `bars` (the frame passed to run_backtest), and with
+    `trade_charts` one image per trade in trades/ next to it (on `workers` processes, guban.trade_charts).
 
     meta: {"title", "subtitle", "details": {label: value}, "inputs": {name: value}, "notes": [str]}.
     result.equity may cover only some of the bars (a stitched walk-forward curve); trade bar numbers index `bars`.
@@ -46,37 +49,38 @@ def write_report(
     periods marked on the equity and drawdown charts (every other one shaded; x1 exclusive).
     monte_carlo: a guban.montecarlo.MonteCarloResult (a section after the drawdown chart), {"skipped": reason}, or None.
     """
+    from guban.trade_charts import FOLDER, write_trade_charts
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tr = result.trades
+    tick = result.spec.tick_size if result.spec else 0.01
     sessions = bars["session_date"].reindex(result.equity.index) if "session_date" in bars.columns else None
     daily = daily_equity(result.equity, sessions)
     dd = intraday_drawdown(result.equity, result.equity_low, result.equity_high, result.bar_drawdown)
     daily_dd = dd.groupby(session_keys(dd.index, sessions)).min()
-    data = {
-        "tick": result.spec.tick_size if result.spec else 0.01,
-        "days": [d.strftime("%Y-%m-%d") for d in daily.index],
-        "equity": _r(daily.to_numpy(), 2),
-        "dd": _r(daily_dd.to_numpy(), 2),
-        "bands": bands or [],
-        "mc": monte_carlo.report_data() if monte_carlo is not None and not isinstance(monte_carlo, dict) else None,
-        **_trade_windows(tr, bars, result.spec.tick_size if result.spec else 0.01),
-    }
+    images = trade_charts and len(tr) > 0
+    if images:
+        write_trade_charts(tr, bars, path.parent / FOLDER, tick, workers)
+    elif (path.parent / FOLDER).is_dir():  # an earlier run's images would show the wrong trades
+        for old in (path.parent / FOLDER).glob("trade_*.png"):
+            old.unlink()
+    data = {"trades": _trade_rows(tr), "img": f"{FOLDER}/", "run": path.parent.as_posix()}
+    eq_png, dd_png = _equity_pngs(daily, daily_dd, bands or [])
     band_cap = " Labels and alternate shading mark the out-of-sample windows." if bands else ""
     parts = [
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
         "<meta name='viewport' content='width=device-width, initial-scale=1'>",
         f"<title>{html.escape(meta.get('title', 'Backtest report'))}</title>",
         f"<style>{_CSS}</style>",
-        f"<script>{_plotly_js()}</script>",
         "</head><body><main>",
         _header(meta),
         *(sections or []),
         _tiles(metrics),
         f"<section><h2>Equity</h2><p class='cap'>Closed net profit plus open profit at each session's last bar, USD.{band_cap}</p>"
-        "<div id='equity' class='chart'></div></section>",
+        + (img_tag(eq_png, "Equity curve", id="equity") if eq_png else "<p class='muted'>No equity data.</p>") + "</section>",
         "<section><h2>Drawdown</h2><p class='cap'>Worst intraday drawdown each session, from the running equity peak (tracked along the intrabar path), USD.</p>"
-        "<div id='drawdown' class='chart short'></div></section>",
+        + (img_tag(dd_png, "Drawdown", id="drawdown") if dd_png else "<p class='muted'>No equity data.</p>") + "</section>",
         _monte_carlo_html(monte_carlo),
         _summary_table(metrics),
         _monthly_table(tr),
@@ -95,69 +99,95 @@ def write_report(
 # --- data ----------------------------------------------------------------------------------------
 
 
-def _r(a, nd: int) -> list:
-    return [None if not np.isfinite(v) else round(float(v), nd) for v in np.asarray(a, float)]
-
-
-def _trade_windows(tr: pd.DataFrame, bars: pd.DataFrame, tick: float) -> dict:
-    """Group trades into bar windows and encode each window's candles compactly.
-
-    Window: t0 (bar close time, minutes since 1970 in chart wall-clock time), dt (minutes from t0 per candle),
-    base (ticks), o/h/l/c (ticks from base). Trades: [no, dir, qty, entry time, entry name, entry price,
-    exit time, exit name, exit price, net, cum net, run-up, drawdown, ambiguous, window, entry candle, exit candle].
-    """
-    n = len(bars)
-    wall = bars.index.tz_localize(None) if bars.index.tz is not None else bars.index
-    minutes = (wall.as_unit("s").asi8 // 60).astype(np.int64)
-    ticks = {k: np.rint(bars[k].to_numpy(float) / tick).astype(np.int64) for k in ("open", "high", "low", "close")}
-    groups: list[list[int]] = []  # [start, end, first trade, last trade]
-    for k, (eb, xb) in enumerate(zip(tr["entry_bar"].to_numpy(int), tr["exit_bar"].to_numpy(int))):
-        s, e = max(0, eb - CONTEXT_BARS), min(n - 1, xb + CONTEXT_BARS)
-        g = groups[-1] if groups else None
-        if g and s <= g[1] and max(e, g[1]) - g[0] < WINDOW_BARS:
-            g[1], g[3] = max(e, g[1]), k
-        else:
-            groups.append([s, e, k, k])
-    windows, trade_rows = [], []
+def _trade_rows(tr: pd.DataFrame) -> list[list]:
+    """[no, dir, qty, entry time, entry name, entry price, exit time, exit name, exit price, net, cum net, run-up,
+    drawdown, ambiguous] per trade, for the trade list and the viewer's info line."""
     fmt = lambda t: t.strftime("%Y-%m-%d %H:%M")  # noqa: E731
-    for w, (s, e, k0, k1) in enumerate(groups):
-        m = e - s + 1
-        step = max(1, math.ceil(m / MAX_CANDLES))
-        idx = np.arange(s, e + 1)
-        grp = (idx - s) // step
-        cuts = np.flatnonzero(np.r_[True, np.diff(grp) != 0])
-        last = np.r_[cuts[1:], len(idx)] - 1
-        o = ticks["open"][s:e + 1][cuts]
-        h = np.maximum.reduceat(ticks["high"][s:e + 1], cuts)
-        lo = np.minimum.reduceat(ticks["low"][s:e + 1], cuts)
-        c = ticks["close"][s:e + 1][last]
-        t = minutes[s:e + 1][last]
-        base = int(o[0])
-        windows.append({
-            "t0": int(t[0]), "dt": (t - t[0]).tolist(), "base": base, "step": step,
-            "o": (o - base).tolist(), "h": (h - base).tolist(), "l": (lo - base).tolist(), "c": (c - base).tolist(),
-        })  # fmt: skip
-        for k in range(k0, k1 + 1):
-            r = tr.iloc[k]
-            trade_rows.append([
-                int(r.trade_no), 1 if r.direction == "long" else -1, int(r.qty),
-                fmt(r.entry_time), str(r.entry_name), float(r.entry_price),
-                fmt(r.exit_time), str(r.exit_name), float(r.exit_price),
-                round(float(r.net_pnl), 2), round(float(r.cum_net_pnl), 2),
-                round(float(r.runup), 2), round(float(r.drawdown), 2), int(bool(r.ambiguous)),
-                w, int((r.entry_bar - s) // step), int((r.exit_bar - s) // step),
-            ])  # fmt: skip
-    return {"windows": windows, "trades": trade_rows}
+    return [
+        [int(r.trade_no), 1 if r.direction == "long" else -1, int(r.qty), fmt(r.entry_time), str(r.entry_name), float(r.entry_price),
+         fmt(r.exit_time), str(r.exit_name), float(r.exit_price), round(float(r.net_pnl), 2), round(float(r.cum_net_pnl), 2),
+         round(float(r.runup), 2), round(float(r.drawdown), 2), int(bool(r.ambiguous))]
+        for r in tr.itertuples(index=False)
+    ]  # fmt: skip
 
 
 def _json(obj) -> str:
     return json.dumps(obj, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
 
 
-def _plotly_js() -> str:
-    from plotly.offline import get_plotlyjs
+# --- charts --------------------------------------------------------------------------------------
 
-    return get_plotlyjs()
+
+def _date_axis(ax) -> None:
+    import matplotlib.dates as mdates
+
+    loc = mdates.AutoDateLocator()
+    ax.xaxis.set_major_locator(loc)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(loc))
+
+
+def _shade(ax, bands: list[dict], labels: bool) -> None:
+    for i, b in enumerate(bands):
+        if i % 2 == 0:
+            ax.axvspan(np.datetime64(b["x0"]), np.datetime64(b["x1"]), color=COLORS["s1"], alpha=0.08, lw=0, zorder=0)
+        if labels:
+            ax.text(np.datetime64(b["xm"]), 1.0, b["label"], transform=ax.get_xaxis_transform(), ha="center", va="bottom",
+                    fontsize=7, color=COLORS["muted"])  # fmt: skip
+
+
+@styled
+def _equity_pngs(daily: pd.Series, daily_dd: pd.Series, bands: list[dict]) -> tuple[str | None, str | None]:
+    if not len(daily):
+        return None, None
+    x = pd.to_datetime([d.strftime("%Y-%m-%d") for d in daily.index]).to_numpy()
+    fig, ax = figure(9.6, 3.2)
+    ax.plot(x, daily.to_numpy(float), color=COLORS["s1"], lw=1.5)
+    _shade(ax, bands, labels=True)
+    ax.yaxis.set_major_formatter(MONEY)
+    _date_axis(ax)
+    eq = to_data_uri(fig)
+    fig, ax = figure(9.6, 2.2)
+    d = daily_dd.to_numpy(float)
+    ax.fill_between(x, d, 0, color=COLORS["bad"], alpha=0.2, lw=0)
+    ax.plot(x, d, color=COLORS["bad"], lw=1.1)
+    _shade(ax, bands, labels=False)
+    ax.yaxis.set_major_formatter(MONEY)
+    _date_axis(ax)
+    return eq, to_data_uri(fig)
+
+
+@styled
+def _mc_band_png(m, unit: str) -> str:
+    from matplotlib.collections import LineCollection
+
+    fig, ax = figure(4.4, 2.8)  # shown ~1/3 of the page wide: a small figure keeps its text readable
+    x, b = m.x, m.bands
+    ax.fill_between(x, b[0], b[4], color=COLORS["s1"], alpha=0.14, lw=0, label="5th–95th")
+    ax.fill_between(x, b[1], b[3], color=COLORS["s1"], alpha=0.28, lw=0, label="25th–75th")
+    if m.paths is not None and len(m.paths):
+        seg = np.stack([np.broadcast_to(x, m.paths.shape), m.paths], axis=-1)
+        ax.add_collection(LineCollection(seg, colors=COLORS["ink"], alpha=0.07, linewidths=0.5, label=f"{len(m.paths)} runs"))
+    ax.plot(x, b[2], color=COLORS["s1"], lw=1.6, label="Median")
+    ax.plot(x, m.backtest, color=COLORS["ink"], lw=1.2, label="Backtest")
+    ax.set_xlabel("Trading days" if unit == "day" else "Trades")
+    ax.yaxis.set_major_formatter(MONEY)
+    ax.legend(loc="upper left", ncols=2)
+    return to_data_uri(fig)
+
+
+@styled
+def _hist_png(values: np.ndarray, color: str, backtest: float, limit: float | None = None) -> str:
+    fig, ax = figure(4.4, 1.9)
+    ax.hist(values, bins=MC_BINS, color=color, alpha=0.85)
+    tx = ax.get_xaxis_transform()
+    ax.axvline(backtest, color=COLORS["ink"], ls="--", lw=1.2)
+    ax.text(backtest, 1.0, "Backtest", transform=tx, ha="center", va="bottom", fontsize=8)
+    if limit is not None:
+        ax.axvline(-limit, color=COLORS["muted"], ls=":", lw=1.2)
+        ax.text(-limit, 1.0, "Limit", transform=tx, ha="center", va="bottom", fontsize=8)
+    ax.xaxis.set_major_formatter(MONEY)
+    ax.set_ylabel("Runs")
+    return to_data_uri(fig)
 
 
 # --- html pieces ---------------------------------------------------------------------------------
@@ -223,53 +253,132 @@ def _summary_table(m: dict) -> str:
     )  # fmt: skip
 
 
+def _table(head: list[str], rows: list[list[str]], cls: str = "mc-table") -> str:
+    """A table whose first column is left-aligned labels (cells are HTML)."""
+    cell = lambda tag, i, v: f"<{tag} class='l'>{v}</{tag}>" if i == 0 else f"<{tag}>{v}</{tag}>"  # noqa: E731
+    th = "".join(cell("th", i, h) for i, h in enumerate(head))
+    body = "".join("<tr>" + "".join(cell("td", i, v) for i, v in enumerate(r)) + "</tr>" for r in rows)
+    return f"<div class='wrap'><table class='{cls}'><tr>{th}</tr>{body}</table></div>"
+
+
+def _pct_head(percentiles) -> list[str]:
+    return [f"{'Median' if p == 50 else f'{p}th'}" for p in percentiles]
+
+
 def _monte_carlo_html(mc) -> str:
     if mc is None:
         return ""
     if isinstance(mc, dict):
         return f"<section id='monte-carlo'><h2>Monte Carlo</h2><p class='muted'>Monte Carlo skipped: {html.escape(mc['skipped'])}.</p></section>"
-    rs, ro = mc.method_summary("resample"), mc.method_summary("reorder")
+    from guban.montecarlo import DEPTH_PERCENTILES, PERCENTILES, UNITS
+
     usd = lambda v: fmt_value(v, "usd")  # noqa: E731
     pct = lambda v: fmt_value(v, "pct")  # noqa: E731
+    names = [n for n in ("resample", "reorder", "day") if n in mc.methods]
+    sums = {n: mc.method_summary(n) for n in names}
+    caps = {
+        "resample": f"Each run draws {mc.trades:,} trades from the list at random, with replacement: net profit and drawdown both vary.",
+        "reorder": f"Each run shuffles the same {mc.trades:,} trades: net profit is the backtest's in every run; only the path varies.",
+        "day": f"Each run draws {mc.days or 0:,} trading days (the sessions in which a trade closed) at random, with replacement, keeping "
+               "each day's trades together and in order: losses that cluster on one day cluster here too.",
+    }  # fmt: skip
 
-    def stats(items: list[tuple[str, str]]) -> str:
+    def stats(name: str) -> str:
+        s = sums[name]
+        items = [("Net profit (every run)", usd(mc.net))] if name == "reorder" else [("Net profit ≤ 0", pct(s["p_net_le_0"]))]
+        items.append(("Max DD deeper than backtest", pct(s["p_dd_worse_than_backtest"])))
+        if mc.dd_limit is not None:
+            items.append((f"Max DD reaches {usd(mc.dd_limit)}", pct(s["p_dd_reaches_limit"])))
         return "<div class='mc-stats'>" + "".join(f"<div><div class='k'>{k}</div><div class='v'>{v}</div></div>" for k, v in items) + "</div>"
 
-    limit = [(f"Max DD reaches {usd(mc.dd_limit)}", None)] if mc.dd_limit is not None else []
-    cols = {
-        "resample": ("Resample", f"Each run draws {mc.trades:,} trades from the list at random, with replacement: net profit and drawdown both vary.",
-                     [("Net profit ≤ 0", pct(rs["p_net_le_0"])), ("Max DD deeper than backtest", pct(rs["p_dd_worse_than_backtest"]))]
-                     + [(k, pct(rs["p_dd_reaches_limit"])) for k, _ in limit]),
-        "reorder": ("Reorder", f"Each run shuffles the same {mc.trades:,} trades: net profit is the backtest's in every run; only the path varies.",
-                    [("Net profit (every run)", usd(mc.net)), ("Max DD deeper than backtest", pct(ro["p_dd_worse_than_backtest"]))]
-                    + [(k, pct(ro["p_dd_reaches_limit"])) for k, _ in limit]),
-    }  # fmt: skip
-    col_html = []
-    for name, (title, cap, items) in cols.items():
-        net_chart = (f"<p class='cap mc-label'>Net profit per run (dashed: backtest)</p><div id='mc-net-{name}' class='chart short'></div>"
-                     if name == "resample" else "")  # fmt: skip
-        col_html.append(
-            f"<div class='mc-col'><h3>{title}</h3><p class='cap'>{cap}</p>{stats(items)}"
-            f"<p class='cap mc-label'>Cumulative net profit by trade: 5th–95th and 25th–75th percentile bands, median, backtest</p>"
-            f"<div id='mc-band-{name}' class='chart'></div>"
-            f"<p class='cap mc-label'>Max drawdown per run (dashed: backtest)</p><div id='mc-dd-{name}' class='chart short'></div>{net_chart}</div>"
+    cols = []
+    for name in names:
+        m = mc.methods[name]
+        net_chart = ("<p class='cap mc-label'>Net profit per run (dashed: backtest)</p>"
+                     + img_tag(_hist_png(m.net, COLORS["s1"], mc.net), f"{MC_TITLES[name]}: net profit per run", id=f"mc-net-{name}")
+                     if name != "reorder" else "")  # fmt: skip
+        cols.append(
+            f"<div class='mc-col'><h3>{MC_TITLES[name]}</h3><p class='cap'>{caps[name]}</p>{stats(name)}"
+            f"<p class='cap mc-label'>Cumulative net profit by {'trading day' if UNITS[name] == 'day' else 'trade'}: 5th–95th and 25th–75th "
+            "percentile bands, median, the first runs (thin), backtest</p>"
+            + img_tag(_mc_band_png(m, UNITS[name]), f"{MC_TITLES[name]}: cumulative net profit bands", id=f"mc-band-{name}")
+            + "<p class='cap mc-label'>Max drawdown per run (dashed: backtest)</p>"
+            + img_tag(_hist_png(m.max_dd, COLORS["bad"], mc.max_dd, mc.dd_limit), f"{MC_TITLES[name]}: max drawdown per run", id=f"mc-dd-{name}")
+            + f"{net_chart}</div>"
         )
-    heads = "".join(f"<th>{'Median' if p == 50 else f'{p}th'}</th>" for p in (5, 25, 50, 75, 95))
-    rows = [("Resample · net profit", rs["net_profit"], mc.net), ("Resample · max drawdown", rs["max_drawdown"], mc.max_dd),
-            ("Reorder · max drawdown", ro["max_drawdown"], mc.max_dd)]  # fmt: skip
-    body = "".join(
-        f"<tr><td class='l'>{label}</td>" + "".join(f"<td>{usd(v)}</td>" for v in vals.values()) + f"<td class='b'>{usd(bt)}</td></tr>"
-        for label, vals, bt in rows
-    )
+    skipped = "".join(f"<p class='muted'>{MC_TITLES.get(k, k)} method skipped: {html.escape(v)}.</p>" for k, v in mc.skipped.items())
+
+    rows = []
+    for name in names:
+        if name != "reorder":
+            rows.append([f"{MC_TITLES[name]} · net profit", *(usd(v) for v in sums[name]["net_profit"].values()), f"<b>{usd(mc.net)}</b>"])
+        rows.append([f"{MC_TITLES[name]} · max drawdown", *(usd(v) for v in sums[name]["max_drawdown"].values()), f"<b>{usd(mc.max_dd)}</b>"])
+    pct_table = _table(["Percentile of runs", *_pct_head(PERCENTILES), "Backtest"], rows)
+    depth_rows = [[MC_TITLES[n], *(usd(v) for v in sums[n]["max_drawdown_depth"].values()), f"<b>{usd(-mc.max_dd)}</b>"] for n in names]
+    depth_table = _table(["Max drawdown depth", *_pct_head(DEPTH_PERCENTILES), "Backtest"], depth_rows)
+
     return (
         "<section id='monte-carlo'><h2>Monte Carlo</h2>"
         f"<p class='cap'>{mc.sims:,} runs per method on this backtest's {mc.trades:,} trades (net of costs), seed {mc.seed}. "
         f"Drawdowns here are close-to-close (closed-trade equity from 0): compare them with the backtest's close-to-close max drawdown, "
-        f"{usd(mc.max_dd)}, not the intraday figure in the tiles above. Trades are drawn one at a time, so trades that tend to win or lose "
-        "together (for example on the same day) are treated as independent, which can make drawdowns look milder than they are.</p>"
-        f"<div class='mc-grid'>{''.join(col_html)}</div>"
-        f"<div class='wrap'><table class='mc-table'><tr><th class='l'>Percentile of runs</th>{heads}<th>Backtest</th></tr>{body}</table></div>"
-        "<p class='cap'>Drawdowns are negative, so the 5th percentile is the deepest 5% of runs.</p></section>"
+        f"{usd(mc.max_dd)}, not the intraday figure in the tiles above. Resample and reorder draw trades one at a time, so trades that "
+        "tend to win or lose together (for example on the same day) are treated as independent, which can make drawdowns look milder "
+        "than they are; the whole-days method keeps each day's trades together.</p>"
+        f"<div class='mc-grid'>{''.join(cols)}</div>{skipped}"
+        f"{pct_table}<p class='cap'>Drawdowns are negative, so the 5th percentile is the deepest 5% of runs.</p>"
+        f"{depth_table}<p class='cap'>Depth = the max drawdown as a positive amount: the 95th percentile is deeper than 95% of runs.</p>"
+        f"{_ev_html(mc.ev)}{_horizons_html(mc.horizons)}</section>"
+    )
+
+
+EV_GROUPS = {"all": "All trades", "long": "Long", "short": "Short", "in_sample": "In sample", "out_of_sample": "Out of sample"}
+
+
+def _ev_html(ev: dict) -> str:
+    if not ev or not ev.get("groups"):
+        return ""
+    usd = lambda v: fmt_value(v, "usd")  # noqa: E731
+    r2 = lambda v: fmt_value(v, "ratio")  # noqa: E731
+    level = f"{ev['ci']:.0%}"
+    rows = []
+    for key, g in ev["groups"].items():
+        label = EV_GROUPS.get(key, key)
+        if key in ("in_sample", "out_of_sample"):
+            label += f" ({'before' if key == 'in_sample' else 'from'} {ev['oos_from']})"
+        r = g["r"]
+        rows.append([label, f"{g['trades']:,}", fmt_value(g["win_rate"], "pct"), usd(g["usd"]["mean"]),
+                     f"{usd(g['usd']['lo'])} to {usd(g['usd']['hi'])}", r2(r["mean"]) if r else "n/a",
+                     f"{r2(r['lo'])} to {r2(r['hi'])}" if r else "n/a", fmt_value(g["p_ev_le_0"], "pct")])  # fmt: skip
+    risk = ev["risk_per_contract"]
+    r_cap = (f"R = net / (contracts × {usd(risk)} risk per contract; {ev['risk_source']})." if risk is not None
+             else f"No R: {ev['risk_source']}.")  # fmt: skip
+    skipped = ev.get("skipped") or {}
+    sk = (" Too few trades for: " + ", ".join(f"{EV_GROUPS.get(k, k)} ({v})" for k, v in skipped.items()) + ".") if skipped else ""
+    return (
+        "<h3 class='mc-h'>Expected value per trade</h3>"
+        + _table(["Trades", "Count", "Win rate", "EV (USD)", f"{level} CI (USD)", "EV (R)", f"{level} CI (R)", "P(EV ≤ 0)"], rows)
+        + f"<p class='cap'>Mean net profit per trade with a bootstrap {level} confidence interval (the trades resampled with replacement, "
+        f"once per run); P(EV ≤ 0) is the share of bootstrap means at or below 0. {r_cap}{sk}</p>"
+    )
+
+
+def _horizons_html(horizons: dict) -> str:
+    from guban.montecarlo import DEPTH_PERCENTILES
+
+    rows = []
+    for name, hz in horizons.items():
+        unit = "trading days" if name == "day" else "trades"
+        for h in hz:
+            n, d = h["net_profit"], h["max_drawdown_depth"]
+            rows.append([f"{MC_TITLES[name]} · {h['n']:,} {unit}", fmt_value(n["p5"], "usd"), fmt_value(n["p50"], "usd"), fmt_value(n["p95"], "usd"),
+                         fmt_value(h["p_net_lt_0"], "pct"), *(fmt_value(d[f"p{p}"], "usd") for p in DEPTH_PERCENTILES)])  # fmt: skip
+    if not rows:
+        return ""
+    head = ["After", "Net 5th", "Net median", "Net 95th", "P(net < 0)", *(f"DD depth {h.lower()}" for h in _pct_head(DEPTH_PERCENTILES))]
+    return (
+        "<h3 class='mc-h'>Horizons</h3>" + _table(head, rows)
+        + "<p class='cap'>Net profit and max drawdown depth after each run's first trades (resample) or trading days (whole days): "
+        "what a shorter stretch of this strategy can look like. Horizons longer than the backtest are left out.</p>"
     )
 
 
@@ -294,14 +403,17 @@ def _monthly_table(tr: pd.DataFrame) -> str:
 def _viewer_html(n: int) -> str:
     if not n:
         return "<section><h2>Price chart with trades</h2><p class='muted'>No trades.</p></section>"
+    chart = (
+        "<img id='viewer' class='chart' alt='Price chart of the selected trade'>"
+        "<p id='noimg' class='muted' hidden></p>"
+        "<p class='cap'>▲ long entry · ▼ short entry · ● exit (outlined: loss) · the selected trade is shaded, other trades in view "
+        "are faded. ← / → step through trades. Gaps between sessions are closed up.</p>"
+    )  # fmt: skip
     return (
         "<section id='viewer-sec'><h2>Price chart with trades</h2>"
         "<div class='controls'><button id='prev' type='button' aria-label='Previous trade'>◀</button>"
         f"<label>Trade <input id='tno' type='number' min='1' max='{n}' value='1'></label> <span class='muted'>of {n:,}</span>"
-        "<button id='next' type='button' aria-label='Next trade'>▶</button><span id='tinfo' class='tinfo'></span></div>"
-        "<div id='viewer' class='chart tall'></div>"
-        "<p class='cap'>▲ long entry · ▼ short entry · ● exit (outlined: loss) · the selected trade is highlighted. "
-        "← / → step through trades. Gaps between sessions are closed up.</p></section>"
+        f"<button id='next' type='button' aria-label='Next trade'>▶</button><span id='tinfo' class='tinfo'></span></div>{chart}</section>"
     )
 
 
@@ -326,16 +438,11 @@ def _notes(meta: dict) -> str:
     return "<section><h2>Notes</h2><ul class='notes'>" + "".join(f"<li>{html.escape(n)}</li>" for n in notes) + "</ul></section>"
 
 
+# light only: the chart images have fixed colours (guban.charts.COLORS)
 _CSS = """
 :root { color-scheme: light;
   --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781; --grid:#e1e0d9; --axis:#c3c2b7;
   --ring:rgba(11,11,11,0.10); --s1:#2a78d6; --up:#2a78d6; --down:#e34948; --good:#0ca30c; --bad:#d03b3b; --hl:rgba(42,120,214,0.10); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark;
-  --page:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --axis:#383835;
-  --ring:rgba(255,255,255,0.10); --s1:#3987e5; --up:#3987e5; --down:#e66767; --good:#0ca30c; --bad:#d03b3b; --hl:rgba(57,135,229,0.18); } }
-:root[data-theme="dark"] { color-scheme: dark;
-  --page:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --axis:#383835;
-  --ring:rgba(255,255,255,0.10); --s1:#3987e5; --up:#3987e5; --down:#e66767; --good:#0ca30c; --bad:#d03b3b; --hl:rgba(57,135,229,0.18); }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--page); color:var(--ink); font:14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
 main { max-width:1200px; margin:0 auto; padding:24px 16px 48px; }
@@ -348,7 +455,7 @@ section, header { background:var(--surface); border:1px solid var(--ring); borde
 .chip { font:12px ui-monospace, Consolas, monospace; border:1px solid var(--ring); border-radius:999px; padding:1px 8px; color:var(--ink2); }
 .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; }
 .tile .k { font-size:12px; color:var(--ink2); } .tile .v { font-size:22px; font-weight:600; }
-.chart { width:100%; height:320px; } .chart.short { height:220px; } .chart.tall { height:460px; }
+img.chart { display:block; width:100%; height:auto; }
 .wrap { overflow-x:auto; }
 table { border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:13px; width:100%; }
 th, td { padding:4px 8px; text-align:right; white-space:nowrap; border-bottom:1px solid var(--grid); }
@@ -361,104 +468,46 @@ button, input, select { font:inherit; color:var(--ink); background:var(--page); 
 button { cursor:pointer; } button:hover { border-color:var(--ink2); } input[type=number] { width:90px; }
 .tinfo { color:var(--ink2); font-size:13px; }
 .notes { margin:0; padding-left:18px; color:var(--ink2); }
-h3 { font-size:14px; margin:0 0 2px; }
-.mc-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:24px; margin:12px 0; }
-@media (max-width:800px) { .mc-grid { grid-template-columns:minmax(0, 1fr); } }
+h3 { font-size:14px; margin:0 0 2px; } h3.mc-h { margin:16px 0 4px; }
+.mc-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:24px; margin:12px 0; }
 .mc-stats { display:flex; flex-wrap:wrap; gap:8px 24px; margin:8px 0 12px; }
 .mc-stats .k { font-size:12px; color:var(--ink2); } .mc-stats .v { font-size:18px; font-weight:600; }
 .mc-label { margin:8px 0 0; }
+table.mc-table { margin:12px 0 4px; }
 """
 
 _JS = r"""
 (function () {
-  const css = () => { const s = getComputedStyle(document.documentElement); const v = n => s.getPropertyValue(n).trim();
-    return { ink: v('--ink'), ink2: v('--ink2'), muted: v('--muted'), grid: v('--grid'), axis: v('--axis'), surface: v('--surface'),
-             s1: v('--s1'), up: v('--up'), down: v('--down'), good: v('--good'), bad: v('--bad') }; };
   const money = x => (x < 0 ? '−' : '') + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const cfg = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines'] };
-  const layout = (c, extra) => Object.assign({
-    paper_bgcolor: c.surface, plot_bgcolor: c.surface, font: { family: 'system-ui, -apple-system, Segoe UI, sans-serif', size: 12, color: c.ink2 },
-    margin: { l: 64, r: 16, t: 8, b: 36 }, showlegend: false, hovermode: 'x',
-    hoverlabel: { bgcolor: c.surface, bordercolor: c.axis, font: { color: c.ink } },
-    xaxis: { gridcolor: c.grid, linecolor: c.axis, zeroline: false, showspikes: true, spikemode: 'across', spikethickness: 1, spikecolor: c.muted, spikedash: 'solid' },
-    yaxis: { gridcolor: c.grid, linecolor: c.axis, zerolinecolor: c.axis, tickformat: ',.0f' },
-  }, extra || {});
 
-  function drawCurves() {
-    const c = css(), B = D.bands;
-    const shapes = B.filter((_, i) => i % 2 === 0).map(b => ({ type: 'rect', xref: 'x', yref: 'paper', x0: b.x0, x1: b.x1, y0: 0, y1: 1,
-      fillcolor: c.s1, opacity: 0.08, line: { width: 0 }, layer: 'below' }));
-    const labels = B.map(b => ({ x: b.xm, y: 1, xref: 'x', yref: 'paper', yanchor: 'bottom', text: b.label, showarrow: false, font: { size: 10, color: c.muted } }));
-    Plotly.react('equity', [{ x: D.days, y: D.equity, type: 'scatter', mode: 'lines', line: { color: c.s1, width: 2 },
-      hovertemplate: '%{x}<br>Equity %{y:,.2f}<extra></extra>' }], layout(c, B.length ? { shapes, annotations: labels, margin: { l: 64, r: 16, t: 22, b: 36 } } : {}), cfg);
-    Plotly.react('drawdown', [{ x: D.days, y: D.dd, type: 'scatter', mode: 'lines', fill: 'tozeroy', line: { color: c.bad, width: 2 },
-      fillcolor: c.bad + '33', hovertemplate: '%{x}<br>Drawdown %{y:,.2f}<extra></extra>' }], layout(c, { shapes }), cfg);
-  }
-
-  // --- Monte Carlo ---
-  function drawHist(id, h, color, actual, label, limit) {
-    const c = css(), e = h.edges, xs = h.counts.map((_, i) => (e[i] + e[i + 1]) / 2);
-    const vline = (x, dash, color) => ({ type: 'line', xref: 'x', yref: 'paper', x0: x, x1: x, y0: 0, y1: 1, line: { color, width: 1.5, dash } });
-    const note = (x, text) => ({ x, y: 1, xref: 'x', yref: 'paper', yanchor: 'bottom', text, showarrow: false, font: { size: 10, color: c.ink2 } });
-    const shapes = [vline(actual, 'dash', c.ink)], annotations = [note(actual, 'Backtest')];
-    if (limit != null) { shapes.push(vline(-limit, 'dot', c.muted)); annotations.push(note(-limit, 'Limit')); }
-    Plotly.react(id, [{ type: 'bar', x: xs, y: h.counts, width: e[1] - e[0], marker: { color, line: { width: 0 } }, opacity: 0.85,
-      customdata: h.counts.map((_, i) => [e[i], e[i + 1]]),
-      hovertemplate: `${label} %{customdata[0]:,.0f} to %{customdata[1]:,.0f}<br>%{y:,} runs<extra></extra>` }],
-      layout(c, { shapes, annotations, bargap: 0, hovermode: 'closest', margin: { l: 56, r: 16, t: 22, b: 36 } }), cfg);
-  }
-  function drawMC() {
-    const M = D.mc; if (!M) return;
-    const c = css(), x = M.x;
-    for (const name of ['resample', 'reorder']) {
-      const m = M[name], b = m.bands;
-      const band = (lo, hi, alpha) => [
-        { x, y: lo, type: 'scatter', mode: 'lines', line: { width: 0 }, hoverinfo: 'skip' },
-        { x, y: hi, type: 'scatter', mode: 'lines', line: { width: 0 }, fill: 'tonexty', fillcolor: c.s1 + alpha, hoverinfo: 'skip' }];
-      const q = x.map((_, j) => [b[0][j], b[1][j], b[3][j], b[4][j]]);
-      Plotly.react('mc-band-' + name, [...band(b[0], b[4], '26'), ...band(b[1], b[3], '4d'),
-        { x, y: b[2], type: 'scatter', mode: 'lines', line: { color: c.s1, width: 2 }, customdata: q,
-          hovertemplate: 'After %{x:,} trades<br>95th %{customdata[3]:,.2f}<br>75th %{customdata[2]:,.2f}<br>Median %{y:,.2f}' +
-            '<br>25th %{customdata[1]:,.2f}<br>5th %{customdata[0]:,.2f}<extra></extra>' },
-        { x, y: M.path, type: 'scatter', mode: 'lines', line: { color: c.ink, width: 1.5 }, hovertemplate: 'Backtest %{y:,.2f}<extra></extra>' }],
-        layout(c, { margin: { l: 56, r: 16, t: 8, b: 36 } }), cfg);
-      drawHist('mc-dd-' + name, m.dd_hist, c.bad, M.dd, 'Max drawdown', M.limit);
-      if (m.net_hist) drawHist('mc-net-' + name, m.net_hist, c.s1, M.net, 'Net profit', null);
-    }
-  }
-
-  // --- trade viewer ---
+  // --- trade viewer: one pre-rendered image per trade ---
   const T = D.trades, byNo = new Map(T.map((t, i) => [t[0], i]));
+  const img = document.getElementById('viewer');
+  const src = i => D.img + 'trade_' + T[i][0] + '.png';
+  const noimg = document.getElementById('noimg');
+  if (img) {  // images are drawn by guban run / wfo (--trade-charts) or later by guban chart
+    img.onload = () => { img.hidden = false; noimg.hidden = true; };
+    img.onerror = () => {
+      img.hidden = true; noimg.hidden = false;
+      const run = D.run.includes(' ') ? `"${D.run}"` : D.run;
+      noimg.textContent = `No chart image for trade ${T[cur][0]}. Draw it with: uv run guban chart ${run} --trade ${T[cur][0]} (or without --trade for every trade), then reload.`;
+    };
+  }
   let cur = 0;
-  const pad = n => String(n).padStart(2, '0');
-  const label = m => { const d = new Date(m * 60000); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
-  function drawViewer() {
+  function show() {
     if (!T.length) return;
-    const c = css(), t = T[cur], w = D.windows[t[14]], tk = D.tick;
-    const x = w.dt.map(m => label(w.t0 + m)), px = a => a.map(v => (w.base + v) * tk);
-    const traces = [{ type: 'candlestick', x, open: px(w.o), high: px(w.h), low: px(w.l), close: px(w.c), hoverinfo: 'x+y',
-      increasing: { line: { color: c.up, width: 1 }, fillcolor: c.up }, decreasing: { line: { color: c.down, width: 1 }, fillcolor: c.down } }];
-    const inWin = T.filter(r => r[14] === t[14]);
-    for (const r of inWin) {
-      const sel = r === t, op = sel ? 1 : 0.45, win = r[9] >= 0;
-      const tip = `#${r[0]} ${r[1] > 0 ? 'long' : 'short'} ${r[2]}<br>in  ${r[3]} ${r[4]} @ ${r[5]}<br>out ${r[6]} ${r[7]} @ ${r[8]}<br>net ${money(r[9])}`;
-      traces.push({ type: 'scatter', mode: 'lines', x: [x[r[15]], x[r[16]]], y: [r[5], r[8]], line: { color: c.ink2, width: sel ? 2 : 1 }, opacity: op, hoverinfo: 'skip' });
-      traces.push({ type: 'scatter', mode: 'markers', x: [x[r[15]]], y: [r[5]], opacity: op, hovertemplate: tip + '<extra></extra>',
-        marker: { symbol: r[1] > 0 ? 'triangle-up' : 'triangle-down', size: sel ? 14 : 10, color: c.ink, line: { color: c.surface, width: 2 } } });
-      traces.push({ type: 'scatter', mode: 'markers', x: [x[r[16]]], y: [r[8]], opacity: op, hovertemplate: tip + '<extra></extra>',
-        marker: { symbol: win ? 'circle' : 'circle-open', size: sel ? 13 : 9, color: win ? c.good : c.bad, line: { color: win ? c.surface : c.bad, width: 2 } } });
+    const t = T[cur];
+    if (img) {
+      img.src = src(cur);
+      img.alt = `Price chart of trade ${t[0]}`;
+      for (const j of [cur - 1, cur + 1]) if (j >= 0 && j < T.length) new Image().src = src(j);  // step without a wait
     }
-    const lo = Math.max(0, t[15] - 60), hi = Math.min(x.length - 1, t[16] + 60);
-    const L = layout(c, { hovermode: 'closest', margin: { l: 72, r: 16, t: 8, b: 56 } });
-    L.xaxis = Object.assign(L.xaxis, { type: 'category', rangeslider: { visible: false }, nticks: 8, range: [lo - 0.5, hi + 0.5] });
-    L.yaxis.tickformat = ',.2f';
-    Plotly.react('viewer', traces, L, cfg);
     document.getElementById('tno').value = t[0];
     document.getElementById('tinfo').textContent =
-      `${t[1] > 0 ? 'Long' : 'Short'} ${t[2]} · ${t[3]} → ${t[6]} · ${t[7]} · net ${money(t[9])}` + (w.step > 1 ? ` · ${w.step} bars per candle` : '') + (t[13] ? ' · ambiguous fill' : '');
+      `${t[1] > 0 ? 'Long' : 'Short'} ${t[2]} · ${t[3]} → ${t[6]} · ${t[7]} · net ${money(t[9])}` + (t[13] ? ' · ambiguous fill' : '');
     markRow();
   }
-  function go(i) { cur = Math.max(0, Math.min(T.length - 1, i)); drawViewer(); }
+  function go(i) { cur = Math.max(0, Math.min(T.length - 1, i)); show(); }
 
   // --- trade list ---
   const PAGE = 50; let rows = T.map((_, i) => i), page = 0;
@@ -493,9 +542,6 @@ _JS = r"""
       go(+tr.dataset.i); document.getElementById('viewer-sec').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
   }
 
-  function drawAll() { drawCurves(); drawMC(); drawViewer(); }
-  wire(); drawTable(); drawAll();
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawAll);
-  new MutationObserver(drawAll).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  wire(); drawTable(); show();
 })();
 """

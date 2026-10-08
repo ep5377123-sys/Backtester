@@ -270,6 +270,10 @@ class VaultBreak(Strategy):
       the full span (literal port, `--data-from 2021-01-03`) and with the Phase 5 recipe; `guban run` works on every
       symbol with default costs; `research/poc_shift.py` runs on store ticks (`tick_ok` only); full `pytest` green.
       Covers: SR6–SR9, SR11
+- [x] Phase 16: matplotlib charts everywhere; whole-day Monte Carlo and the notebook's EV statistics (done 2026-10-08 — see "Phase 16 plan" and its progress notes below)
+      Done when: no plotly in src/ or pyproject.toml; every report's charts are matplotlib images; `guban run` writes one
+      PNG per trade in `<run>/trades/` and the viewer switches them; the Monte Carlo reports resample, reorder and day
+      side by side plus EV with a 95% CI, R, horizons and sample paths; resample/reorder unchanged; full `pytest` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1074,3 +1078,60 @@ Replaces build steps 4–7 above. Interview: Q1 read access (yes), Q2 plan appro
   56,341.80 (28 runs, 41 s); wfo 19 windows, 1,067 OOS trades, net 43,531.10, WFE 77%.
 - Docs: CLAUDE.md, USE.md, README.md, `.claude/skills/run-backtest/SKILL.md` (seed flags removed). Tests: new
   `tests/test_store_read.py` (9) + cost/`--data-from`/`h24`/calendar/store-tick/store-days tests. Full suite: 342 passed.
+
+## Phase 16 plan: matplotlib charts, whole-day Monte Carlo (approved 2026-10-07)
+Interview: Q1 every chart → matplotlib (user); Q2 read access (yes); Q3 every trade pre-rendered (user); Q4 trade images
+in a folder next to report.html, loaded when shown (user); Q5 approved. Inspiration: the user's Colab notebook "Strategy EV
+& Monte Carlo Analysis" (R-multiples, IS/OOS EV with bootstrap CI and P(EV<=0), MaxDD/PnL percentiles 50-99, horizons
+10/20/40/100 trades, spaghetti paths, matplotlib). Its Monte Carlo draws single trades (= Guban's resample), so it does
+not address dependence between trades; the whole-day block bootstrap is new.
+- **Recon:** plotly is inlined by report.py, optimize_report.py, propfirm/report.py, research/report.py; wfo_report
+  reuses write_report; diff.html has no charts. matplotlib 3.11.2 runs on Python 3.14.4; a 120-candle trade chart is
+  ~31 KB PNG at 150 dpi and ~130 ms (WebP 23 KB / 254 ms, SVG 57 KB) → ~50 MB and ~40 s on 6 processes for 1,600 trades.
+- **Decisions:** `guban/charts.py` (one style from the report tokens; data-URI PNG for page charts, PNG files for
+  trades); Monte Carlo `day` = resample whole exit-session days with replacement (seed + 2), resample/reorder draws
+  unchanged; `ev` block (bootstrap mean per trade, 95% CI, P(EV<=0); all/long/short; split at `--mc-oos-from`);
+  R = net / (contracts × risk), risk = `--mc-risk` or the average losing trade per contract; DD percentiles add 90/99;
+  horizon tables at 10/20/40/100 trades; 100 spaghetti paths; trade images `<out>/trades/trade_<no>.png` rendered on a
+  process pool by the parent after the run (`--trade-charts/--no-trade-charts`); `guban chart <run> --trade N`;
+  reports go light-only (fixed-colour images); plotly removed.
+- **Targets:** MNQ parity run ≤ 60 s with trade images, ~10 s without.
+- **Phases:** 1 chart module + dependency; 2 Monte Carlo additions; 3 main report + trade images; 4 optimize, propfirm,
+  research reports, plotly removed; 5 CLI flags, `guban chart`, docs, commit.
+- **Assumptions:** A1 rendering scales ~linearly over processes; A2 exit session date is the day; A3 light-only reports
+  are acceptable; A4 the average losing trade per contract is an acceptable default R risk.
+- **Progress:** steps 1–2 done (2026-10-08). `montecarlo.py`: `day` method (seed + 2) computes the trade-level drawdown
+  of drawn days from per-day stats (sum, min/max prefix, own drawdown) without expanding them; EV bootstrap (seed + 3),
+  `horizons`, `max_drawdown_depth` (DEPTH_PERCENTILES 50–99), `SAMPLE_PATHS` per method; `guban run` passes exit
+  session date / qty / direction / exit time (`cli._mc_trade_info`), so `metrics.json` `monte_carlo` has `day`, `ev`,
+  `horizons` now; report.html still shows resample/reorder only until step 3. 1,600 trades × 10,000 sims: 1.4 s → 2.2 s.
+  `check_settings` takes `risk`/`oos_from` (flags come in step 5). Full suite 355 passed.
+- **Step 3 done (2026-10-08).** `report.py`: equity/drawdown/Monte Carlo charts are inline matplotlib PNGs, light-only CSS,
+  no plotly (`_plotly_js` stays for optimize/propfirm/research until step 4); Monte Carlo section shows resample, reorder
+  and whole days side by side (bands + 100 sample paths, DD and net histograms), percentile, drawdown-depth, EV and
+  horizon tables; `MonteCarloResult.report_data()` removed. `guban/trade_charts.py`: `trade_payloads` (parent cuts each
+  trade's window, MAX_CANDLES 240) → `write_trade_charts` (process pool when ≥ 64 trades; old `trade_*.png` cleared) →
+  `<out>/trades/trade_<no>.png`; the viewer swaps images and preloads neighbours. `write_report(trade_charts=, workers=)`,
+  also through `write_wfo_report`. **Deviation:** trade images draw their text (ticks, title) with Pillow in matplotlib's
+  font at positions from matplotlib's transforms: matplotlib 3.11's text layout costs ~5 ms per label here (~3/4 of an
+  image), 131 → 39 ms per image. One figure per process is reused. MNQ parity run (1,094 trades): 22.6 s total (report
+  with images 15.5 s), 29 MB of trade images, report.html 1.3 MB. Full suite 360 passed (77 s; was 57 s). Next: step 4.
+- **Step 4 done (2026-10-08).** optimize, propfirm and research pages are matplotlib PNG data URIs, light only, no
+  script but optimize's metric menu; `_plotly_js` and the plotly dependency are gone (`uv remove plotly`).
+  `charts.value_formatter(kind)` labels axes by fmt_value kind (decimals follow the tick spacing). optimize.html: one
+  image per RESULT_METRICS entry (heatmap, or a line over one input), the menu shows one; cells print their value up to
+  80 cells; the diverging scale is symmetric around 0 (as plotly's zmid); hover tooltips and the "best at <other inputs>"
+  note are gone (results.csv has every run). propfirm.html: equity paths, days to pass, max drawdown, degradation and
+  sweep bars (CI whiskers, best size full colour). Study pages: grouped bars; `yformat` is now a Python format spec
+  (poc_shift's "+.1f"/".1f" unchanged). Render cost: optimize page ~4–5 s (11 images), propfirm ~1 s.
+- **Step 5 done (2026-10-08); Phase 16 complete.** `guban run` takes `--mc-risk` and `--mc-oos-from` (checked before the
+  data loads, `--mc-oos-from` is a date in the chart time zone) and prints whole-day and EV lines (in/out of sample when
+  split); `--trade-charts/--no-trade-charts` is a shared option (`TRADE_CHARTS`) on `run` and `wfo` (wfo passes its
+  `--workers` to the image pool). `guban chart <run> [--trade N ...] [--data-dir] [--workers] [--open]` redraws
+  `trades/trade_<no>.png` from `trades.csv` and the `run` block of `metrics.json` / `wfo.json` (bars reloaded in ohlc mode,
+  no sub-bars; cut back to the run's bar count when sessions were appended; any other change → error naming the fix);
+  `write_trade_charts(nos=)` draws only those trades and keeps the other images. **Change:** report.html's viewer
+  always looks in `trades/`; a missing image shows the `guban chart` command for it, and a `--no-trade-charts` run clears
+  an earlier run's images (they would show the wrong trades). MNQ parity run: 22.9 s with images (target ≤ 60 s),
+  8.6 s without (target ~10 s); `guban chart` for all 1,094 trades 13.9 s; EV 41.66/trade (CI 14.02–69.49), +0.093 R
+  at 89.25 risk per contract. Docs: USE.md, README.md, CLAUDE.md. Full suite 366 passed (79 s).

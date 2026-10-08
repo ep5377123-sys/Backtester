@@ -61,17 +61,20 @@ Costs are the prop-firm notebook's NQ rates ($2.25 commission + $5 slippage per 
 ```
 uv run guban run strategies/vault_break.py --symbol MNQ --data-from 2021-01-03 --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5 --set earliest_entry=945 --set latest_entry=1500 --set flatten_time=1550 --set flatten_early_close=false --out reports/vault_break_mnq
 ```
-Expected: 408,201 bars, 1,094 trades, net 45,579.80, PF 1.20, max drawdown −7,315.00, 2 ambiguous fills.
+Expected: 408,201 bars, 1,094 trades, net 45,579.80, PF 1.20, max drawdown −7,315.00, 2 ambiguous fills; ~23 s with trade images (report ~16 s), ~9 s with `--no-trade-charts`.
 
 Notes:
-- Outputs: `trades.csv` (MC trade-export layout + engine columns), `metrics.json`, `report.html`. Add `--open` to open the report, or `--no-report` to skip it.
-- **Trade Monte Carlo (on by default):** every run also simulates its own trades two ways, side by side in the report's "Monte Carlo" section and under `monte_carlo` in `metrics.json`:
+- Outputs: `trades.csv` (MC trade-export layout + engine columns), `metrics.json`, `report.html`, and one price-chart image per trade in `trades/trade_<no>.png` (the report's trade viewer loads them; ~29 MB for the MNQ run). Add `--open` to open the report, `--no-report` to skip it, `--no-trade-charts` to skip the images (draw them later with `guban chart`).
+- **Trade Monte Carlo (on by default):** every run also simulates its own trades three ways, side by side in the report's "Monte Carlo" section and under `monte_carlo` in `metrics.json`:
   - resample: n trades drawn with replacement (net profit and drawdown vary; gives P(net ≤ 0));
-  - reorder: the same trades shuffled (net fixed; only the drawdown varies).
+  - reorder: the same trades shuffled (net fixed; only the drawdown varies);
+  - whole days: the trading days (exit session) drawn with replacement, each day's trades kept together, so losing streaks within a day stay in the simulation.
+  - Also: EV per trade in USD and R with a 95% bootstrap CI and P(EV ≤ 0) (all, long, short), and net / drawdown-depth percentiles after the first 10/20/40/100 trades or days.
   - Drawdowns are close-to-close, so compare them with the backtest's close-to-close max drawdown (printed on the `monte carlo` line), not the intraday one.
-  - Flags: `--mc-sims` (default 10000; `0` turns it off), `--mc-seed` (default 42), `--mc-dd-limit USD` (adds "chance the max drawdown reaches $X", e.g. a prop-firm limit).
-  - MNQ parity run: resample net P5 20,195.38 / P50 45,937.95 / P95 71,327.57, P(net ≤ 0) 0.1%; reorder max DD P5 −12,813.70 vs backtest −7,081.10; ~1 s.
+  - Flags: `--mc-sims` (default 10000; `0` turns it off), `--mc-seed` (default 42), `--mc-dd-limit USD` (adds "chance the max drawdown reaches $X", e.g. a prop-firm limit), `--mc-risk USD` (risk per contract for R; default the average losing trade per contract), `--mc-oos-from YYYY-MM-DD` (also splits the EV into trades exiting before / from that date).
+  - MNQ parity run: resample net P5 20,195.38 / P50 45,937.95 / P95 71,327.57, P(net ≤ 0) 0.1%; reorder max DD P5 −12,813.70 vs backtest −7,081.10; whole days (476) max DD P5 −14,880.40; EV 41.66 per trade (CI 14.02 to 69.49), +0.093 R at 89.25 risk per contract; with `--mc-oos-from 2025-01-01` EV 54.12 in sample, 23.01 out of sample (P(EV ≤ 0) 15.8%); ~2 s.
   - This is not `propfirm` (which simulates a prop-firm evaluation's rules).
+- **Redraw trade images:** `uv run guban chart reports/vault_break_mnq --trade 560` draws `trades/trade_560.png` again (repeat `--trade`; without it every trade, ~14 s for the MNQ run). It reloads the run's bars from its `metrics.json` (or `wfo.json`) settings; if the data changed other than by new sessions at the end, it refuses: run the backtest again. Use it after a `--no-trade-charts` run: the report shows the command when an image is missing.
 - `--set name=value` overrides a strategy input (repeatable). Unknown names are rejected.
 - `--data-from YYYY-MM-DD` drops bars before that date (chart time zone), so the strategy's warm-up starts there.
 - `--history-from NQ` prepends NQ bars before MNQ's first bar. MNQ now has its own history from 2020, so it is rarely needed.
@@ -110,7 +113,7 @@ uv run guban wfo strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 vwap_e
 ```
 - Window flags: `--is 12 --oos 3 --step 3` (months), `--rolling` (default) or `--anchored`, `--start YYYY-MM-DD`.
 - Expected: 19 windows, 1,067 OOS trades, net 43,531.10, WFE 77%; 998 s on 6 workers (measured alongside the test suite). Run it with `run_in_background` or a long timeout.
-- Writes `reports/<...>_wfo/trades.csv` (stitched OOS), `windows.csv`, `results.csv`, `wfo.json`, `wfo.html`.
+- Writes `reports/<...>_wfo/trades.csv` (stitched OOS), `windows.csv`, `results.csv`, `wfo.json`, `wfo.html`, and `trades/trade_<no>.png` per OOS trade (`--no-trade-charts` skips them).
 
 ## 7. propfirm — prop-firm evaluation Monte Carlo
 ```

@@ -57,7 +57,9 @@ def test_reorder_keeps_net_profit_resample_varies_it():
 def test_same_seed_same_result_other_seed_differs():
     a, b, c = (run_monte_carlo(NET, sims=300, seed=s) for s in (7, 7, 8))
     assert a.summary() == b.summary()
-    assert a.report_data() == b.report_data()
+    for name in ("resample", "reorder"):
+        assert np.array_equal(a.methods[name].bands, b.methods[name].bands)
+        assert np.array_equal(a.methods[name].paths, b.methods[name].paths)
     assert a.summary() != c.summary()
 
 
@@ -78,7 +80,7 @@ def test_equal_trades_have_no_spread():
         assert set(s["net_profit"].values()) == {200.0}
         assert set(s["max_drawdown"].values()) == {0.0}
         assert s["p_dd_worse_than_backtest"] == 0.0
-        assert sum(res.report_data()[name]["dd_hist"]["counts"]) == 100
+        assert np.allclose(res.methods[name].bands[:, -1], 200.0)
     assert res.method_summary("resample")["p_net_le_0"] == 0.0
 
 
@@ -109,8 +111,9 @@ def test_summary_shape():
     s = run_monte_carlo(NET, sims=50, seed=9).summary()
     assert s["sims"] == 50 and s["seed"] == 9 and s["dd_basis"] == "close_to_close" and s["unit"] == "trade"
     assert s["dd_limit"] is None and s["trades"] == 5
-    assert set(s["resample"]) == {"net_profit", "max_drawdown", "p_dd_worse_than_backtest", "p_net_le_0"}
-    assert set(s["reorder"]) == {"net_profit", "max_drawdown", "p_dd_worse_than_backtest"}
+    assert set(s["resample"]) == {"net_profit", "max_drawdown", "max_drawdown_depth", "p_dd_worse_than_backtest", "p_net_le_0"}
+    assert set(s["reorder"]) == {"net_profit", "max_drawdown", "max_drawdown_depth", "p_dd_worse_than_backtest"}
+    assert {"ev", "horizons"} <= set(s) and "day" not in s  # no trade days given
 
 
 @pytest.mark.parametrize(
@@ -138,3 +141,111 @@ def test_too_few_trades_and_bad_values():
         run_monte_carlo([10.0, np.nan], sims=10)
     with pytest.raises(ValueError, match="off"):
         run_monte_carlo(NET, sims=0)
+
+
+# --- Phase 16: whole-day blocks, EV, R, horizons, sample paths -------------------------------------------------
+
+
+def test_day_method_keeps_trades_of_one_day_together():
+    # every day: a winner then a loser that always come together. Drawn one at a time (resample), two losers can land
+    # in a row; drawn by day they never do, and the day's internal dip is still counted.
+    net = np.tile([300.0, -200.0], 50)
+    days = np.repeat(np.arange(50), 2)
+    res = run_monte_carlo(net, sims=2_000, seed=1, days=days)
+    day, rs = res.methods["day"], res.methods["resample"]
+    assert np.allclose(day.net, net.sum())  # every day nets +100, so every day-run nets the same
+    assert np.allclose(day.max_dd, -200.0)  # the first day's dip (0 -> 300 -> 100) is the deepest any run sees
+    assert rs.max_dd.min() < -200.0  # one trade at a time, losers cluster
+    assert len(day.x) == 51 and day.x[-1] == 50  # bands by trading day
+
+
+def test_day_drawdown_equals_the_trade_level_path():
+    rng = np.random.default_rng(3)
+    net = rng.normal(5, 100, 60)
+    days = np.sort(rng.integers(0, 15, 60))
+    res = run_monte_carlo(net, sims=50, seed=8, days=days)
+    labels, inv = np.unique(days, return_inverse=True)
+    draw = np.random.default_rng(8 + 2).integers(0, len(labels), (50, len(labels)))
+    for k in (0, 21, 49):
+        seq = np.concatenate([net[inv == d] for d in draw[k]])
+        cum = np.r_[0.0, np.cumsum(seq)]
+        assert res.methods["day"].max_dd[k] == pytest.approx((cum - np.maximum.accumulate(cum)).min())
+        assert res.methods["day"].net[k] == pytest.approx(seq.sum())
+
+
+def test_day_method_does_not_change_resample_or_reorder():
+    days = np.array([0, 0, 1, 2, 2])
+    a, b = run_monte_carlo(NET, sims=300, seed=7), run_monte_carlo(NET, sims=300, seed=7, days=days)
+    for name in ("resample", "reorder"):
+        assert np.array_equal(a.methods[name].net, b.methods[name].net)
+        assert np.array_equal(a.methods[name].max_dd, b.methods[name].max_dd)
+    assert "day" not in a.methods and "day" in b.methods and "day" in b.summary()
+    one_day = run_monte_carlo(NET, sims=10, seed=7, days=np.zeros(5))
+    assert "day" not in one_day.methods and "1 trading day" in one_day.skipped["day"]
+
+
+def test_day_batch_size_does_not_change_results(monkeypatch):
+    days = np.array([0, 0, 1, 2, 2])
+    ref = run_monte_carlo(NET, sims=250, seed=3, days=days)
+    monkeypatch.setattr(mc, "BATCH_CELLS", 7 * len(NET))
+    small = run_monte_carlo(NET, sims=250, seed=3, days=days)
+    assert np.array_equal(ref.methods["day"].max_dd, small.methods["day"].max_dd)
+    assert np.array_equal(ref.methods["day"].paths, small.methods["day"].paths)
+    assert ref.summary() == small.summary()
+
+
+def test_ev_bootstrap_ci_contains_the_mean_and_widens_with_the_level():
+    rng = np.random.default_rng(0)
+    net = rng.normal(40, 300, 400)
+    sides = np.where(np.arange(400) % 3 == 0, "short", "long")
+    ev = run_monte_carlo(net, sims=3_000, seed=4, contracts=np.full(400, 2), sides=sides, risk=500).ev
+    a = ev["groups"]["all"]
+    assert a["trades"] == 400 and a["usd"]["mean"] == pytest.approx(net.mean())
+    assert a["usd"]["lo"] < net.mean() < a["usd"]["hi"]
+    assert a["r"]["mean"] == pytest.approx(net.mean() / (2 * 500))  # R = net / (contracts x risk)
+    assert 0 <= a["p_ev_le_0"] <= 0.05
+    assert ev["groups"]["long"]["trades"] + ev["groups"]["short"]["trades"] == 400
+    assert ev["risk_per_contract"] == 500 and ev["risk_source"] == "--mc-risk"
+    wide = run_monte_carlo(net, sims=3_000, seed=4, ci=0.99).ev["groups"]["all"]["usd"]
+    assert wide["hi"] - wide["lo"] > a["usd"]["hi"] - a["usd"]["lo"]
+
+
+def test_default_risk_is_the_average_losing_trade_per_contract():
+    net = np.array([300.0, -200.0, -400.0, 100.0])
+    ev = run_monte_carlo(net, sims=100, seed=0, contracts=np.array([1, 2, 1, 1])).ev
+    assert ev["risk_per_contract"] == pytest.approx((100 + 400) / 2)  # -200 on 2 contracts = 100 per contract
+    assert ev["risk_source"] == "average losing trade per contract"
+    assert run_monte_carlo(net, sims=100, seed=0).ev["risk_per_contract"] is None  # no contracts: no R
+
+
+def test_ev_splits_in_and_out_of_sample():
+    net = np.r_[np.full(30, 50.0), np.full(20, -10.0)]
+    times = pd.date_range("2025-12-01", periods=50, freq="D", tz="America/New_York")
+    ev = run_monte_carlo(net, sims=200, seed=1, times=times, oos_from="2025-12-31").ev
+    g = ev["groups"]
+    assert g["in_sample"]["trades"] == 30 and g["out_of_sample"]["trades"] == 20
+    assert g["in_sample"]["usd"]["mean"] == 50.0 and g["out_of_sample"]["usd"]["mean"] == -10.0
+    assert g["out_of_sample"]["p_ev_le_0"] == 1.0 and ev["oos_from"] == "2025-12-31"
+
+
+def test_horizons_and_depth_percentiles():
+    rng = np.random.default_rng(2)
+    net = rng.normal(20, 150, 60)
+    res = run_monte_carlo(net, sims=1_000, seed=5, days=np.repeat(np.arange(30), 2))
+    h = res.horizons
+    assert [r["n"] for r in h["resample"]] == [10, 20, 40]  # 100 > 60 trades: left out
+    assert [r["n"] for r in h["day"]] == [10, 20]  # 30 trading days
+    for row in h["resample"] + h["day"]:
+        d = [row["max_drawdown_depth"][f"p{p}"] for p in mc.DEPTH_PERCENTILES]
+        assert d == sorted(d) and d[0] >= 0  # depth: positive dollars, deeper at higher percentiles
+        assert 0 <= row["p_net_lt_0"] <= 1
+    s = res.method_summary("resample")["max_drawdown_depth"]
+    assert s["p50"] == pytest.approx(np.percentile(-res.methods["resample"].max_dd, 50))
+
+
+def test_sample_paths_are_the_first_runs():
+    res = run_monte_carlo(NET, sims=150, seed=6, days=np.array([0, 0, 1, 2, 2]))
+    for name in ("resample", "reorder", "day"):
+        p = res.methods[name].paths
+        assert p.shape == (mc.SAMPLE_PATHS, len(res.methods[name].x))
+        assert np.allclose(p[:, -1], res.methods[name].net[: mc.SAMPLE_PATHS])

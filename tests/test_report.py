@@ -88,48 +88,120 @@ def test_trades_csv_reads_back_for_compare(result, tmp_path):
     assert mc["entry_time"].tolist() == tr["entry_time"].tolist() and mc["qty"].tolist() == tr["qty"].tolist()
 
 
-def test_report_is_self_contained_and_carries_the_data(result, tmp_path):
+PNG = b"\x89PNG\r\n\x1a\n"
+
+
+def _data(text: str) -> dict:
+    import json
+
+    return json.loads(re.search(r"const D = (\{.*?\});</script>", text, re.S).group(1))
+
+
+def _report(result, path, **kw):
     bars, res = result
     m = compute_metrics(res.trades, res.equity, res.equity_low, bars["session_date"])
     meta = {"title": "Flipper · MNQ 5m", "details": {"Bars": len(bars)}, "inputs": {"qty": 5}, "notes": ["a note"]}
-    path = write_report(res, bars, tmp_path / "report.html", m, meta)
-    text = path.read_text(encoding="utf-8")
+    return write_report(res, bars, path, m, meta, **kw)
+
+
+def test_report_is_self_contained_with_image_charts(result, tmp_path):
+    _, res = result
+    text = _report(result, tmp_path / "report.html").read_text(encoding="utf-8")
     assert "<script src" not in text and "<link" not in text  # nothing fetched: opens offline
-    assert "Plotly" in text and len(text) > 1_000_000  # plotly.js inlined
+    assert "Plotly" not in text and "prefers-color-scheme" not in text  # matplotlib images, light only
     for anchor in ("id='equity'", "id='drawdown'", "id='viewer'", "id='tlist'", "Performance summary", "Net profit by month", "a note"):
         assert anchor in text
-    data = re.search(r"const D = (\{.*?\});</script>", text, re.S).group(1)
-    import json
-
-    d = json.loads(data)
-    assert len(d["trades"]) == len(res.trades)
-    assert len(d["days"]) == len(d["equity"]) == len(d["dd"])
-    for t in d["trades"]:  # every trade's candles exist in its window, entry price inside the entry candle
-        w = d["windows"][t[14]]
-        assert 0 <= t[15] <= t[16] < len(w["dt"])
-        lo, hi = (w["base"] + w["l"][t[15]]) * d["tick"], (w["base"] + w["h"][t[15]]) * d["tick"]
-        assert lo - 1e-9 <= t[5] <= hi + 1e-9
+    assert text.count("src='data:image/png;base64,") == 2  # equity and drawdown (no Monte Carlo)
+    d = _data(text)
+    assert len(d["trades"]) == len(res.trades) and d["img"] == "trades/"
+    assert [t[0] for t in d["trades"]] == res.trades["trade_no"].tolist()
+    files = sorted(p.name for p in (tmp_path / "trades").iterdir())
+    assert files == sorted(f"trade_{n}.png" for n in res.trades["trade_no"])
+    assert (tmp_path / "trades" / files[0]).read_bytes()[:8] == PNG
 
 
-def test_report_merges_candles_for_long_windows(tmp_path, monkeypatch):
-    import guban.report as rep
+class Hold(Strategy):
+    """One long trade, bar 2 to bar 390."""
 
-    monkeypatch.setattr(rep, "MAX_CANDLES", 50)
+    def on_bar(self):
+        if self.current_bar == 2:
+            self.buy("L")
+        if self.current_bar == 390:
+            self.sell("X")
+
+
+def test_trade_images_replace_old_ones_and_can_be_left_out(tmp_path):
     bars = make_bars(400)
+    one = (bars, run_backtest(Hold(), bars, MNQ))
+    (tmp_path / "a" / "trades").mkdir(parents=True)
+    (tmp_path / "a" / "trades" / "trade_99999.png").write_bytes(b"old")
+    _report(one, tmp_path / "a" / "report.html")
+    assert [p.name for p in (tmp_path / "a" / "trades").iterdir()] == ["trade_1.png"]
+    text = _report(one, tmp_path / "b" / "report.html", trade_charts=False).read_text(encoding="utf-8")
+    assert not (tmp_path / "b" / "trades").exists() and _data(text)["img"] == "trades/"  # images guban chart draws later show up
+    assert "id='noimg'" in text and "guban chart" in text and len(_data(text)["trades"]) == 1
+    _report(one, tmp_path / "a" / "report.html", trade_charts=False)
+    assert not list((tmp_path / "a" / "trades").iterdir())  # the earlier run's images would show the wrong trades
 
-    class Hold(Strategy):
-        def on_bar(self):
-            if self.current_bar == 2:
-                self.buy("L")
-            if self.current_bar == 390:
-                self.sell("X")
 
+def test_process_pool_draws_the_same_images(result, tmp_path, monkeypatch):
+    import guban.trade_charts as tc
+
+    bars, res = result
+    tr = res.trades.iloc[:12]
+    assert tc.write_trade_charts(tr, bars, tmp_path / "one", 0.25, workers=1) == 12
+    monkeypatch.setattr(tc, "PARALLEL_MIN", 2)  # the parent decides; workers only draw
+    assert tc.write_trade_charts(tr, bars, tmp_path / "pool", 0.25, workers=2) == 12
+    for p in (tmp_path / "one").iterdir():
+        assert (tmp_path / "pool" / p.name).read_bytes() == p.read_bytes()
+
+
+def test_trade_payloads_hold_each_trade_in_its_candles(result):
+    from guban.trade_charts import trade_payloads
+
+    bars, res = result
+    payloads = trade_payloads(res.trades, bars, 0.25)
+    assert [p["no"] for p in payloads] == res.trades["trade_no"].tolist()
+    for p in payloads:
+        for _, ei, ep, xi, xp, _ in [p["trade"], *p["others"]]:
+            assert 0 <= ei <= xi < len(p["o"])
+            assert p["l"][ei] - 1e-9 <= ep <= p["h"][ei] + 1e-9 and p["l"][xi] - 1e-9 <= xp <= p["h"][xi] + 1e-9
+        assert f"@ {p['trade'][2]:,.2f}" in p["title"]  # prices to the tick (0.25: 2 decimals)
+    assert any(p["others"] for p in payloads)  # the flipper's neighbours share windows
+
+
+def test_long_trades_merge_candles(tmp_path, monkeypatch):
+    import guban.trade_charts as tc
+
+    monkeypatch.setattr(tc, "MAX_CANDLES", 50)
+    bars = make_bars(400)
     res = run_backtest(Hold(), bars, MNQ)
-    path = rep.write_report(res, bars, tmp_path / "r.html", compute_metrics(res.trades, res.equity), {})
-    import json
+    (p,) = tc.trade_payloads(res.trades, bars, 0.25)
+    assert p["step"] > 1 and len(p["o"]) <= 50 and "bars per candle" in p["title"]
+    assert p["trade"][1] == 2 // p["step"] and p["trade"][3] == 390 // p["step"]  # window starts at bar 0 (entry bar 2 - 24 < 0)
+    assert tc.render_trade(p, tmp_path / "t.png").read_bytes()[:8] == PNG
 
-    d = json.loads(re.search(r"const D = (\{.*?\});</script>", path.read_text(encoding="utf-8"), re.S).group(1))
-    (w,) = d["windows"]
-    assert w["step"] > 1 and len(w["dt"]) <= 50
-    t = d["trades"][0]
-    assert (t[15], t[16]) == (2 // w["step"], 390 // w["step"])  # window starts at bar 0 (entry bar 2 - 24 < 0)
+
+def test_price_decimals_show_the_tick():
+    from guban.trade_charts import _decimals
+
+    assert (_decimals(0.25), _decimals(0.01), _decimals(5.0), _decimals(0.1)) == (2, 2, 0, 1)
+
+
+def test_monte_carlo_section_has_every_method_ev_and_horizons(result, tmp_path):
+    from guban.montecarlo import run_monte_carlo
+
+    bars, res = result
+    tr = res.trades
+    days = bars["session_date"].to_numpy()[tr["exit_bar"].to_numpy(int)]
+    mc = run_monte_carlo(tr["net_pnl"].to_numpy(float), 500, 1, 200.0, days=days, contracts=tr["qty"].to_numpy(float),
+                         sides=tr["direction"].to_numpy(str))  # fmt: skip
+    assert mc.days == 3
+    text = _report(result, tmp_path / "report.html", monte_carlo=mc, trade_charts=False).read_text(encoding="utf-8")
+    for name in ("resample", "reorder", "day"):
+        assert f"id='mc-band-{name}'" in text and f"id='mc-dd-{name}'" in text
+    assert "id='mc-net-resample'" in text and "id='mc-net-day'" in text and "id='mc-net-reorder'" not in text
+    assert "Expected value per trade" in text and "Horizons" in text and "Max drawdown depth" in text and "Max DD reaches 200.00" in text
+    one_day = run_monte_carlo(tr["net_pnl"].to_numpy(float), 50, 1, days=np.zeros(len(tr)))
+    text = _report(result, tmp_path / "one.html", monte_carlo=one_day, trade_charts=False).read_text(encoding="utf-8")
+    assert "id='mc-band-day'" not in text and "Whole days method skipped" in text

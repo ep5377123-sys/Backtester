@@ -161,7 +161,8 @@ def test_study_report_writes_a_page(tmp_path):
         tables=[{"title": "Tab", "frame": frame}], notes=["n"],
     )  # fmt: skip
     text = path.read_text(encoding="utf-8")
-    assert "T &lt;x&gt;" in text and "NOT REAL" in text and "<td class='l'>b</td>" in text and "Plotly" in text
+    assert "T &lt;x&gt;" in text and "NOT REAL" in text and "<td class='l'>b</td>" in text
+    assert "<img class='chart' src='data:image/png;base64," in text and "id='c'" in text and "Plotly" not in text
 
 
 # --- trading days from the market-data store (Phase 15) ----------------------------------------------------------

@@ -15,7 +15,6 @@ from guban.engine import Costs, Strategy, run_backtest
 from guban.engine.backtest import WINDOW_END
 from guban.metrics import backtest_metrics, session_keys, window_metrics
 from guban.optimize import combinations
-from guban.report import _plotly_js
 from guban.wfo import make_windows, walk_forward
 from guban.wfo_report import write_wfo_report
 
@@ -284,12 +283,12 @@ def test_wfo_html_and_csvs(tmp_path):
     bars, _ = market(days=85)  # to 2024-04-26: two windows, the second partial
     wf = walk_forward(DayMomentum, {"lookback": [2, 4], "stop_usd": [150.0, 300.0]}, NQ, COSTS, bars=bars, is_months=2, oos_months=1, workers=1)
     meta = {"title": "WFO <test>", "details": {"Grid": "lookback"}, "inputs": {"qty": 1}, "notes": ["n1"]}
-    full = write_wfo_report(wf, tmp_path / "wfo.html", meta).read_text(encoding="utf-8")
-    text = full.replace(_plotly_js(), "")
+    text = write_wfo_report(wf, tmp_path / "wfo.html", meta).read_text(encoding="utf-8")
     assert "<script src" not in text and "http" not in text  # opens offline
     assert "WFO &lt;test&gt;" in text and "<h2>Walk-forward</h2>" in text and "Walk-forward efficiency" in text
     assert "Rolling: 2-month in-sample, 1-month out-of-sample windows, stepped 1 month" in text
-    assert '"label":"W1"' in text and "W2</td>" in text and "id='equity'" in text and "List of trades" in text
+    assert "mark the out-of-sample windows" in text and "W2</td>" in text and "id='equity'" in text and "List of trades" in text
+    assert len(list((tmp_path / "trades").glob("trade_*.png"))) == len(wf.trades)  # the stitched OOS trades' images
     windows, results = wf.write_csvs(tmp_path)
     w = pd.read_csv(windows)
     assert w["window"].tolist() == [1, 2] and w["oos_from"].tolist() == ["2024-03-01", "2024-04-01"]

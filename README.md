@@ -115,17 +115,25 @@ uv run guban import --symbol MNQ --roll expiry
 uv run guban run strategies/vault_break.py @vb --out reports/vault_break_mnq --open
 ```
 
-- Writes `trades.csv` (MC trade-export layout plus guban's own columns), `metrics.json`, and a self-contained
-  `report.html`. The report has KPIs, equity and drawdown, a trade Monte Carlo, the performance summary, monthly net, a
-  trade viewer and the trade list, and it opens offline.
-- **Trade Monte Carlo.** Every run simulates its own trades 10,000 times two ways, shown side by side: *resample* draws
+- Writes `trades.csv` (MC trade-export layout plus guban's own columns), `metrics.json`, `report.html`, and one
+  price-chart image per trade in `trades/` next to it. The report has KPIs, equity and drawdown, a trade Monte Carlo,
+  the performance summary, monthly net, a trade viewer and the trade list. Every chart is a matplotlib image and the
+  page is light-only; it opens offline (the trade viewer needs the `trades/` folder beside it).
+- **Trade Monte Carlo.** Every run simulates its own trades 10,000 times three ways, shown side by side: *resample* draws
   the same number of trades with replacement (how lucky was the net profit?), *reorder* shuffles the same trades (how
-  bad could the drawdown have been?). The section has equity bands with the actual path, drawdown and net-profit
-  histograms, and a percentile table; `metrics.json` gets the numbers under `monte_carlo`. Drawdowns are close-to-close
-  (a trade list has no intraday path), and trades are drawn one at a time. `--mc-sims 0` turns it off, `--mc-seed`
-  sets the seed (default 42), `--mc-dd-limit 2500` adds the chance the max drawdown reaches $2,500.
-- Expected result: 1,094 trades, net 45,579.80, max drawdown −7,315.00, about 5 s. The max drawdown is peak to valley
-  along the intrabar equity path, so a rise and a fall inside one bar both count.
+  bad could the drawdown have been?), *whole days* draws trading days with replacement and keeps each day's trades
+  together (do losers cluster?). The section has equity bands with 100 sample paths and the actual path, drawdown and
+  net-profit histograms, percentile and drawdown-depth tables, the expected value per trade (USD and R, 95% bootstrap
+  CI, P(EV ≤ 0); all, long, short) and results after the first 10/20/40/100 trades or days. `metrics.json` gets the
+  numbers under `monte_carlo`. Drawdowns are close-to-close (a trade list has no intraday path). `--mc-sims 0` turns it
+  off, `--mc-seed` sets the seed (default 42), `--mc-dd-limit 2500` adds the chance the max drawdown reaches $2,500,
+  `--mc-risk 400` sets the risk per contract for R (default: the average losing trade per contract), and
+  `--mc-oos-from 2025-01-01` also splits the EV into trades before and from that date.
+- **Trade images.** `--no-trade-charts` skips them (the MNQ run: 9 s instead of 23 s). `guban chart <run folder>
+  [--trade N ...]` draws them later, or again, from the run's `trades.csv`: it reloads the bars with the settings in
+  `metrics.json` / `wfo.json` and refuses when the data changed since the run (other than new sessions at the end).
+- Expected result: 1,094 trades, net 45,579.80, max drawdown −7,315.00, about 23 s with trade images (9 s without).
+  The max drawdown is peak to valley along the intrabar equity path, so a rise and a fall inside one bar both count.
 - `--data-from 2021-01-03` starts the data where MC's chart starts, so Vault Break's long-memory DailyATR sees the same
   history MC did. (The `atr_seed_*` inputs, fitted in Phase 5 when local MNQ data began in 2025, are no longer needed.)
 - Costs: without `--commission` / `--slippage`, a run uses the contract's default costs from `config/contracts.toml`.
@@ -173,8 +181,9 @@ uv run guban wfo strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 vwap_e
 - Every window is traded on its own: indicators warm up on the earlier data, the window starts flat, and a position
   still open at its end is closed at its last bar's close (exit "Window End"). So no price after a window reaches its
   score, and the stitched equity always equals the sum of the stitched trades.
-- Writes the stitched out-of-sample `trades.csv`, `windows.csv`, `results.csv`, `wfo.json` and `wfo.html`, with
-  walk-forward efficiency = annualized OOS net ÷ annualized IS net.
+- Writes the stitched out-of-sample `trades.csv`, `windows.csv`, `results.csv`, `wfo.json` and `wfo.html` (plus one
+  image per OOS trade in `trades/`; `--no-trade-charts` skips them), with walk-forward efficiency = annualized OOS net ÷
+  annualized IS net.
 - Expected: 19 windows, 1,067 OOS trades, OOS net 43,531.10, WFE 77%. It took 998 s on 6 workers (measured with the test suite running alongside, so expect less).
 
 ### 6. propfirm: prop-firm evaluation Monte Carlo
@@ -269,10 +278,11 @@ on 1-minute bars in exchange time: `--tf 1m --session eth --tz America/Chicago -
 
 | Command | Default folder | Files |
 |---|---|---|
-| `run` | `reports/<strategy>_<symbol>_<tf>_<session>` | `trades.csv`, `metrics.json`, `report.html` |
+| `run` | `reports/<strategy>_<symbol>_<tf>_<session>` | `trades.csv`, `metrics.json`, `report.html`, `trades/trade_<no>.png` |
 | `compare` | the folder of `--ours` | `diff.html` |
 | `optimize` | `reports/<strategy>_<symbol>_<tf>_<session>_opt` | `results.csv`, `optimize.json`, `optimize.html` |
-| `wfo` | `reports/<strategy>_<symbol>_<tf>_<session>_wfo` | `trades.csv`, `windows.csv`, `results.csv`, `wfo.json`, `wfo.html` |
+| `wfo` | `reports/<strategy>_<symbol>_<tf>_<session>_wfo` | `trades.csv`, `windows.csv`, `results.csv`, `wfo.json`, `wfo.html`, `trades/trade_<no>.png` |
+| `chart` | the run folder it is given | `trades/trade_<no>.png` |
 | `propfirm` | `reports/<trades file or its run folder>_<rules>` | `propfirm.json`, `sweep.csv`, `degradation.csv`, `daily.csv`, `propfirm.html` |
 
 `<strategy>` is the file name without `.py`. When `--contract` differs from `--symbol` (for example NQ bars priced as

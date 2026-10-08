@@ -4,6 +4,7 @@ the >5,000-combination guard, heatmap aggregation, and the HTML page."""
 from __future__ import annotations
 
 import math
+import re
 from decimal import Decimal
 
 import numpy as np
@@ -26,7 +27,6 @@ from guban.optimize import (
     rank_results,
 )
 from guban.optimize_report import heatmap_axes, write_optimize_report
-from guban.report import _plotly_js
 
 NQ = ContractSpec(symbol="NQ", name="E-mini Nasdaq-100", point_value=20.0, tick_size=0.25)
 COSTS = Costs(commission=4.2, slippage=5.0)
@@ -226,17 +226,18 @@ def test_optimize_html_is_offline_and_has_heatmap_and_table(tmp_path):
     opt = _opt(grid, {"net_profit": [-50.0, 20.0, 80.0, 10.0, 30.0, -5.0], "total_trades": [40] * 6}, min_trades=30)
     meta = {"title": "Opt <test>", "details": {"Grid": "a: 1, 2, 3"}, "inputs": {"qty": 2}, "notes": ["n1"]}
     path = write_optimize_report(opt, tmp_path / "optimize.html", meta)
-    full = path.read_text(encoding="utf-8")
-    assert _plotly_js() in full  # plotly.js is inlined ...
-    text = full.replace(_plotly_js(), "")
-    assert "<script src" not in text and "http" not in text  # ... and nothing else is fetched
+    text = path.read_text(encoding="utf-8")
+    assert "<script src" not in text and "http" not in text and "Plotly" not in text  # opens offline, matplotlib images
     assert "Opt &lt;test&gt;" in text and "qty = 2" in text and "n1" in text
-    assert "Heatmap: b × a" in text and "id='heat'" in text and '"metric":"net_profit"' in text
+    assert "Heatmap: b × a" in text and "id='heat'" in text and "<option value='net_profit' selected>" in text
+    # one inline image per metric; the optimized one shows, the menu switches the others in
+    imgs = re.findall(r"<img class='chart' src='data:image/png;base64,[^']+' alt='[^']*' data-metric='(\w+)'( hidden='hidden')?>", text)
+    assert [m for m, _ in imgs] == [k for k, *_ in RESULT_METRICS] and [m for m, h in imgs if not h] == ["net_profit"]
     assert text.count("<tr class=best>") == 1 and "80.00" in text
-    # one varying input -> a line chart; none -> no chart and no plotly
+    # one varying input -> a line chart; none -> no chart
     opt1 = _opt({"a": [1, 2, 3], "b": [0.5]}, {"net_profit": [1.0, 2.0, 3.0], "total_trades": [40] * 3})
     t1 = write_optimize_report(opt1, tmp_path / "one.html", {}).read_text(encoding="utf-8")
-    assert "Metric by input: a" in t1 and '"y":null' in t1
+    assert "Metric by input: a" in t1 and t1.count("data-metric=") == len(RESULT_METRICS)
     opt0 = _opt({"a": [1]}, {"net_profit": [1.0], "total_trades": [40]})
     t0 = write_optimize_report(opt0, tmp_path / "zero.html", {}).read_text(encoding="utf-8")
     assert "id='heat'" not in t0 and "Ranked results" in t0

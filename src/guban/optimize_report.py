@@ -1,11 +1,11 @@
 """Self-contained HTML page for an optimizer run (S4): the ranked results table and a heatmap of a metric over
-two inputs (a line over one input when only one varies). Same look and offline plotly.js as guban.report.
+two inputs (a line over one input when only one varies). Same look as guban.report; charts are matplotlib images
+(Phase 16, guban.charts), one per metric, and the metric menu switches between them.
 
 Heatmap cells hold the best value of the metric among the runs with that (x, y) pair that pass the min-trades
-filter, over every other input in the grid; blank cells have no such run. The metric can be switched in the page.
-Color: the better end of the scale stands out most from the background (darker in light mode, lighter in dark
-mode). A metric with values on both sides of zero uses a diverging red-gray-blue scale
-centred on 0.
+filter, over every other input in the grid; blank cells have no such run. Small grids print the value in each cell.
+Color: the better end of the scale is the darker one. A metric with values on both sides of zero uses a diverging
+red-gray-blue scale symmetric around 0.
 """
 
 from __future__ import annotations
@@ -16,10 +16,15 @@ from pathlib import Path
 
 import numpy as np
 
+from guban.charts import COLORS, figure, img_tag, styled, to_data_uri, value_formatter
 from guban.optimize import METRICS, RESULT_METRICS, OptimizeResult, heatmap, varying
-from guban.report import _CSS, _header, _json, _notes, _plotly_js, fmt_value
+from guban.report import _CSS, _header, _notes, fmt_value
 
 TOP_ROWS = 50
+MAX_TICKS = 24  # axis labels shown per heatmap axis; longer axes label every n-th value
+ANNOTATE_CELLS = 80  # heatmaps with at most this many cells print each cell's value
+SEQ = ("#cde2fb", "#104281")  # worse -> better
+DIV = ("#e34948", "#f0efec", "#1c5cab")  # negative, 0, positive
 
 
 def write_optimize_report(opt: OptimizeResult, path: str | Path, meta: dict, x: str | None = None, y: str | None = None, top: int = TOP_ROWS) -> Path:
@@ -30,38 +35,19 @@ def write_optimize_report(opt: OptimizeResult, path: str | Path, meta: dict, x: 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     x, y = heatmap_axes(opt.grid, x, y)
-    data = None
-    if x is not None:
-        other = [k for k in varying(opt.grid) if k not in (x, y)]
-        maps, combos = {}, set()
-        for key, _, _, _ in RESULT_METRICS:
-            h = heatmap(opt, x, y, key)
-            maps[key] = {"z": _nulls(h["z"]), "trades": _nulls(h["trades"]), "combo": h["combo"].tolist()}
-            combos.update(int(c) for c in h["combo"].ravel() if c)
-        r = opt.results.set_index("combo")
-        data = {
-            "metrics": [{"key": k, "label": lbl, "kind": kind, "hib": hib} for k, lbl, kind, hib in RESULT_METRICS],
-            "metric": opt.metric,
-            "x": {"name": x, "values": [_label(v) for v in opt.grid[x]]},
-            "y": None if y is None else {"name": y, "values": [_label(v) for v in opt.grid[y]]},
-            "maps": maps,
-            "others": {str(c): ", ".join(f"{k} = {_label(r.at[c, k])}" for k in other) for c in sorted(combos)} if other else {},
-            "minTrades": opt.min_trades,
-        }
     parts = [
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
         "<meta name='viewport' content='width=device-width, initial-scale=1'>",
         f"<title>{html.escape(meta.get('title', 'Optimization'))}</title>",
         f"<style>{_CSS}{_EXTRA_CSS}</style>",
-        f"<script>{_plotly_js()}</script>" if data else "",
         "</head><body><main>",
         _header(meta),
         _tiles(opt),
-        _chart_html(opt, x, y) if data else "",
+        _chart_html(opt, x, y) if x is not None else "",
         _ranked_table(opt, top),
         _notes(meta),
         "</main>",
-        f"<script>const D = {_json(data)};</script><script>{_JS}</script>" if data else "",
+        f"<script>{_JS}</script>" if x is not None else "",
         "</body></html>",
     ]
     path.write_text("\n".join(parts), encoding="utf-8")
@@ -81,10 +67,6 @@ def heatmap_axes(grid: dict[str, list], x: str | None, y: str | None) -> tuple[s
     if y is None and x is not None and free:
         y = free.pop(0)
     return x, y
-
-
-def _nulls(a: np.ndarray) -> list:
-    return [[None if not math.isfinite(v) else float(v) for v in row] for row in np.asarray(a, float)]
 
 
 def _label(v) -> str:
@@ -114,14 +96,96 @@ def _chart_html(opt: OptimizeResult, x: str, y: str | None) -> str:
     other = [k for k in varying(opt.grid) if k not in (x, y)]
     what = f"{html.escape(y)} × {html.escape(x)}" if y else html.escape(x)
     cap = (
-        f"Each cell: the best value over {', '.join(map(html.escape, other))}. " if other else ""
-    ) + f"Blank: no run with at least {opt.min_trades:,} trades. The better end of the scale stands out most from the background; ○ marks the best cell."
+        f"Each cell: the best value over {', '.join(map(html.escape, other))} (results.csv has every run). " if other else ""
+    ) + f"Blank: no run with at least {opt.min_trades:,} trades. The better end of the scale is the darker one; ○ marks the best cell."
     opts = "".join(f"<option value='{k}'{' selected' if k == opt.metric else ''}>{html.escape(lbl)}</option>" for k, lbl, _, _ in RESULT_METRICS)
+    xs = [_label(v) for v in opt.grid[x]]
+    ys = None if y is None else [_label(v) for v in opt.grid[y]]
+    imgs = []
+    for key, label, kind, hib in RESULT_METRICS:
+        z = heatmap(opt, x, y, key)["z"]
+        uri = _heatmap_png(z, xs, ys, x, y, label, kind, hib) if y else _line_png(z[0], xs, x, label, kind, hib)
+        attrs = {"data_metric": key} if key == opt.metric else {"data_metric": key, "hidden": "hidden"}
+        imgs.append(img_tag(uri, f"{label} by {what}", **attrs))
     return (
         f"<section><h2>{'Heatmap' if y else 'Metric by input'}: {what}</h2>"
         f"<div class='controls'><label>Metric <select id='metric'>{opts}</select></label></div>"
-        f"<div id='heat' class='chart{' tall' if y else ''}'></div><p class='cap'>{cap}</p></section>"
+        f"<div id='heat'>{''.join(imgs)}</div><p class='cap'>{cap}</p></section>"
     )
+
+
+def _best(z: np.ndarray, hib: bool) -> tuple[int, int] | None:
+    """(row, col) of the best finite cell, the first one in row-major order on ties (as guban.optimize.heatmap)."""
+    if not np.isfinite(z).any():
+        return None
+    filled = np.where(np.isfinite(z), z, -np.inf if hib else np.inf)
+    return np.unravel_index(int(np.argmax(filled) if hib else np.argmin(filled)), z.shape)
+
+
+def _ticks(ax_set, labels: list[str]) -> None:
+    step = max(1, math.ceil(len(labels) / MAX_TICKS))
+    idx = np.arange(0, len(labels), step)
+    ax_set(idx + 0.5, labels=[labels[i] for i in idx])
+
+
+def _cell(v: float, kind: str) -> str:
+    s = {"usd": f"{v:,.0f}", "pct": f"{v:.1%}", "ratio": f"{v:.2f}", "num": f"{v:,.1f}"}.get(kind, f"{v:,.0f}")
+    return s.replace("-", "−")
+
+
+@styled
+def _heatmap_png(z: np.ndarray, xs: list[str], ys: list[str], x: str, y: str, label: str, kind: str, hib: bool) -> str:
+    from matplotlib.colors import LinearSegmentedColormap, Normalize
+
+    ny, nx = z.shape
+    fig, ax = figure(9.6, min(6.5, max(2.8, 0.32 * ny + 1.3)))
+    vals = z[np.isfinite(z)]
+    lo, hi = (float(vals.min()), float(vals.max())) if len(vals) else (0.0, 1.0)
+    if lo < 0 < hi:
+        m = max(-lo, hi)  # symmetric around 0, as plotly's zmid
+        cmap, norm = LinearSegmentedColormap.from_list("div", DIV), Normalize(-m, m)
+    else:
+        cmap, norm = LinearSegmentedColormap.from_list("seq", SEQ if hib else SEQ[::-1]), Normalize(lo, hi)
+    cmap = cmap.with_extremes(bad=COLORS["surface"])
+    mesh = ax.pcolormesh(np.ma.masked_invalid(z), cmap=cmap, norm=norm, edgecolors=COLORS["surface"], linewidth=1.5)
+    ax.grid(False)
+    for s in ax.spines.values():
+        s.set_visible(False)
+    ax.tick_params(length=0)
+    _ticks(ax.set_xticks, xs)
+    _ticks(ax.set_yticks, ys)
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    if nx * ny <= ANNOTATE_CELLS:
+        for (iy, ix), v in np.ndenumerate(z):
+            if math.isfinite(v):
+                r, g, b, _ = cmap(norm(v))
+                dark = 0.299 * r + 0.587 * g + 0.114 * b < 0.55
+                ax.text(ix + 0.5, iy + 0.5, _cell(v, kind), ha="center", va="center", fontsize=7, color="white" if dark else COLORS["ink"])  # fmt: skip
+    best = _best(z, hib)
+    if best is not None:
+        ax.scatter([best[1] + 0.5], [best[0] + 0.5], s=320, facecolors="none", edgecolors=COLORS["ink"], linewidths=2)
+    cb = fig.colorbar(mesh, ax=ax, pad=0.01, fraction=0.035, format=value_formatter(kind))
+    cb.outline.set_visible(False)
+    if lo == hi:  # one value: no range to show
+        cb.set_ticks([lo])
+    cb.set_label(label)
+    return to_data_uri(fig)
+
+
+@styled
+def _line_png(z: np.ndarray, xs: list[str], x: str, label: str, kind: str, hib: bool) -> str:
+    fig, ax = figure(9.6, 3.2)
+    xi = np.arange(len(xs))
+    ax.plot(xi, z, color=COLORS["s1"], lw=2, marker="o", ms=6, mec=COLORS["surface"], mew=1.5)
+    best = _best(z[None, :], hib)
+    if best is not None:
+        ax.scatter([best[1]], [z[best[1]]], s=220, facecolors="none", edgecolors=COLORS["ink"], linewidths=2, zorder=3)
+    _ticks(lambda pos, labels: ax.set_xticks(pos - 0.5, labels=labels), xs)
+    ax.set_xlabel(x)
+    ax.set_ylabel(label)
+    ax.yaxis.set_major_formatter(value_formatter(kind))
+    return to_data_uri(fig)
 
 
 def _ranked_table(opt: OptimizeResult, top: int) -> str:
@@ -146,10 +210,6 @@ def _ranked_table(opt: OptimizeResult, top: int) -> str:
 
 
 _EXTRA_CSS = """
-:root { --seq-lo:#cde2fb; --seq-hi:#104281; --div-neg:#e34948; --div-mid:#f0efec; --div-pos:#1c5cab; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --seq-lo:#0d366b; --seq-hi:#9ec5f4; --div-neg:#e66767; --div-mid:#383835; --div-pos:#5598e7; } }
-:root[data-theme="dark"] { --seq-lo:#0d366b; --seq-hi:#9ec5f4; --div-neg:#e66767; --div-mid:#383835; --div-pos:#5598e7; }
-.chart.tall { height:480px; }
 table.ranked th.in, table.ranked td.in { color:var(--ink2); }
 table.ranked th.sortkey { color:var(--ink); text-decoration:underline; text-underline-offset:3px; }
 table.ranked tr.best td { background:var(--hl); font-weight:600; }
@@ -157,65 +217,9 @@ table.ranked tr.best td { background:var(--hl); font-weight:600; }
 
 _JS = r"""
 (function () {
-  const css = () => { const s = getComputedStyle(document.documentElement); const v = n => s.getPropertyValue(n).trim();
-    return { ink: v('--ink'), ink2: v('--ink2'), muted: v('--muted'), grid: v('--grid'), axis: v('--axis'), surface: v('--surface'),
-             s1: v('--s1'), lo: v('--seq-lo'), hi: v('--seq-hi'), neg: v('--div-neg'), mid: v('--div-mid'), pos: v('--div-pos') }; };
-  const fmt = (v, kind) => {
-    if (v === null || v === undefined) return 'n/a';
-    const neg = v < 0 ? '−' : '', a = Math.abs(v);
-    if (kind === 'usd') return neg + a.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    if (kind === 'pct') return neg + (a * 100).toFixed(1) + '%';
-    if (kind === 'ratio') return neg + a.toFixed(2);
-    return neg + a.toLocaleString('en-US');
-  };
-  const cfg = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines'] };
   const sel = document.getElementById('metric');
-
-  function draw() {
-    const c = css(), m = D.metrics.find(m => m.key === sel.value), map = D.maps[m.key];
-    const xs = D.x.values, ys = D.y ? D.y.values : null;
-    const vals = map.z.flat().filter(v => v !== null);
-    let best = null;
-    map.z.forEach((row, iy) => row.forEach((v, ix) => { if (v !== null && (best === null || (m.hib ? v > best.v : v < best.v))) best = { v, ix, iy }; }));
-    const tip = (iy, ix) => {
-      const v = map.z[iy][ix]; if (v === null) return `No run with ≥ ${D.minTrades} trades`;
-      const o = D.others[String(map.combo[iy][ix])];
-      return `${m.label} ${fmt(v, m.kind)}<br>${fmt(map.trades[iy][ix], 'int')} trades` + (o ? `<br>best at ${o}` : '');
-    };
-    const L = {
-      paper_bgcolor: c.surface, plot_bgcolor: c.surface, font: { family: 'system-ui, -apple-system, Segoe UI, sans-serif', size: 12, color: c.ink2 },
-      margin: { l: 72, r: 16, t: 8, b: 56 }, showlegend: false,
-      hoverlabel: { bgcolor: c.surface, bordercolor: c.axis, font: { color: c.ink } },
-      xaxis: { type: 'category', title: { text: D.x.name }, linecolor: c.axis, gridcolor: c.grid, zeroline: false },
-      yaxis: { linecolor: c.axis, gridcolor: c.grid, zerolinecolor: c.axis },
-    };
-    let traces;
-    if (ys) {
-      const lo = Math.min(...vals), hi = Math.max(...vals), div = lo < 0 && hi > 0;
-      let scale = div ? [[0, c.neg], [0.5, c.mid], [1, c.pos]] : [[0, c.lo], [1, c.hi]];
-      if (!div && !m.hib) scale = [[0, c.hi], [1, c.lo]];
-      const text = map.z.map((row, iy) => row.map((_, ix) => tip(iy, ix)));
-      traces = [{ type: 'heatmap', x: xs, y: ys, z: map.z, text, hovertemplate: `${D.x.name} = %{x}<br>${D.y.name} = %{y}<br>%{text}<extra></extra>`,
-        colorscale: scale, zmid: div ? 0 : undefined, xgap: 2, ygap: 2, hoverongaps: true,
-        colorbar: { outlinewidth: 0, thickness: 12, tickfont: { color: c.ink2 }, title: { text: m.label, side: 'right', font: { color: c.ink2 } } } }];
-      if (best) traces.push({ type: 'scatter', mode: 'markers', x: [xs[best.ix]], y: [ys[best.iy]], hoverinfo: 'skip',
-        marker: { symbol: 'circle-open', size: 16, color: c.ink, line: { width: 2, color: c.ink } } });
-      L.yaxis = Object.assign(L.yaxis, { type: 'category', title: { text: D.y.name } });
-      L.hovermode = 'closest';
-    } else {
-      const y = map.z[0], text = y.map((_, ix) => tip(0, ix));
-      traces = [{ type: 'scatter', mode: 'lines+markers', x: xs, y, text, connectgaps: false, line: { color: c.s1, width: 2 },
-        marker: { size: 8, color: c.s1, line: { color: c.surface, width: 2 } }, hovertemplate: `${D.x.name} = %{x}<br>%{text}<extra></extra>` }];
-      if (best) traces.push({ type: 'scatter', mode: 'markers', x: [xs[best.ix]], y: [best.v], hoverinfo: 'skip',
-        marker: { symbol: 'circle-open', size: 16, color: c.ink, line: { width: 2, color: c.ink } } });
-      L.yaxis = Object.assign(L.yaxis, { title: { text: m.label }, tickformat: m.kind === 'pct' ? '.0%' : ',.2~f' });
-      L.hovermode = 'x';
-    }
-    Plotly.react('heat', traces, L, cfg);
-  }
-  sel.onchange = draw;
-  draw();
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
-  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  const show = () => document.querySelectorAll('#heat img').forEach(i => { i.hidden = i.dataset.metric !== sel.value; });
+  sel.onchange = show;
+  show();
 })();
 """

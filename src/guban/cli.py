@@ -143,6 +143,7 @@ MIN_TRADES = typer.Option(30, "--min-trades", help="Rank only runs with at least
 WORKERS = typer.Option(None, "--workers", help="Worker processes (default: CPU cores)", rich_help_panel=SEARCH)
 YES = typer.Option(False, "--yes", help=f"Run grids larger than {MAX_COMBINATIONS:,} combinations", rich_help_panel=SEARCH)
 CAPITAL = typer.Option(1_000_000.0, "--capital", help="Initial capital, for trades.csv cum_profit_pct (MC run: 1,000,000)", rich_help_panel=OUTPUT)
+TRADE_CHARTS = typer.Option(True, "--trade-charts/--no-trade-charts", help="Draw one price-chart image per trade into <out>/trades/ for the report's trade viewer (redraw later: guban chart)", rich_help_panel=OUTPUT)
 
 
 def _out_option(default: str) -> typer.models.OptionInfo:
@@ -274,6 +275,16 @@ def _trade_list(nos: list[int], limit: int = 20) -> str:
     return ", ".join(f"#{n}" for n in nos[:limit]) + (f" and {len(nos) - limit} more" if len(nos) > limit else "")
 
 
+def _mc_trade_info(trades, bars) -> dict:
+    """run_monte_carlo's per-trade inputs: the exit bar's session date as the trading day (the exit time's date when
+    bars have no session_date), contracts, side and exit time."""
+    if "session_date" in bars.columns:
+        days = bars["session_date"].to_numpy()[trades["exit_bar"].to_numpy(int)]
+    else:
+        days = pd.DatetimeIndex(trades["exit_time"]).date
+    return {"days": days, "contracts": trades["qty"].to_numpy(float), "sides": trades["direction"].to_numpy(str), "times": trades["exit_time"]}
+
+
 def _exposure_notes(exposure: dict) -> list[str]:
     """Report notes for guban.metrics.session_exposure: trades held past a scheduled close or across a data gap."""
     from guban.metrics import GAP_NOTE, PAST_CLOSE_NOTE
@@ -317,10 +328,13 @@ def run_cmd(
     inputs: list[str] = SET_INPUTS,
     class_name: str = CLASS_NAME,
     capital: float = CAPITAL,
-    mc_sims: int = typer.Option(10_000, "--mc-sims", help="Monte Carlo runs per method (resample, reorder) on this run's trades; 0: off", rich_help_panel=MC),
+    mc_sims: int = typer.Option(10_000, "--mc-sims", help="Monte Carlo runs per method (resample, reorder, whole days) and EV bootstrap on this run's trades; 0: off", rich_help_panel=MC),
     mc_seed: int = typer.Option(42, "--mc-seed", help="Monte Carlo random seed", rich_help_panel=MC),
     mc_dd_limit: float = typer.Option(None, "--mc-dd-limit", help="Also report the chance the max drawdown reaches this many USD, e.g. 2500", rich_help_panel=MC),
+    mc_risk: float = typer.Option(None, "--mc-risk", help="Risk per contract in USD for R multiples, e.g. 400 (default: the average losing trade per contract)", rich_help_panel=MC),
+    mc_oos_from: str = typer.Option(None, "--mc-oos-from", callback=_check_date, help="Also split the EV into in/out of sample: trades exiting from this date (YYYY-MM-DD, chart time zone) are out of sample", rich_help_panel=MC),
     report: bool = typer.Option(True, "--report/--no-report", help="Write report.html", rich_help_panel=OUTPUT),
+    trade_charts: bool = TRADE_CHARTS,
     out: Path = _out_option(RUN_ID),
     open_report: bool = _open_option("report.html"),
 ) -> None:
@@ -334,7 +348,7 @@ def run_cmd(
     from guban.report import fmt_value, write_report
 
     t0 = time.perf_counter()
-    check_settings(mc_sims, mc_seed, mc_dd_limit)  # before the data loads
+    check_settings(mc_sims, mc_seed, mc_dd_limit, mc_risk, mc_oos_from)  # before the data loads
     cls = _load_strategy_class(strategy_file, class_name)
     overrides = _parse_inputs(inputs, cls.inputs)
     try:
@@ -357,7 +371,8 @@ def run_cmd(
     mc = None  # MonteCarloResult, or {"skipped": reason}
     if mc_sims:
         if len(tr) >= MIN_TRADES:
-            mc = run_monte_carlo(tr["net_pnl"].to_numpy(float), mc_sims, mc_seed, mc_dd_limit)
+            mc = run_monte_carlo(tr["net_pnl"].to_numpy(float), mc_sims, mc_seed, mc_dd_limit, risk=mc_risk, oos_from=mc_oos_from,
+                                 **_mc_trade_info(tr, bars))  # fmt: skip
         else:
             mc = {"skipped": f"needs at least {MIN_TRADES} trades; this run has {len(tr)}"}
 
@@ -397,7 +412,7 @@ def run_cmd(
     meta_json["session_exposure"] = exposure
     mc_json = {} if mc is None else {"monte_carlo": mc if isinstance(mc, dict) else mc.summary()}
     (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **metrics, **mc_json}), indent=2, default=str) + "\n", encoding="utf-8")
-    report_path = write_report(res, bars, out / "report.html", metrics, meta, monte_carlo=mc) if report else None
+    report_path = write_report(res, bars, out / "report.html", metrics, meta, monte_carlo=mc, trade_charts=trade_charts) if report else None
     t3 = time.perf_counter()
     mc_seconds = mc.seconds if mc is not None and not isinstance(mc, dict) else 0.0
 
@@ -430,11 +445,27 @@ def run_cmd(
                    f"resample net P5 {u(rs['net_profit']['p5'])} / P50 {u(rs['net_profit']['p50'])} / P95 {u(rs['net_profit']['p95'])}, "
                    f"max DD P5 {u(rs['max_drawdown']['p5'])}, P(net <= 0) {rs['p_net_le_0']:.1%}; "
                    f"reorder max DD P5 {u(ro['max_drawdown']['p5'])}, P(DD worse than backtest) {ro['p_dd_worse_than_backtest']:.1%}")  # fmt: skip
+        if "day" in mc.methods:
+            dy = mc.method_summary("day")
+            typer.echo(f"  whole days ({mc.days:,} trading days): net P5 {u(dy['net_profit']['p5'])} / P50 {u(dy['net_profit']['p50'])}, "
+                       f"max DD P5 {u(dy['max_drawdown']['p5'])}, P(net <= 0) {dy['p_net_le_0']:.1%}")  # fmt: skip
         if mc.dd_limit is not None:
-            typer.echo(f"  P(max DD reaches {u(mc.dd_limit)}): resample {rs['p_dd_reaches_limit']:.1%}, reorder {ro['p_dd_reaches_limit']:.1%}")
+            limit = ", ".join(f"{name} {mc.method_summary(name)['p_dd_reaches_limit']:.1%}" for name in mc.methods)
+            typer.echo(f"  P(max DD reaches {u(mc.dd_limit)}): {limit}")
+        ev = mc.ev["groups"].get("all")
+        if ev:
+            r = ev["r"]
+            typer.echo(f"  EV per trade: {u(ev['usd']['mean'])} ({mc.ev['ci']:.0%} CI {u(ev['usd']['lo'])} to {u(ev['usd']['hi'])})"
+                       + (f", {r['mean']:+.3f} R at {u(mc.ev['risk_per_contract'])} risk per contract" if r else "")
+                       + f", P(EV <= 0) {ev['p_ev_le_0']:.1%}")  # fmt: skip
+            for g in ("in_sample", "out_of_sample"):
+                e = mc.ev["groups"].get(g)
+                if e:
+                    typer.echo(f"    {g.replace('_', ' ')}: {e['trades']:,} trades, EV {u(e['usd']['mean'])}, P(EV <= 0) {e['p_ev_le_0']:.1%}")
     mc_time = f" + monte carlo {mc_seconds:.1f} s" if mc_seconds else ""
     typer.echo(f"  time: load {t1 - t0:.1f} s + backtest {t2 - t1:.1f} s{mc_time} + report {t3 - t2 - mc_seconds:.1f} s = {t3 - t0:.1f} s")
-    typer.echo(f"Wrote {path}, {out / 'metrics.json'}" + (f", {report_path}" if report_path else ""))
+    images = f", {out / 'trades'}{os.sep}trade_*.png" if report_path and trade_charts and len(tr) else ""
+    typer.echo(f"Wrote {path}, {out / 'metrics.json'}" + (f", {report_path}" if report_path else "") + images)
     if report_path and open_report:
         _open(report_path)
 
@@ -648,6 +679,7 @@ def wfo_cmd(
     workers: int = WORKERS,
     yes: bool = YES,
     capital: float = CAPITAL,
+    trade_charts: bool = TRADE_CHARTS,
     out: Path = _out_option(RUN_ID + "_wfo"),
     open_report: bool = _open_option("wfo.html"),
 ) -> None:
@@ -715,7 +747,7 @@ def wfo_cmd(
         "inputs": fixed,
         "notes": notes,
     }
-    html_path = write_wfo_report(wf, out / "wfo.html", meta)
+    html_path = write_wfo_report(wf, out / "wfo.html", meta, trade_charts=trade_charts, workers=workers)
     summary = {
         "run": {"strategy": cls.__name__, "file": str(strategy_file), "symbol": symbol, "contract": spec.symbol, "tf": tf,
                 "session": session, "tz": tz, "fill_mode": fill_mode, "history_from": history_from,
@@ -753,6 +785,58 @@ def wfo_cmd(
     typer.echo(f"Wrote {trades_path}, {csv_paths[0]}, {csv_paths[1]}, {out / 'wfo.json'}, {html_path}")
     if open_report:
         _open(html_path)
+
+
+def _run_bars(run: Path, info: dict, data_dir: Path) -> pd.DataFrame:
+    """The bars a run's trade bar numbers index: its data settings reloaded, cut back to the run's bar count when
+    sessions were added since; anything else changed means the numbers no longer match."""
+    bars, _ = DataSpec(info["symbol"], info["tf"], info["session"], info["tz"], info.get("history_from"), "ohlc", str(data_dir),
+                       info.get("data_from")).load()  # fmt: skip
+    n, first, last = int(info["bars"]), pd.Timestamp(info["first_bar"]), pd.Timestamp(info["last_bar"])
+    if len(bars) < n or bars.index[0] != first or bars.index[n - 1] != last:
+        now = f"{len(bars):,} bars {bars.index[0]} → {bars.index[-1]}" if len(bars) else "no bars"
+        raise ValueError(f"the bars changed since {run} was written ({n:,} bars {first} → {last} then, {now} now), so its trade bar "
+                         "numbers no longer match; run the backtest again to draw its charts")  # fmt: skip
+    return bars.iloc[:n]
+
+
+@app.command("chart")
+@_friendly
+def chart_cmd(
+    run: Path = typer.Argument(..., exists=True, file_okay=False, help="Run folder of guban run or wfo (trades.csv + metrics.json or wfo.json)"),
+    trades: list[int] = typer.Option([], "--trade", help="Trade number to draw (repeatable; default: every trade)"),
+    data_dir: Path = DATA_DIR,
+    workers: int = WORKERS,
+    open_image: bool = typer.Option(False, "--open", help="Open the first drawn image when done", rich_help_panel=OUTPUT),
+) -> None:
+    """Draw trade price-chart images, <run>/trades/trade_<no>.png, the images report.html's trade viewer shows."""
+    import json
+
+    from guban.config import get_contract
+    from guban.parity import load_our_trades
+    from guban.trade_charts import FOLDER, image_name, write_trade_charts
+
+    meta = next((run / name for name in ("metrics.json", "wfo.json") if (run / name).is_file()), None)
+    if meta is None or not (run / "trades.csv").is_file():
+        raise ValueError(f"{run} is not a run folder: it needs trades.csv and metrics.json (guban run) or wfo.json (guban wfo)")
+    info = json.loads(meta.read_text(encoding="utf-8"))["run"]
+    tr = load_our_trades(run / "trades.csv")
+    if not len(tr):
+        raise ValueError(f"{run / 'trades.csv'} has no trades")
+    missing = sorted(set(trades) - set(tr["trade_no"].astype(int)))
+    if missing:
+        raise ValueError(f"{run / 'trades.csv'} has no trade {_trade_list(missing)} (trades {int(tr['trade_no'].min())} to {int(tr['trade_no'].max())})")
+    for col in ("entry_time", "exit_time"):
+        tr[col] = tr[col].dt.tz_convert(info["tz"])  # titles in the chart time zone, as the run drew them
+    t0 = time.perf_counter()
+    bars = _run_bars(run, info, data_dir)
+    nos = sorted(set(trades)) or None
+    n = write_trade_charts(tr, bars, run / FOLDER, get_contract(info["contract"]).tick_size, workers, nos)
+    first = run / FOLDER / image_name(nos[0] if nos else int(tr["trade_no"].iat[0]))
+    drawn = ", ".join(str(run / FOLDER / image_name(no)) for no in nos) if nos and len(nos) <= 5 else f"{run / FOLDER}{os.sep}trade_*.png"
+    typer.echo(f"Drew {n:,} trade chart{'s' if n != 1 else ''} in {time.perf_counter() - t0:.1f} s: {drawn}")
+    if open_image:
+        _open(first)
 
 
 # ---------------------------------------------------------------------------

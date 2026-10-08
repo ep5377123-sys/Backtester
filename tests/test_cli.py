@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -79,7 +81,7 @@ def test_help_lists_the_six_commands_in_workflow_order():
     order = [res.output.index(f" {name} ") for name in ("import", "run", "compare", "optimize", "wfo", "propfirm")]
     assert order == sorted(order)
     assert "bars" in res.output and "Exit codes" in res.output
-    for name in ("import", "bars", "run", "compare", "optimize", "wfo", "propfirm"):
+    for name in ("import", "bars", "run", "compare", "optimize", "wfo", "chart", "propfirm"):
         assert runner.invoke(app, [name, "--help"]).exit_code == 0
 
 
@@ -103,6 +105,8 @@ def test_run_optimize_wfo_share_identical_flags():
         for name in ("grid_specs", "min_trades", "workers", "yes"):
             assert params[cmd][name].opts == params["optimize"][name].opts
         assert params[cmd]["out"].opts == ["--out"] and params[cmd]["open_report"].opts == ["--open"]
+    ref, p = params["run"]["trade_charts"], params["wfo"]["trade_charts"]
+    assert (p.opts, p.secondary_opts, p.default, p.help) == (ref.opts, ref.secondary_opts, ref.default, ref.help)
 
 
 def test_run_dir_names():
@@ -116,7 +120,36 @@ def test_run_writes_to_the_default_run_dir(workdir):
     res = runner.invoke(app, ["run", "flip.py", "--symbol", "NQ", "--contract", "MNQ", "--fill-mode", "ohlc"])
     assert res.exit_code == 0, res.output
     out = workdir / "reports" / "flip_NQ-MNQ_5m_rth"
-    assert {p.name for p in out.iterdir()} == {"trades.csv", "metrics.json", "report.html"}
+    assert {p.name for p in out.iterdir()} == {"trades.csv", "metrics.json", "report.html", "trades"}
+    assert len(list((out / "trades").glob("trade_*.png"))) == json.loads((out / "metrics.json").read_text(encoding="utf-8"))["all"]["total_trades"]
+
+
+def test_no_trade_charts_then_guban_chart_draws_them(workdir):
+    res = runner.invoke(app, ["run", "flip.py", "--symbol", "NQ", "--fill-mode", "ohlc", "--mc-sims", "0", "--no-trade-charts", "--out", "r"])
+    assert res.exit_code == 0, res.output
+    out = workdir / "r"
+    assert not list(out.glob("trades/trade_*.png")) and "id='noimg'" in (out / "report.html").read_text(encoding="utf-8")
+    n = json.loads((out / "metrics.json").read_text(encoding="utf-8"))["all"]["total_trades"]
+    res = runner.invoke(app, ["chart", "r", "--trade", "2"])
+    assert res.exit_code == 0, res.output
+    assert [p.name for p in out.glob("trades/trade_*.png")] == ["trade_2.png"] and "Drew 1 trade chart" in res.output
+    res = runner.invoke(app, ["chart", "r"])
+    assert res.exit_code == 0, res.output
+    assert len(list(out.glob("trades/trade_*.png"))) == n
+    res = runner.invoke(app, ["chart", "r", "--trade", "999"])
+    assert res.exit_code == 2 and "has no trade #999" in res.output
+    res = runner.invoke(app, ["run", "flip.py", "--symbol", "NQ", "--fill-mode", "ohlc", "--mc-sims", "0", "--no-trade-charts", "--out", "r"])
+    assert not list(out.glob("trades/trade_*.png"))  # a run without images clears the earlier run's
+
+
+def test_chart_refuses_bars_that_changed(workdir, monkeypatch):
+    assert runner.invoke(app, ["run", "flip.py", "--symbol", "NQ", "--fill-mode", "ohlc", "--mc-sims", "0", "--no-report", "--out", "r"]).exit_code == 0
+    longer = pd.concat([synthetic_bars(), synthetic_bars().shift(40, freq="5min")])  # sessions added since: still fine
+    monkeypatch.setattr(cli.DataSpec, "load", lambda self: (longer, None))
+    assert runner.invoke(app, ["chart", "r", "--trade", "1"]).exit_code == 0
+    monkeypatch.setattr(cli.DataSpec, "load", lambda self: (synthetic_bars().iloc[3:], None))
+    res = runner.invoke(app, ["chart", "r", "--trade", "1"])
+    assert res.exit_code == 2 and "the bars changed since" in res.output
 
 
 def test_compare_out_is_a_folder(workdir):
@@ -176,6 +209,9 @@ def test_strategy_frames_from_a_worker_process(tmp_path):
         (["run", "flip.py", "--symbol", "NQ", "--mc-sims", "-1"], "--mc-sims must be a whole number"),
         (["run", "flip.py", "--symbol", "NQ", "--mc-sims", "2000000"], "--mc-sims must be a whole number"),
         (["run", "flip.py", "--symbol", "NQ", "--mc-dd-limit", "0"], "--mc-dd-limit must be a drawdown"),
+        (["run", "flip.py", "--symbol", "NQ", "--mc-risk", "-5"], "--mc-risk must be the risk per contract"),
+        (["run", "flip.py", "--symbol", "NQ", "--mc-oos-from", "soon"], "'soon' is not a date"),
+        (["chart", "."], "is not a run folder"),
     ],
 )
 def test_input_errors_are_one_line_messages_with_exit_2(workdir, args, message):
@@ -239,7 +275,17 @@ def test_run_has_a_trade_monte_carlo_by_default(workdir):
     assert "p_dd_reaches_limit" in mc["resample"]
     assert "monte carlo (10,000 runs" in res.output and "P(max DD reaches 20.00)" in res.output
     assert "<section id='monte-carlo'>" in page and "id='mc-band-resample'" in page and "id='mc-band-reorder'" in page
-    assert '"mc":{"x":[0,' in page
+    assert {"day", "ev", "horizons"} <= set(mc) or "day" in mc.get("skipped", {})  # whole days, EV and horizons reach metrics.json
+    assert mc["ev"]["groups"]["all"]["trades"] == mc["trades"]
+
+
+def test_run_passes_the_ev_flags_to_the_monte_carlo(workdir):
+    res, m, _ = _run_json(workdir, "--mc-risk", "50", "--mc-oos-from", "2024-01-02 11:00")
+    ev = m["monte_carlo"]["ev"]
+    assert (ev["risk_per_contract"], ev["risk_source"], ev["oos_from"]) == (50.0, "--mc-risk", "2024-01-02 11:00")
+    groups = ev["groups"]
+    assert groups["in_sample"]["trades"] + groups["out_of_sample"]["trades"] == groups["all"]["trades"]
+    assert "R at 50.00 risk per contract" in res.output and "out of sample:" in res.output
 
 
 def test_run_monte_carlo_is_deterministic_and_seeded(workdir):
@@ -252,7 +298,6 @@ def test_run_monte_carlo_is_deterministic_and_seeded(workdir):
 def test_run_monte_carlo_off_and_skipped(workdir):
     res, m, page = _run_json(workdir, "--mc-sims", "0", out="off")
     assert "monte_carlo" not in m and "<section id='monte-carlo'>" not in page and "monte carlo" not in res.output
-    assert '"mc":null' in page
     res, m, page = _run_json(workdir, "--set", "hold=100", out="skip")  # never exits: 0 closed trades
     assert m["monte_carlo"] == {"skipped": "needs at least 2 trades; this run has 0"}
     assert "Monte Carlo skipped: needs at least 2 trades" in page and "monte carlo: skipped" in res.output

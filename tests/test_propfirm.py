@@ -378,7 +378,8 @@ def test_html_report_is_offline(tmp_path):
     text = path.read_text(encoding="utf-8")
     for needle in ("id='paths'", "id='dtp'", "id='mdd'", "id='degr'", "id='sweep'", "Passing within N attempts", "Degradation scenarios", "Size sweep"):
         assert needle in text
-    assert "src='http" not in text and 'src="http' not in text and "<link" not in text
+    assert "src='http" not in text and 'src="http' not in text and "<link" not in text and "<script" not in text
+    assert text.count("<img class='chart' src='data:image/png;base64,") == 5
 
 
 def test_cli_propfirm(tmp_path):

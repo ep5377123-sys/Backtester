@@ -2,12 +2,9 @@
 
 Python backtester for CME futures that reproduces MultiCharts (MC) results. Full plan: [PLAN.md](PLAN.md).
 
-## File access rule (user, 2026-09-28) — highest priority
-- Read ONLY the file(s) the user explicitly designates for the current task (e.g. "work on phase N of PLAN.md" → read PLAN.md only).
-- Before reading ANY other file (source, tests, configs, data, external inputs), stop and ask the user for permission: name the exact file(s) and say why the task cannot be done without them. Ask only when it is genuinely necessary.
-- This covers every way of reading contents: Read, Grep, shell `cat`/`type`/`Get-Content`, Python scripts that open files, and subagents.
-- Files the user tells you to edit count as designated. Files you create in this session may be re-read.
-- **Exception — bug fixes (user, 2026-09-29):** when fixing a bug (one the user reports, or one found while working), read whatever files are required to fix it without asking, and don't report which files you read — just fix it. The rule above still applies to all other (non-bug-fix) work.
+## File access rule (user, 2026-10-08 — replaces the 2026-09-28 ask-first rule) — highest priority
+- Don't ask permission to read files or run commands. Read only what the task absolutely needs and run only what is
+  absolutely necessary (no exploratory sweeps). Covers Read, Grep, shell reads, scripts and subagents alike.
 
 ## Running a backtest (user, 2026-09-29)
 - When the user says "run a backtest" (or similar), invoke the `run-backtest` skill (`.claude/skills/run-backtest/SKILL.md`):
@@ -18,7 +15,7 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 ## Stack & commands
 - Python 3.14, managed with uv. Package lives in `src/guban/`.
 - Install: `uv sync` · Tests: `uv run pytest` · CLI: `uv run guban --help`
-- Deps: pandas, numpy, pyarrow, plotly, typer; pytest (dev).
+- Deps: pandas, numpy, pyarrow, matplotlib, typer, openpyxl; pytest (dev). Every report chart is a matplotlib image (`guban/charts.py`); no plotly.
 
 ## Conventions
 - Strategies are Python only (no PowerLanguage interpreter). They mirror PowerLanguage semantics:
@@ -37,7 +34,8 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - MC charts for CME are in exchange time: run MC-parity backtests with `--session eth --tz America/Chicago` (MC Time/Date/input times are Central). Import with `--roll expiry` to match MC's continuous contract (rolls Wednesday of expiration week). Vault Break parity: `--data-from 2021-01-03` (MC's chart start; DailyATR has long memory), no `atr_seed_*` (retired, Phase 15) — command in USE.md.
 - `guban run <strategy.py> ...` writes `reports/<run>/trades.csv` (MC trade-export layout + engine columns, `guban/tradelist.py`), `metrics.json` (`guban/metrics.py`) and a self-contained `report.html` (`guban/report.py`; `--open`, `--no-report`); `guban compare --ours ... --mc <MC csv|xlsx> --contract MNQ` prints S3 stats and writes `diff.html` (`guban/parity.py`). Vault Break parity command: USE.md (full span 2021-01 → 2026-09, PLAN.md "Phase 15 results").
 - Costs: `--commission`/`--slippage` default to None = the `--contract` spec's defaults (`config/contracts.toml` `commission`, `slippage` = 1 tick RT; `cli._costs`); a given flag wins; `metrics.json` `run.costs` says which. `--data-from YYYY-MM-DD` (shared option, `DataSpec.data_from`) drops bars before a date in the chart tz, so the warm-up starts there.
-- `guban run` also runs a trade Monte Carlo by default (`guban/montecarlo.py`, Phase 11): resample (with replacement) and reorder (shuffle) the run's `net_pnl`, side by side in `report.html` (`write_report(..., monte_carlo=)`) and `metrics.json` `monte_carlo`. `--mc-sims` (10000, 0 = off), `--mc-seed` (42; reorder uses seed+1), `--mc-dd-limit`. Drawdowns are close-to-close (compute_metrics' definition); output is deterministic for a seed and independent of the batch size — keep it that way. Separate from `propfirm`.
+- `guban run` also runs a trade Monte Carlo by default (`guban/montecarlo.py`, Phases 11 + 16): resample (with replacement), reorder (shuffle) and whole days (exit-session block bootstrap) of the run's `net_pnl`, plus EV (USD/R, bootstrap CI) and horizons, side by side in `report.html` (`write_report(..., monte_carlo=)`) and `metrics.json` `monte_carlo`. `--mc-sims` (10000, 0 = off), `--mc-seed` (42; reorder seed+1, day seed+2, EV seed+3), `--mc-dd-limit`, `--mc-risk`, `--mc-oos-from`.
+- Trade images (Phase 16, `guban/trade_charts.py`): `run`/`wfo` draw `<out>/trades/trade_<no>.png` per trade on a process pool (`--trade-charts/--no-trade-charts`, shared option `TRADE_CHARTS`); `guban chart <run> [--trade N]` redraws them from `trades.csv` + the `run` block of `metrics.json`/`wfo.json` (refuses if the bars changed other than by appended sessions). Drawdowns are close-to-close (compute_metrics' definition); output is deterministic for a seed and independent of the batch size — keep it that way. Separate from `propfirm`.
 - `guban optimize <strategy.py> --grid "a=0.4:1.0:0.1 b=1:4" [run's data/cost flags]` grid-searches inputs on a process pool (`guban/optimize.py`, `guban/optimize_report.py`) and writes `reports/<run>_opt/results.csv`, `optimize.json`, `optimize.html` (heatmap); `--metric`, `--min-trades` (default 30), `--workers`, `--x/--y`; >5,000 combinations need `--yes`. Strategy classes must be top-level in their file (workers re-import them). Details in PLAN.md "Phase 7 results".
 - `guban wfo <strategy.py> --grid ... [run's data/cost flags]` walk-forwards inputs (`guban/wfo.py`, `guban/wfo_report.py`): `--is 12 --oos 3 --step 3` months, `--rolling/--anchored`, `--start`; writes `reports/<run>_wfo/trades.csv` (stitched OOS), `windows.csv`, `results.csv`, `wfo.json`, `wfo.html`. Every IS/OOS window is its own trading window: warm-up from the first bar, no fills before the window (`run_backtest(trade_from=)`), a position open at its end closed as "Window End"; windows sharing a start share one run (`BacktestResult.window`). The engine must stay causal: no strategy/engine code may look at future bars. Details in PLAN.md "Phase 8 results".
 - `guban propfirm --trades <trades.csv | MC csv/xlsx> --rules apex_50k_eod` runs the prop-firm evaluation Monte Carlo (`guban/propfirm/`, rules + sim settings in `config/propfirm/<rules>.toml`) and writes `reports/<trades>_<rules>/propfirm.json`, `sweep.csv`, `degradation.csv`, `daily.csv`, `propfirm.html`. It is a bit-exact port of the notebook (same RNG draw order) — keep it that way; notebook quirks (costs added on top of net profit, zero-trade weekdays in the pool) are ported as written and noted in the report. Details in PLAN.md "Phase 9 results".
