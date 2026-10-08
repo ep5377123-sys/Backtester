@@ -31,5 +31,6 @@ NQ = "NQ-CME"
 MNQ = "MNQ-CME"
 ES = "ES-CME"
 MES = "MES-CME"   # added 2026-10-07: appeared in the DeepCharts folder after the reinstall
-GC = "GC-COMEX"   # folder gone since the 2026-10-07 reinstall; the store keeps what it built
+# GC dropped 2026-10-07 (user: only NQ, ES, MNQ, MES, BTC from now on). Its files built in Phase 14 are still under
+# D:\Market Data\GC (not listed here, so builds and verify skip them).
 BTC = "BTC-CME"
