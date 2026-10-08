@@ -14,10 +14,12 @@ Rules:
 - Minute-record bars: minutes whose records hold no volume (placeholders) dropped; all records of a minute with
   volume merged in file order (O first, H max, L min, C last, volumes summed) -- the opening minute's zero-volume
   first record is its true open. DeepCharts minute field 6 is the sell side (bid_vol), as in guban.data.importer.
-- A session's bars come from its ticks when the tick file is whole, its summed size is within tolerance_pct of
-  the minute volume, and at least min_minute_match of the session's minutes carry exactly the minute record's
-  volume; otherwise from the minute records. In a tick session, a minute with a record but no trade keeps the
-  record (source "minute").
+- Bar source (config/store.toml `bars`): "minute" (user, 2026-10-07: 1-minute bars by default, ticks only for
+  strategies that need them) builds a session's bars from its minute records whenever they hold volume, and from
+  its ticks only when they hold none. "tick" (the Phase 14 rule) builds them from the ticks when the tick file is
+  whole, its summed size is within tolerance_pct of the minute volume, and at least min_minute_match of the
+  session's minutes carry exactly the minute record's volume. In a tick session, a minute with a record but no
+  trade keeps the record (source "minute"). Either way the tick check runs and `reason` names a tick problem.
 """
 
 from __future__ import annotations
@@ -120,9 +122,20 @@ def _match(minute: pd.DataFrame, bars: pd.DataFrame) -> tuple[float, float]:
 
 
 def session_bars(
-    minute_raw: np.ndarray | None, tick_raw: np.ndarray | None, contract: str, tolerance_pct: float, min_minute_match: float
+    minute_raw: np.ndarray | None,
+    tick_raw: np.ndarray | None,
+    contract: str,
+    tolerance_pct: float,
+    min_minute_match: float,
+    bars: str = "tick",
 ) -> SessionResult:
-    """Bars and tick rows of one contract session, and its quality row (see the module rules)."""
+    """Bars and tick rows of one contract session, and its quality row (see the module rules).
+
+    bars="minute" (the store's rule since 2026-10-07): the minute records build the bars whenever they hold volume;
+    ticks only when they do not. The tick check still runs, and `reason` names a tick problem. bars="tick": the
+    Phase 14 rule (valid ticks build the bars)."""
+    if bars not in ("minute", "tick"):
+        raise ValueError(f"bars must be 'minute' or 'tick', got {bars!r} (config/store.toml bars)")
     if minute_raw is None:
         minute_raw = np.empty(0, RECORD)
     minute = minute_record_bars(minute_raw, contract)
@@ -150,6 +163,8 @@ def session_bars(
         q["reason"] = f"only {vol_match:.1%} of minutes match the minute volume"
     else:
         use_ticks = True
+    if bars == "minute" and minute_volume:
+        return SessionResult(minute, ticks, q | {"bars": len(minute)})
     if use_ticks:
         keep = minute[~minute["ts_utc"].isin(tb["ts_utc"])]
         bars = pd.concat([tb, keep], ignore_index=True).sort_values("ts_utc", kind="stable").reset_index(drop=True)

@@ -767,7 +767,7 @@ def store_build_cmd(
     symbols: list[str] = STORE_SYMBOLS,
     root: Path = STORE_ROOT,
     source: Path = STORE_SOURCE,
-    rebuild: list[str] = typer.Option([], "--rebuild", help="Rebuild a stored session, SYM:YYYYMMDD (repeatable)", rich_help_panel=STORE),
+    rebuild: list[str] = typer.Option([], "--rebuild", help="Build stored sessions again from their current source: SYM:YYYYMMDD, SYM:changed or SYM:all (repeatable)", rich_help_panel=STORE),
     workers: int = WORKERS,
     settle_minutes: float = typer.Option(None, "--settle-minutes", help="Minutes a session file must be unmodified (default: config)", rich_help_panel=STORE),
 ) -> None:
@@ -778,13 +778,21 @@ def store_build_cmd(
     typer.echo(f"Building {cfg.root} from {cfg.source} (read-only)")
     with _keep_awake():
         reports = build_store(cfg, symbols or None, rebuild, workers=workers, progress=_store_progress())
+    typer.echo(f"Bars from: {cfg.bars} records (config/store.toml bars)")
     for r in reports:
-        typer.echo(f"{r.symbol}: built {r.built:,} sessions ({r.tick_built:,} from ticks, {r.built - r.tick_built:,} from minute records), "
-                   f"{r.already:,} already stored, {r.empty:,} empty files, {r.rolls} rolls; {r.files_written:,} files written in {r.seconds:,.0f} s")  # fmt: skip
+        typer.echo(f"{r.symbol}: built {r.built:,} sessions ({r.tick_built:,} from ticks, {r.built - r.tick_built:,} from minute records"
+                   + (f"; {r.rebuilt:,} of them rebuilt" if r.rebuilt else "") + f"), {r.already:,} already stored, {r.empty:,} empty files, "
+                   f"{r.rolls} rolls; {r.files_written:,} files written in {r.seconds:,.0f} s")  # fmt: skip
+        if r.folder_missing:
+            typer.echo(f"  {cfg.source / cfg.symbols[r.symbol]} is gone: nothing to add; the store keeps its {r.gone:,} sessions")
+        elif r.gone:
+            typer.echo(f"  {r.gone:,} stored sessions have no source file any more (kept as stored)")
         for key, why in r.skipped:
             typer.echo(f"  skipped {key}: {why}")
-        for key, why in r.changed:
-            typer.echo(f"  CHANGED SOURCE {key}: {why} (not applied; --rebuild {r.symbol}:{key[-8:]} to rebuild)")
+        for key, why in r.changed[:20]:
+            typer.echo(f"  CHANGED SOURCE {key}: {why} (not applied; --rebuild {r.symbol}:{key[-8:]} or {r.symbol}:changed)")
+        if len(r.changed) > 20:
+            typer.echo(f"  ... {len(r.changed) - 20:,} more changed sources (--rebuild {r.symbol}:changed rebuilds them all)")
 
 
 @store_app.command("verify")
@@ -794,7 +802,7 @@ def store_verify_cmd(
     root: Path = STORE_ROOT,
     source: Path = STORE_SOURCE,
 ) -> None:
-    """SR3: tick-built bars vs the DeepCharts minute records, per symbol; check the stored files. Exit 1 on FAIL."""
+    """Check the stored files; minute-built sessions must equal their source, tick-built ones meet SR3. Exit 1 on FAIL."""
     from guban.store import verify_store
     from guban.store.build import OHLC_TARGET
 
@@ -802,9 +810,10 @@ def store_verify_cmd(
     results = verify_store(cfg, symbols or None, progress=_store_progress(200))
     for v in results:
         verdict = "PASS" if v.passed else "FAIL"
-        typer.echo(f"{v.symbol}: {verdict}  {v.sessions:,} sessions, {v.tick_sessions:,} tick-built; minutes with equal volume "
-                   f"{v.volume_match:.4%} (target {v.volume_target:.0%}) of {v.minutes:,}, equal OHLC {v.ohlc_match:.4%} "
-                   f"(target {OHLC_TARGET:.1%}) of {v.ohlc_minutes:,}")  # fmt: skip
+        typer.echo(f"{v.symbol}: {verdict}  {v.sessions:,} sessions: {v.minute_sessions:,} minute-built equal their source, "
+                   f"{v.tick_sessions:,} tick-built (equal volume {v.volume_match:.4%} of {v.minutes:,} minutes, target {v.volume_target:.0%}; "
+                   f"equal OHLC {v.ohlc_match:.4%}, target {OHLC_TARGET:.1%}), {v.not_compared:,} not compared (source gone or changed); "
+                   f"{v.sources_gone:,} source files gone")  # fmt: skip
         for p in v.problems[:20]:
             typer.echo(f"  problem: {p}")
         for c in v.changed[:20]:

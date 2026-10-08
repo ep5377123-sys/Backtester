@@ -958,3 +958,26 @@ the commits and delete `D:\Market Data\`.
 - **For Phase 15 (SR6):** minute-built sessions already equal the old import. Tick-built ones differ from it on 0.3% of
   bars, by design. `--bars minute` (step 7) restores the old import's bars wherever a parity run needs them.
 - Tests: `tests/test_store.py` (23). Full suite: 320 passed.
+
+### Phase 14 addendum: 1-minute bars by default (2026-10-07)
+- **User rule:** data comes from `D:\Deepchart\Database`; strategies use 1-minute bars; tick data only when a strategy
+  needs it. → `config/store.toml` `bars = "minute"`: the store builds bars from DeepCharts' minute records whenever
+  they hold volume, and from ticks only when they hold none. Ticks are still stored; `quality.csv` gained
+  `tick_ok` (passes the 2% / 99%-of-minutes check), which tick consumers must filter on. The Phase 14 tick rule
+  stays available as `bars = "tick"`.
+- **DeepCharts reinstall (2026-10-07):** after it settled, the folder held NQ, ES, MNQ, **MES** (new) and BTC, all with
+  minute data from 2020-01-01, plus NQ ticks from 2024-01-01. Gone: GC, ES ticks, MNQ ticks, NQ ticks before 2024,
+  NQ minutes before 2020. Unchanged minute files were byte-identical to the store's sources (ES 3,180/3,182,
+  NQ 3,066/3,200, BTC 3,095/3,254). The changed files mostly completed short sessions (NQ 2022-12-27, Memorial
+  Day 2025, BTC expiry days). **The ES gap is filled:** 202609 is front at 0.8–1.6M contracts per session until the
+  2026-09-14 roll.
+- **Builder:** `--rebuild SYM:changed|all` (besides SYM:YYYYMMDD) rebuilds from the current source and keeps every stored
+  file whose source is gone, together with its tick check. A symbol whose folder is missing is reported, not an error.
+  A source with the same bytes but a new mtime is not a change: its new mtime is recorded once. `verify` now also
+  requires every minute-built session to equal its source minute records, and skips sessions whose source is gone.
+- **Rebuilt** NQ, ES, MNQ and BTC with `--rebuild SYM:all`, and added MES: every front session of these five symbols
+  is built from minute records, and `verify` passes all six. A second build wrote 0 files. **GC** keeps its Phase 14 bars
+  (511 front sessions tick-built), because its minute files no longer exist. Sessions whose sources are gone
+  (NQ 2018-12..2019, the old NQ/MNQ/ES ticks) stay in the store as built.
+- Known source hole: trade date 2020-11-30 holds ~1–2% of normal volume on NQ and ES.
+- Tests: `tests/test_store.py` (27). Full suite: 324 passed.

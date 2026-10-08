@@ -63,6 +63,11 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - Prop-firm notebook being ported: `D:\Multi Charts\25k Prop Firm Accurate Rules.ipynb`
 - DeepCharts live folder `D:\Deepchart\Database` (still being written by the app): only `guban store build` reads it.
 
+## Data source rule (user, 2026-10-07)
+- Market data comes from `D:\Deepchart\Database` (through the store below). Strategies use **1-minute bars**; use
+  **tick data only when a strategy needs ticks**, and then only sessions whose `quality.csv` `tick_ok` is True.
+  The store builds 1-minute bars from DeepCharts' minute records (`config/store.toml` `bars = "minute"`).
+
 ## Shared market-data store (Phase 14)
 - `D:\Market Data\` is shared with the Research Pipeline (`D:\Research Pipeline`): write-once, read-only Parquet per
   contract session (`<SYM>/{minute,tick}/<contract>/<YYYYMMDD>.parquet`), `manifest.csv`, per-symbol `quality.csv` and

@@ -4,9 +4,15 @@
 root = 'D:\Market Data'          # the store (write-once session files)
 source = 'D:\Deepchart\Database' # DeepCharts folder, opened read-only
 
-# A session's 1-minute bars come from its ticks when the tick file is whole, its summed size is within
-# tolerance_pct of the minute volume, and at least min_minute_match of its minutes have exactly the minute
-# record's volume (2025-11+ GC ticks miss ~2% of trades spread over most minutes; NQ/ES match 99.7-100%).
+# Which source builds the 1-minute bars (user, 2026-10-07): "minute" = the DeepCharts minute records, ticks only for a
+# session whose minute file holds no volume; ticks are stored either way, for strategies that need them.
+# "tick" = the Phase 14 rule below. Changing it means rebuilding the stored sessions (--rebuild SYM:all).
+bars = "minute"
+
+# Tick check (quality.csv tick_ok; with bars = "tick" it also picks the bar source): a session's ticks pass when the
+# tick file is whole, its summed size is within tolerance_pct of the minute volume, and at least min_minute_match of
+# its minutes have exactly the minute record's volume (2025-11+ GC ticks miss ~2% of trades spread over most
+# minutes; NQ/ES match 99.7-100%).
 tolerance_pct = 2.0
 min_minute_match = 0.99
 
@@ -24,5 +30,6 @@ thin_ratio = 0.2
 NQ = "NQ-CME"
 MNQ = "MNQ-CME"
 ES = "ES-CME"
-GC = "GC-COMEX"
+MES = "MES-CME"   # added 2026-10-07: appeared in the DeepCharts folder after the reinstall
+GC = "GC-COMEX"   # folder gone since the 2026-10-07 reinstall; the store keeps what it built
 BTC = "BTC-CME"

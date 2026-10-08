@@ -117,6 +117,19 @@ def test_opening_minute_keeps_its_zero_volume_open_record():
     assert (b.open, b.high, b.low, b.close, b.volume) == (17981.0, 17985.25, 17972.5, 17972.75, 407)
 
 
+def test_minute_rule_uses_the_minute_records_whenever_they_have_volume():
+    r = session_bars(minute_raw(MINUTES), tick_raw(TICKS), "202509", 2.0, 0.99, bars="minute")
+    assert r.quality["bar_source"] == "minute" and (r.bars["source"] == "minute").all() and r.quality["reason"] == ""
+    assert len(r.ticks) == len(TICKS)  # ticks are stored either way
+    extra = TICKS + [("2025-08-04 18:02:30", 101.0, 1, 1)]
+    r = session_bars(minute_raw(MINUTES), tick_raw(extra), "202509", 2.0, 0.99, bars="minute")
+    assert r.quality["bar_source"] == "minute" and "+6.7%" in r.quality["reason"]  # the tick problem is still named
+    r = session_bars(np.empty(0, RECORD), tick_raw(TICKS), "202509", 2.0, 0.99, bars="minute")
+    assert r.quality["bar_source"] == "tick" and r.quality["reason"] == "no minute volume"
+    with pytest.raises(ValueError, match="bars"):
+        session_bars(minute_raw(MINUTES), None, "202509", 2.0, 0.99, bars="ticks")
+
+
 def test_valid_ticks_build_the_bars():
     r = session_bars(minute_raw(MINUTES), tick_raw(TICKS), "202509", 2.0, 0.99)
     assert r.quality["bar_source"] == "tick" and r.quality["minute_match"] == 1.0
@@ -188,7 +201,7 @@ def test_build_writes_sessions_manifest_quality_rolls_readme(tmp_path):
     make_source(tmp_path / "src")
     rep = build_store(config(tmp_path), now=NOW, workers=1)[0]
     root = tmp_path / "store"
-    assert rep.built == 2 and rep.tick_built == 2 and not rep.skipped and not rep.changed
+    assert rep.built == 2 and rep.tick_built == 0 and not rep.skipped and not rep.changed  # bars = "minute"
     m = pd.read_parquet(root / "NQ" / "minute" / "202509" / "20250804.parquet")
     assert list(m.columns) == MINUTE_COLUMNS and len(m) == 3
     t = pd.read_parquet(root / "NQ" / "tick" / "202509" / "20250805.parquet")
@@ -197,7 +210,8 @@ def test_build_writes_sessions_manifest_quality_rolls_readme(tmp_path):
     assert len(man) == 5  # 2 minute + 2 tick + the empty Friday file
     assert set(man["kind"]) == {"minute", "tick"}
     q = pd.read_csv(root / "NQ" / "quality.csv", dtype={"session": str, "contract": str})
-    assert q["session"].tolist() == ["20250804", "20250805"] and (q["bar_source"] == "tick").all()
+    assert q["session"].tolist() == ["20250804", "20250805"] and (q["bar_source"] == "minute").all()
+    assert q["tick_ok"].tolist() == [True, True]  # the ticks are stored and pass the tick check
     assert (root / "NQ" / "roll_calendar.csv").exists() and (root / "README.md").exists()
     out = root / "NQ" / "minute" / "202509" / "20250804.parquet"
     assert not os.access(out, os.W_OK)  # write-once: read-only
@@ -305,8 +319,11 @@ def test_verify_reports_sr3_rates(tmp_path):
     cfg = config(tmp_path)
     build_store(cfg, now=NOW, workers=1)
     v = verify_store(cfg)[0]
-    assert v.tick_sessions == 2 and v.volume_match == 1.0 and v.ohlc_match == 1.0 and v.passed
-    assert not v.problems
+    assert v.minute_sessions == 2 and v.tick_sessions == 0 and v.passed and not v.problems
+    cfg = config(tmp_path, root=tmp_path / "tick_store", bars="tick")
+    build_store(cfg, now=NOW, workers=1)
+    v = verify_store(cfg)[0]
+    assert v.tick_sessions == 2 and v.volume_match == 1.0 and v.ohlc_match == 1.0 and v.passed and not v.problems
 
 
 def test_cli_store_build_and_verify(tmp_path):
@@ -315,7 +332,7 @@ def test_cli_store_build_and_verify(tmp_path):
     args = ["--root", str(tmp_path / "store"), "--source", str(tmp_path / "src"), "--symbol", "NQ"]
     res = runner.invoke(app, ["store", "build", *args, "--workers", "1", "--settle-minutes", "0"])
     assert res.exit_code == 0, res.output
-    assert "NQ: built 2 sessions (2 from ticks" in res.output
+    assert "NQ: built 2 sessions (0 from ticks, 2 from minute records" in res.output
     res = runner.invoke(app, ["store", "verify", *args])
     assert res.exit_code == 0, res.output and "PASS" in res.output
 
@@ -328,3 +345,53 @@ def test_store_build_and_verify_share_identical_flags():
     for name in ("symbols", "root", "source"):
         a, b = params["build"][name], params["verify"][name]
         assert (a.opts, a.default, a.help) == (b.opts, b.default, b.help), name
+
+
+def test_rebuild_all_switches_the_rule_and_keeps_files_whose_source_is_gone(tmp_path):
+    src = make_source(tmp_path / "src")
+    build_store(config(tmp_path, bars="tick"), now=NOW, workers=1)
+    root = tmp_path / "store"
+    tick_out = root / "NQ" / "tick" / "202509" / "20250804.parquet"
+    (src / "NQ-CME" / "202509" / "Tick" / "20250804.data").unlink()  # the source loses this tick file
+    rep = build_store(config(tmp_path), now=NOW, workers=1, rebuild=["NQ:all"])[0]
+    assert rep.rebuilt == 3 and rep.built == 2 and rep.tick_built == 0  # 3: the empty Friday file too
+    for s in ("20250804", "20250805"):
+        assert (pd.read_parquet(root / "NQ" / "minute" / "202509" / f"{s}.parquet")["source"] == "minute").all()
+    assert tick_out.exists() and not os.access(tick_out, os.W_OK)  # kept, still read-only
+    man = pd.read_csv(root / "manifest.csv", dtype=str, keep_default_na=False)
+    assert "NQ-CME/202509/Tick/20250804.data" in set(man["source"]) and len(man) == 5
+    q = pd.read_csv(root / "NQ" / "quality.csv", dtype={"session": str, "contract": str}).set_index("session")
+    assert q.loc["20250804", "tick_volume"] == 15 and bool(q.loc["20250804", "tick_ok"])  # its tick check is kept
+    assert verify_store(config(tmp_path))[0].passed
+    before = snapshot(root)
+    assert build_store(config(tmp_path), now=NOW, workers=1)[0].files_written == 0
+    assert snapshot(root) == before
+
+
+def test_rebuild_changed_and_same_content_with_a_new_timestamp(tmp_path):
+    src = make_source(tmp_path / "src")
+    cfg = config(tmp_path)
+    build_store(cfg, now=NOW, workers=1)
+    f = src / "NQ-CME" / "202509" / "Minute" / "20250805.data"
+    os.utime(f, ns=(f.stat().st_atime_ns, f.stat().st_mtime_ns + 10**9))  # re-downloaded, same bytes
+    write(src / "NQ-CME" / "202509" / "Tick" / "20250804.data", tick_raw(TICKS + [("2025-08-04 18:03:00", 101.0, 1, 1)]))
+    rep = build_store(cfg, now=NOW, workers=1)[0]
+    assert [k for k, _ in rep.changed] == ["202509/20250804"]  # the touched minute file is not a change
+    assert build_store(cfg, now=NOW, workers=1)[0].files_written == 0  # its new timestamp is recorded once
+    rep = build_store(cfg, now=NOW, workers=1, rebuild=["NQ:changed"])[0]
+    assert rep.rebuilt == 1 and not rep.changed
+    with pytest.raises(ValueError, match="SYM:changed"):
+        build_store(cfg, now=NOW, workers=1, rebuild=["NQ:some"])
+
+
+def test_a_symbol_whose_folder_is_gone_keeps_its_store(tmp_path):
+    make_source(tmp_path / "src")
+    cfg = config(tmp_path, symbols={"NQ": "NQ-CME", "GC": "GC-COMEX"})
+    build_store(cfg, symbols=["NQ"], now=NOW, workers=1)
+    (tmp_path / "src" / "NQ-CME").rename(tmp_path / "src" / "gone")
+    before = snapshot(tmp_path / "store")
+    reps = build_store(cfg, now=NOW, workers=1)
+    assert reps[0].folder_missing and reps[0].gone == 3 and reps[0].built == 0
+    assert snapshot(tmp_path / "store") == before
+    v = verify_store(cfg, ["NQ"])[0]
+    assert v.passed and v.sources_gone == 5 and v.not_compared == 2

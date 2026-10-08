@@ -36,8 +36,9 @@ TZ = "America/New_York"
 KINDS = {"minute": ("Minute", RECORD), "tick": ("Tick", TICK_RECORD)}
 MANIFEST_COLUMNS = ["symbol", "kind", "contract", "session", "source", "bytes", "mtime_ns", "sha256", "built_at", "output", "rows", "bar_source"]
 QUALITY_COLUMNS = ["session", "trade_date", "contract", "minute_volume", "tick_volume", "diff_pct", "minute_match", "ohlc_match", "bars",
-                   "minute_bars_in_tick_session", "bar_source", "reason", "front", "thin"]  # fmt: skip
+                   "minute_bars_in_tick_session", "bar_source", "reason", "tick_ok", "front", "thin"]  # fmt: skip
 ROLL_COLUMNS = ["old_contract", "new_contract", "decision_session", "switch_session", "switch_trade_date", "reason"]
+REBUILD_WORDS = ("changed", "all")
 OHLC_TARGET = 0.999  # SR3: share of compared minutes with identical OHLC in tick-built sessions
 
 
@@ -51,6 +52,7 @@ class StoreConfig:
     session_end: time
     settle_minutes: float
     thin_ratio: float
+    bars: str = "minute"  # which source builds the 1-minute bars: "minute" (user, 2026-10-07) or "tick" (Phase 14)
 
 
 def load_store_config(path: Path = CONFIG) -> StoreConfig:
@@ -59,7 +61,7 @@ def load_store_config(path: Path = CONFIG) -> StoreConfig:
     return StoreConfig(
         root=Path(c["root"]), source=Path(c["source"]), symbols=dict(c["symbols"]), tolerance_pct=float(c["tolerance_pct"]),
         min_minute_match=float(c["min_minute_match"]), session_end=time.fromisoformat(c["session_end"]),
-        settle_minutes=float(c["settle_minutes"]), thin_ratio=float(c["thin_ratio"]),
+        settle_minutes=float(c["settle_minutes"]), thin_ratio=float(c["thin_ratio"]), bars=str(c.get("bars", "minute")),
     )  # fmt: skip
 
 
@@ -72,8 +74,11 @@ class SymbolReport:
     built: int = 0
     tick_built: int = 0
     files_written: int = 0
+    rebuilt: int = 0  # stored sessions built again (--rebuild)
     skipped: list[tuple[str, str]] = field(default_factory=list)  # (contract/session, reason)
     changed: list[tuple[str, str]] = field(default_factory=list)
+    gone: int = 0  # stored sessions none of whose source files exist any more (kept as stored)
+    folder_missing: bool = False
     rolls: int = 0
     seconds: float = 0.0
 
@@ -170,7 +175,7 @@ def _build_session(job: dict) -> dict:
     if all(r is None for r in raws.values()):
         res = None
     else:
-        res = session_bars(raws.get("minute"), raws.get("tick"), contract, job["tolerance_pct"], job["min_minute_match"])
+        res = session_bars(raws.get("minute"), raws.get("tick"), contract, job["tolerance_pct"], job["min_minute_match"], job["bars"])
     outputs = {}
     if res is not None and len(res.bars):
         outputs["minute"] = (root / sym / "minute" / contract / f"{session}.parquet", res.bars)
@@ -236,24 +241,32 @@ def _typed(quality: pd.DataFrame) -> pd.DataFrame:
         q[c] = pd.to_numeric(q[c]).astype(float)
     for c in ("session", "trade_date", "contract", "bar_source", "reason"):
         q[c] = q[c].fillna("").astype(str)
+    if "tick_ok" in q:
+        q["tick_ok"] = q["tick_ok"].astype("boolean")
     return q
 
 
 def read_quality(path: Path) -> pd.DataFrame:
     if not Path(path).exists():
         return pd.DataFrame(columns=QUALITY_COLUMNS)
-    q = pd.read_csv(path, dtype={"session": str, "contract": str, "reason": str}, keep_default_na=False, na_values={c: [""] for c in _INTS + _FLOATS})
-    return _typed(q)
+    q = pd.read_csv(path, dtype={"session": str, "contract": str, "reason": str}, keep_default_na=False,
+                    na_values={c: [""] for c in _INTS + _FLOATS + ["tick_ok"]})  # fmt: skip
+    return _typed(q.reindex(columns=QUALITY_COLUMNS))
 
 
-def _flag(quality: pd.DataFrame, front: pd.Series, thin_ratio: float) -> pd.DataFrame:
+def _flag(quality: pd.DataFrame, front: pd.Series, cfg: StoreConfig) -> pd.DataFrame:
+    """front, thin, and tick_ok: the session's ticks pass the tick check (total within tolerance_pct, >= min_minute_match
+    of minutes equal) -- empty when there is no tick or no minute volume to check against. Tick consumers use tick_ok."""
     q = quality.copy()
+    checked = (q["tick_volume"].fillna(0) > 0) & (q["minute_volume"].fillna(0) > 0)
+    ok = (q["diff_pct"].abs() <= cfg.tolerance_pct) & (q["minute_match"] >= cfg.min_minute_match)
+    q["tick_ok"] = pd.array([bool(o) if c else pd.NA for o, c in zip(ok.fillna(False), checked)], dtype="boolean")
     q["front"] = [front.get(s) == c for s, c in zip(q["session"], q["contract"])]
     q["thin"] = False
     f = q[q["front"]].sort_values("session")
     vol = f["minute_volume"].where(f["minute_volume"] > 0, f["tick_volume"]).astype(float).fillna(0).to_numpy()
     ref = pd.Series(vol).rolling(20, min_periods=5).median().shift().to_numpy()
-    q.loc[f.index, "thin"] = np.nan_to_num(vol < thin_ratio * ref, nan=0).astype(bool)  # no reference yet: not thin
+    q.loc[f.index, "thin"] = np.nan_to_num(vol < cfg.thin_ratio * ref, nan=0).astype(bool)  # no reference yet: not thin
     return q
 
 
@@ -270,7 +283,9 @@ def build_store(
     progress=None,
 ) -> list[SymbolReport]:
     """Add every finished, whole-record session of `symbols` (default: all in cfg) to the store; see the module docs.
-    rebuild: "SYM:YYYYMMDD" sessions to rebuild even though they are stored. progress(symbol, done, total)."""
+    rebuild: stored sessions to build again from their current source files -- "SYM:YYYYMMDD", "SYM:changed" (every
+    session with a changed or added source file) or "SYM:all" (every session with a source file). A stored file whose
+    source no longer exists is kept as stored. progress(symbol, done, total)."""
     now = pd.Timestamp.now(tz=TZ) if now is None else now
     symbols = list(cfg.symbols) if not symbols else symbols
     for s in symbols:
@@ -278,10 +293,10 @@ def build_store(
             raise KeyError(f"unknown store symbol {s!r}; config/store.toml lists {list(cfg.symbols)}")
     redo: dict[str, set[str]] = {}
     for r in rebuild:
-        sym, sep, sess = r.partition(":")
-        if not sep or sym not in cfg.symbols or not (sess.isdigit() and len(sess) == 8):
-            raise ValueError(f"--rebuild {r!r}: use SYM:YYYYMMDD with SYM one of {list(cfg.symbols)}")
-        redo.setdefault(sym, set()).add(sess)
+        sym, sep, what = r.partition(":")
+        if not sep or sym not in cfg.symbols or not ((what.isdigit() and len(what) == 8) or what in REBUILD_WORDS):
+            raise ValueError(f"--rebuild {r!r}: use SYM:YYYYMMDD, SYM:changed or SYM:all, with SYM one of {list(cfg.symbols)}")
+        redo.setdefault(sym, set()).add(what)
     root, source = Path(cfg.root), Path(cfg.source)
     if not source.is_dir():
         raise FileNotFoundError(f"DeepCharts folder not found: {source} (config/store.toml source, or --source)")
@@ -301,40 +316,47 @@ def _build_symbol(cfg, sym, manifest, redo, now, workers, progress) -> dict:
     t0 = _time.perf_counter()
     root, base = Path(cfg.root), Path(cfg.source)
     folder = base / cfg.symbols[sym]
-    if not folder.is_dir():
-        raise FileNotFoundError(f"{folder} not found (config/store.toml [symbols] {sym})")
     rep = SymbolReport(sym)
     qpath = root / sym / "quality.csv"
     quality = read_quality(qpath)
-    if redo:
-        manifest = manifest[~((manifest["symbol"] == sym) & manifest["session"].isin(redo))]
-        quality = quality[~quality["session"].isin(redo)]
     mine = manifest[manifest["symbol"] == sym].set_index("source")
     stored_sessions = {(c, s) for c, s in zip(mine["contract"], mine["session"])}
-    jobs = []
-    sessions = _source_sessions(folder)
+    sessions = _source_sessions(folder) if folder.is_dir() else {}
+    rep.folder_missing = not folder.is_dir()
     rep.sessions = len(sessions)
+    rep.gone = len(stored_sessions - set(sessions))
+    refreshed: dict[str, str] = {}  # source -> new mtime_ns, for sources whose content (sha256) is unchanged
+    jobs = []
     for (contract, session), files in sessions.items():
         key = f"{contract}/{session}"
         rel = {k: _rel(p, base) for k, p in files.items()}
+        replace = []  # manifest sources this build replaces (a rebuild)
+        kept_tick = False
         if (contract, session) in stored_sessions:
-            if any(mine.loc[r, "output"] for r in rel.values() if r in mine.index):
-                rep.already += 1
-            else:
-                rep.empty += 1
             notes = []
             for kind, path in files.items():
                 if rel[kind] not in mine.index:
                     notes.append(f"{kind} file added after the build")
                     continue
                 row, st = mine.loc[rel[kind]], path.stat()
-                if (str(st.st_size), str(st.st_mtime_ns)) != (row["bytes"], row["mtime_ns"]) and sha256(path) != row["sha256"]:
-                    notes.append(f"{kind} file changed ({row['bytes']} -> {st.st_size} bytes)")
+                if (str(st.st_size), str(st.st_mtime_ns)) != (row["bytes"], row["mtime_ns"]):
+                    if str(st.st_size) == row["bytes"] and sha256(path) == row["sha256"]:
+                        refreshed[rel[kind]] = str(st.st_mtime_ns)  # same content, new timestamp
+                    else:
+                        notes.append(f"{kind} file changed ({row['bytes']} -> {st.st_size} bytes)")
             gone = set(mine.index[(mine["contract"] == contract) & (mine["session"] == session)]) - set(rel.values())
-            notes += [f"source removed: {g}" for g in sorted(gone)]
-            if notes:
-                rep.changed.append((key, "; ".join(notes)))
-            continue
+            again = "all" in redo or session in redo or ("changed" in redo and bool(notes))
+            if not again:
+                notes += [f"source removed: {g}" for g in sorted(gone)]
+                if any(mine.loc[r, "output"] for r in rel.values() if r in mine.index):
+                    rep.already += 1
+                else:
+                    rep.empty += 1
+                if notes:
+                    rep.changed.append((key, "; ".join(notes)))
+                continue
+            replace = [r for r in rel.values() if r in mine.index]  # outputs whose source is gone stay as stored
+            kept_tick = any("/Tick/" in g for g in gone)
         waits = _session_over(session, now, cfg.session_end, cfg.settle_minutes)
         if waits is not None:
             rep.skipped.append((key, f"in progress (built after {waits:%Y-%m-%d %H:%M} ET)"))
@@ -352,9 +374,13 @@ def _build_symbol(cfg, sym, manifest, redo, now, workers, progress) -> dict:
             rep.skipped.append((key, "; ".join(bad)))
             continue
         jobs.append({"root": str(root), "symbol": sym, "contract": contract, "session": session, "files": files, "rel": rel,
-                     "tolerance_pct": cfg.tolerance_pct, "min_minute_match": cfg.min_minute_match})  # fmt: skip
+                     "tolerance_pct": cfg.tolerance_pct, "min_minute_match": cfg.min_minute_match, "bars": cfg.bars,
+                     "replace": replace, "kept_tick": kept_tick})  # fmt: skip
 
     new_rows, new_quality = [], []
+
+    replaced: set[str] = set()
+    redone: dict[tuple[str, str], bool] = {}  # rebuilt (session, contract) -> its stored tick file is kept
 
     def collect(job, res):
         if "skip" in res:
@@ -362,6 +388,10 @@ def _build_symbol(cfg, sym, manifest, redo, now, workers, progress) -> dict:
             return
         new_rows.extend(res["rows"])
         rep.files_written += res["written"]
+        if job["replace"]:
+            replaced.update(job["replace"])
+            redone[(job["session"], job["contract"])] = job["kept_tick"]
+            rep.rebuilt += 1
         if res["quality"] is None:
             rep.empty += 1
         else:
@@ -381,17 +411,31 @@ def _build_symbol(cfg, sym, manifest, redo, now, workers, progress) -> dict:
                 if progress:
                     progress(sym, i + 1, len(jobs))
 
+    if refreshed:
+        hit = manifest["source"].isin(set(refreshed))
+        manifest.loc[hit, "mtime_ns"] = manifest.loc[hit, "source"].map(refreshed)
+    if replaced:
+        manifest = manifest[~manifest["source"].isin(replaced)]
     if new_rows:
         manifest = pd.concat([manifest, pd.DataFrame(new_rows, columns=MANIFEST_COLUMNS)], ignore_index=True)
     manifest = manifest.sort_values(["symbol", "session", "contract", "kind"], kind="stable").reset_index(drop=True)
     if new_quality:
         new = _typed(pd.DataFrame(new_quality).reindex(columns=QUALITY_COLUMNS))
+        if redone and not quality.empty:
+            # a rebuilt session whose tick file is gone from the source keeps its stored ticks and their check
+            old = quality.drop_duplicates(["session", "contract"]).set_index(["session", "contract"])
+            for i, r in new.iterrows():
+                k = (r["session"], r["contract"])
+                if redone.get(k) and k in old.index and pd.isna(r["tick_volume"]):
+                    for c in ("tick_volume", "diff_pct", "minute_match", "ohlc_match"):
+                        new.at[i, c] = old.at[k, c]
+            quality = quality[[k not in redone for k in zip(quality["session"], quality["contract"])]]
         quality = new if quality.empty else pd.concat([quality, new], ignore_index=True)
     quality = quality.sort_values(["session", "contract"], kind="stable").reset_index(drop=True)
     rolls, front = roll_calendar(quality)
     rep.rolls = len(rolls)
     if len(quality):
-        quality = _typed(_flag(quality, front, cfg.thin_ratio)[QUALITY_COLUMNS])
+        quality = _typed(_flag(quality, front, cfg)[QUALITY_COLUMNS])
         rep.files_written += _write_if_changed(qpath, _csv_text(quality))
         rep.files_written += _write_if_changed(root / sym / "roll_calendar.csv", _csv_text(rolls))
     rep.files_written += _write_if_changed(root / "manifest.csv", _csv_text(manifest[MANIFEST_COLUMNS]))
@@ -413,6 +457,9 @@ class VerifyResult:
     ohlc_minutes: int = 0
     ohlc_equal: int = 0
     volume_target: float = 0.99
+    minute_sessions: int = 0  # minute-built sessions compared with their source minute file (must be identical)
+    sources_gone: int = 0  # manifest sources no longer in the DeepCharts folder (their stored files are kept)
+    not_compared: int = 0  # sessions whose source is gone or changed since the build
     problems: list[str] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
 
@@ -430,9 +477,9 @@ class VerifyResult:
 
 
 def verify_store(cfg: StoreConfig, symbols: list[str] | None = None, progress=None) -> list[VerifyResult]:
-    """SR3 per symbol: re-decode the source minute file of every tick-built session and compare it with the stored
-    bars (volume per minute, OHLC per minute). Also checks every manifest output exists, is read-only and holds the
-    recorded row count, and reports sources whose size or mtime changed since the build."""
+    """Per symbol: every manifest output exists, is read-only and holds the recorded row count; every minute-built
+    session equals its source minute records; tick-built sessions meet SR3 (volume per minute, OHLC per minute).
+    Sessions whose source is gone or changed since the build are counted, not compared."""
     root, base = Path(cfg.root), Path(cfg.source)
     manifest = read_manifest(root)
     out = []
@@ -445,14 +492,17 @@ def verify_store(cfg: StoreConfig, symbols: list[str] | None = None, progress=No
             v.problems.append("nothing stored; run `guban store build`")
             out.append(v)
             continue
+        current = set()  # sources unchanged since the build
         for r in mine.itertuples(index=False):
             src = base / r.source
             if not src.exists():
-                v.changed.append(f"{r.source}: removed")
+                v.sources_gone += 1
             else:
                 st = src.stat()
                 if (str(st.st_size), str(st.st_mtime_ns)) != (r.bytes, r.mtime_ns):
                     v.changed.append(f"{r.source}: size/mtime changed since the build")
+                else:
+                    current.add(r.source)
             if r.output:
                 p = root / r.output
                 if not p.exists():
@@ -463,15 +513,22 @@ def verify_store(cfg: StoreConfig, symbols: list[str] | None = None, progress=No
                     v.problems.append(f"{r.output}: {pq.read_metadata(p).num_rows} rows, manifest says {r.rows}")
         minute_rows = mine[(mine["kind"] == "minute") & (mine["output"] != "")]
         v.sessions = len(minute_rows)
-        ticks = minute_rows[minute_rows["bar_source"] == "tick"]
-        for i, r in enumerate(ticks.itertuples(index=False)):
+        for i, r in enumerate(minute_rows.itertuples(index=False)):
+            if r.source not in current:
+                v.not_compared += 1
+                continue
             stored = pd.read_parquet(root / r.output)
             rec = minute_record_bars(read_records(base / r.source), r.contract)
             ve, n, oe, b = match_counts(rec, stored)
-            v.tick_sessions += 1
-            v.volume_equal, v.minutes, v.ohlc_equal, v.ohlc_minutes = v.volume_equal + ve, v.minutes + n, v.ohlc_equal + oe, v.ohlc_minutes + b
+            if r.bar_source == "tick":
+                v.tick_sessions += 1
+                v.volume_equal, v.minutes, v.ohlc_equal, v.ohlc_minutes = v.volume_equal + ve, v.minutes + n, v.ohlc_equal + oe, v.ohlc_minutes + b
+            else:
+                v.minute_sessions += 1
+                if not (ve == n == len(stored) == len(rec) and oe == b):
+                    v.problems.append(f"{r.output}: differs from its source minute records ({n - ve} minutes)")
             if progress:
-                progress(sym, i + 1, len(ticks))
+                progress(sym, i + 1, len(minute_rows))
         out.append(v)
     return out
 
@@ -508,33 +565,43 @@ Every record is kept in file order, including size-0 records (from 2026-05-26).
 
 ## Rules
 
-- **Bar source per session**: bars come from the ticks when the tick file is whole, its summed size is within
-  {cfg.tolerance_pct:g}% of the minute volume, and at least {cfg.min_minute_match:.0%} of the session's minutes have exactly the
-  minute record's volume. Otherwise from the DeepCharts minute records: minutes whose records hold no volume
-  (placeholders) are dropped, and all records of a minute with volume are merged in file order. The session's
-  opening minute is stored as four records (open with volume 0, high, low, close), so its zero-volume record is
-  the true open. Tick bars: records by minute; O first, H max, L min, C last over every record (size-0 records
-  of the 2026-05-26+ feed count for prices, as in DeepCharts' own minute bars), volume = sum of size.
-  In a tick session, a minute with a record but no trade keeps the record (`source` = `minute`).
+- **Bar source** (`bars = "{cfg.bars}"` in store.toml): **1-minute bars come from the DeepCharts minute records**
+  whenever a session's minute file holds volume (user, 2026-10-07: use 1-minute bars; ticks only for strategies that
+  need them). Only a session with no minute volume is built from its ticks (`source` = `tick`). Minute records:
+  minutes whose records hold no volume (placeholders) are dropped, and all records of a minute with volume are
+  merged in file order; the session's opening minute is stored as four records (open with volume 0, high, low,
+  close), so its zero-volume record is the true open. Tick bars: records by minute; O first, H max, L min, C last
+  over every record (size-0 records of the 2026-05-26+ feed count for prices, as in DeepCharts' own minute bars),
+  volume = sum of size. Sessions stored before 2026-10-07 whose minute file no longer exists (MNQ, GC) keep their
+  tick-built bars.
+- **Ticks**: stored for every session that has a tick file. Use a session's ticks only where quality.csv
+  `tick_ok` is True: the tick file sums to within {cfg.tolerance_pct:g}% of the minute volume and at least
+  {cfg.min_minute_match:.0%} of its minutes have exactly the minute record's volume. Empty `tick_ok` = no minute data to check
+  against.
 - **Write-once**: a session is stored once it has ended (18:00 New York the day after its file date, plus
   {cfg.settle_minutes:g} min) and its files are whole records; files are read-only. A later change to a stored source is
-  reported by the build, never applied, unless rebuilt with `guban store build --rebuild SYM:YYYYMMDD`.
+  reported by the build, never applied, unless rebuilt with `guban store build --rebuild SYM:YYYYMMDD` (or
+  `SYM:changed`, `SYM:all`). A stored file whose source has since disappeared from the DeepCharts folder is kept.
 - **Roll calendar**: a session trades the contract with the most volume (minute volume; tick volume when the
   minute file holds none, e.g. GC/BTC 2026-08-18..24) in the previous session, never rolling
   back; when the front contract has no file in a session, the next contract takes over in that session
   (`reason` = `front has no file`). `switch_session` is the first session of the new contract.
 - **quality.csv**: `diff_pct` = tick vs minute volume, `minute_match` / `ohlc_match` = share of minutes whose tick
-  bar matches the minute record, `front` = the roll calendar's contract, `thin` = a front session with under
+  bar matches the minute record, `tick_ok` = the ticks pass that check, `bar_source` / `reason` = what built the bars
+  and any tick problem, `front` = the roll calendar's contract, `thin` = a front session with under
   {cfg.thin_ratio:g}x the median volume of the previous 20 front sessions (e.g. missing front-month files).
 
 ## Known source facts
 
 - BTC trades 24/7 since 2026-05-29 (CME): weekend files and bars up to 17:59 New York exist from then on.
 - Tick `bid`/`ask` are a side marker, not a real quote, before 2025-11.
-- GC ticks from 2025-12 miss about 2% of the minute volume, spread over most minutes: those sessions are
-  minute-built.
-- ES 202609 minute/tick files stop at session 20260816 (DeepCharts gap): the following sessions only have the
-  back month (`thin`).
+- Tick files have defective sessions (tick_ok False): every NQ/ES session of 2024-01 (~1.2x volume), 2024-02-08,
+  2024-02-11, 2024-06-03 (~3x), sessions cut at 09:29:59, GC from 2025-11 (~2% short), and many 2026-05..09 sessions.
+- DeepCharts was reinstalled on 2026-10-07. Afterwards the folder held NQ, ES and BTC only: minute data from
+  2020-01-01, NQ ticks from 2024-01-01, no ES ticks. MNQ, GC, ES ticks, NQ ticks before 2024 and NQ minutes before
+  2020 exist only in this store. The reinstall filled ES 202609 for 2026-08-16..09-13 (before, the front month was
+  missing there).
+- Trade date 2020-11-30 holds ~1-2% of normal volume on NQ and ES (a source hole).
 - MNQ files stop at session 20260916.
 
 ## manifest.csv
