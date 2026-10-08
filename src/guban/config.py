@@ -27,12 +27,16 @@ class ContractSpec:
     point_value: float  # USD per 1.0 point per contract
     tick_size: float
     calendar: str | None = None  # exchange calendar in config/calendar.toml (scheduled early closes)
+    commission: float = 0.0  # default costs, USD per contract per round trip: used when a run gives no cost flags
+    slippage: float = 0.0
 
     def __post_init__(self) -> None:
-        for name in ("point_value", "tick_size"):
+        for name in ("point_value", "tick_size", "commission", "slippage"):
             v = getattr(self, name)
-            if isinstance(v, bool) or not isinstance(v, numbers.Real) or not math.isfinite(v) or v <= 0:
-                raise ValueError(f"contract {self.symbol}: {name} must be a finite number > 0, got {v!r} (check config/contracts.toml)")
+            low_ok = v >= 0 if name in ("commission", "slippage") else v > 0
+            if isinstance(v, bool) or not isinstance(v, numbers.Real) or not math.isfinite(v) or not low_ok:
+                raise ValueError(f"contract {self.symbol}: {name} must be a finite number {'>=' if name in ('commission', 'slippage') else '>'} 0, "
+                                 f"got {v!r} (check config/contracts.toml)")  # fmt: skip
 
     @property
     def tick_value(self) -> float:

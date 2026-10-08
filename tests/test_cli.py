@@ -92,7 +92,7 @@ def test_no_args_shows_help_and_version():
 def test_run_optimize_wfo_share_identical_flags():
     group = typer.main.get_command(app)
     params = {name: {p.name: p for p in group.commands[name].params} for name in ("run", "optimize", "wfo")}
-    shared = ["strategy_file", "symbol", "contract", "tf", "session", "history_from", "tz", "fill_mode", "data_dir",
+    shared = ["strategy_file", "symbol", "contract", "tf", "session", "history_from", "data_from", "tz", "fill_mode", "data_dir",
               "commission", "slippage", "inputs", "class_name"]  # fmt: skip
     for name in shared:
         ref = params["run"][name]
@@ -168,8 +168,9 @@ def test_strategy_frames_from_a_worker_process(tmp_path):
         (["run", "missing.py", "--symbol", "NQ"], "does not exist"),
         (["optimize", "flip.py", "--grid", "hold=1:3", "--symbol", "NQ", "--metric", "luck"], "--metric"),
         (["optimize", "flip.py", "--grid", "hold=1:6000", "--symbol", "NQ"], "Narrow it, or rerun with --yes"),
-        (["import", "no_such_folder", "--symbol", "NQ"], "does not exist"),
-        (["import", ".", "--symbol", "NQ", "--roll", "monthly"], "'monthly' is not one of"),
+        (["import", "--source", "no_such_folder", "--symbol", "NQ"], "does not exist"),
+        (["import", "--symbol", "NQ", "--roll", "monthly"], "'monthly' is not one of"),
+        (["import", "--symbol", "ES", "--root", "."], "guban store build --symbol ES"),
         (["compare", "--ours", "flip.py", "--mc", "flip.py", "--contract", "MNQ"], "flip.py is not a guban trades.csv"),
         (["compare", "--ours", "flip.py", "--mc", "flip.py", "--contract", "MNQ", "--mc-tz", "Nowhere"], "unknown time zone"),
         (["run", "flip.py", "--symbol", "NQ", "--mc-sims", "-1"], "--mc-sims must be a whole number"),
@@ -255,3 +256,37 @@ def test_run_monte_carlo_off_and_skipped(workdir):
     res, m, page = _run_json(workdir, "--set", "hold=100", out="skip")  # never exits: 0 closed trades
     assert m["monte_carlo"] == {"skipped": "needs at least 2 trades; this run has 0"}
     assert "Monte Carlo skipped: needs at least 2 trades" in page and "monte carlo: skipped" in res.output
+
+
+def test_run_uses_the_contracts_default_costs_unless_flags_are_given(workdir):
+    m = _run_json(workdir, "--mc-sims", "0", out="nq")[1]["run"]
+    assert (m["commission"], m["slippage"], m["costs"]) == (2.50, 5.00, "contract default (config/contracts.toml)")
+    m = _run_json(workdir, "--mc-sims", "0", "--contract", "MNQ", out="mnq")[1]["run"]
+    assert (m["commission"], m["slippage"]) == (2.00, 0.50)  # the --contract spec's costs
+    m = _run_json(workdir, "--mc-sims", "0", "--commission", "0.4", "--slippage", "0", out="flags")[1]["run"]
+    assert (m["commission"], m["slippage"], m["costs"]) == (0.4, 0.0, "flags")
+    m = _run_json(workdir, "--mc-sims", "0", "--commission", "0", out="one")[1]["run"]
+    assert (m["commission"], m["slippage"], m["costs"]) == (0.0, 5.00, "--commission; slippage: contract default")
+
+
+def _one_minute_store(tmp_path):
+    from guban.data.parquet import write_parquet
+
+    idx = pd.date_range("2024-01-02 09:31", "2024-01-05 16:00", freq="1min", tz="America/New_York")
+    idx = idx[(idx.time > pd.Timestamp("09:30").time()) & (idx.time <= pd.Timestamp("16:00").time())]
+    df = pd.DataFrame({"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 1, "bid_vol": 0, "ask_vol": 1, "contract": "202403"}, index=idx)
+    write_parquet(df, tmp_path / "NQ" / "1m.parquet")
+    return tmp_path
+
+
+def test_data_from_drops_bars_and_sub_bars_before_the_date(tmp_path):
+    from guban.optimize import DataSpec
+
+    d = _one_minute_store(tmp_path)
+    bars, sub = DataSpec("NQ", "5m", "rth", data_dir=str(d), data_from="2024-01-04").load()
+    assert bars.index[0] == pd.Timestamp("2024-01-04 09:35", tz="America/New_York")
+    assert sub.index[0] == pd.Timestamp("2024-01-04 09:31", tz="America/New_York")
+    full, _ = DataSpec("NQ", "5m", "rth", data_dir=str(d)).load()
+    assert len(full) == 4 * 78 and len(bars) == 2 * 78
+    with pytest.raises(ValueError, match="--data-from 2025-01-01 is after the last bar"):
+        DataSpec("NQ", "5m", "rth", data_dir=str(d), data_from="2025-01-01").load()

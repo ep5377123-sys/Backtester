@@ -162,3 +162,32 @@ def test_study_report_writes_a_page(tmp_path):
     )  # fmt: skip
     text = path.read_text(encoding="utf-8")
     assert "T &lt;x&gt;" in text and "NOT REAL" in text and "<td class='l'>b</td>" in text and "Plotly" in text
+
+
+# --- trading days from the market-data store (Phase 15) ----------------------------------------------------------
+
+
+def test_trading_days_and_minute_bars_from_the_store(tmp_path):
+    from guban.research.days import minute_bars, trading_days
+    from guban.store.build import QUALITY_COLUMNS
+
+    root = tmp_path / "Market Data"
+    sym = root / "NQ"
+    rows = []
+    for s, ok in (("20250804", True), ("20250805", False), ("20250806", None)):
+        d = pd.Timestamp(s) + pd.Timedelta(days=1)
+        ts = pd.date_range(d + pd.Timedelta("9h29min"), d + pd.Timedelta("16h"), freq="1min", tz="America/New_York").tz_convert("UTC")
+        df = pd.DataFrame({"ts_utc": ts, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 3, "ask_vol": 1, "bid_vol": 2,
+                           "contract": "202509", "source": "minute"})  # fmt: skip
+        (sym / "minute" / "202509").mkdir(parents=True, exist_ok=True)
+        df.to_parquet(sym / "minute" / "202509" / f"{s}.parquet", index=False)
+        rows.append({"session": s, "trade_date": f"{d:%Y-%m-%d}", "contract": "202509", "minute_volume": 3 * len(ts), "bars": len(ts),
+                     "bar_source": "minute", "tick_ok": ok, "front": True, "thin": False})  # fmt: skip
+    pd.DataFrame(rows).reindex(columns=QUALITY_COLUMNS).to_csv(sym / "quality.csv", index=False)
+    days = trading_days(sym, "NQ")
+    assert list(days.index.strftime("%Y-%m-%d")) == ["2025-08-05", "2025-08-06", "2025-08-07"]
+    assert days["tick_ok"].tolist() == [True, False, False]  # empty tick_ok (no check) is not ok
+    assert (days["contract"] == "202509").all() and days["session_file"].tolist() == ["20250804", "20250805", "20250806"]
+    mb = minute_bars(sym, days.iloc[0])
+    assert mb.index[0] == pd.Timestamp("2025-08-05 09:31") and mb.index[-1] == pd.Timestamp("2025-08-05 16:00")
+    assert mb.index.tz is None and len(mb) == 390 and mb["volume"].sum() == 3 * 390

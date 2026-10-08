@@ -101,17 +101,41 @@ def _check_tz(value: str | None) -> str | None:
     return value
 
 
+def _check_date(value: str | None) -> str | None:
+    if value is None:
+        return value
+    try:
+        pd.Timestamp(value)
+    except ValueError as e:
+        raise typer.BadParameter(f"{value!r} is not a date; use YYYY-MM-DD") from e
+    return value
+
+
+def _costs(spec, commission: float | None, slippage: float | None) -> tuple[float, float, str]:
+    """(commission, slippage, where they came from): a cost flag that was not given takes the contract's default."""
+    c = spec.commission if commission is None else commission
+    s = spec.slippage if slippage is None else slippage
+    if commission is None and slippage is None:
+        source = "contract default (config/contracts.toml)"
+    elif commission is not None and slippage is not None:
+        source = "flags"
+    else:
+        source = "--commission; slippage: contract default" if slippage is None else "--slippage; commission: contract default"
+    return c, s, source
+
+
 STRATEGY_FILE = typer.Argument(..., exists=True, dir_okay=False, help="Python file defining a Strategy subclass")
 SYMBOL = typer.Option(..., "--symbol", help="Imported data symbol, e.g. NQ or MNQ", rich_help_panel=DATA)
 CONTRACT = typer.Option(None, "--contract", help="Contract spec for P&L (default: --symbol), e.g. MNQ", rich_help_panel=DATA)
 TF = typer.Option("5m", "--tf", help="Strategy timeframe: 1m, 5m, 15m, 1h, 1d ...", rich_help_panel=DATA)
 SESSION = typer.Option("rth", "--session", help="Session template from config/sessions.toml (MC parity: eth)", rich_help_panel=DATA)
 HISTORY_FROM = typer.Option(None, "--history-from", help="Prepend this symbol's bars from before --symbol's first bar (e.g. NQ for MNQ)", rich_help_panel=DATA)
+DATA_FROM = typer.Option(None, "--data-from", callback=_check_date, help="Drop bars before this date, YYYY-MM-DD in the chart time zone: the warm-up starts there (MC: the chart's first date)", rich_help_panel=DATA)
 TZ = typer.Option("America/New_York", "--tz", callback=_check_tz, help="Chart time zone the strategy sees (MC exchange time: America/Chicago)", rich_help_panel=DATA)
 FILL_MODE = typer.Option("magnifier", "--fill-mode", help="magnifier (1-minute sub-bars) or ohlc (path rule on the whole bar)", rich_help_panel=DATA)
 DATA_DIR = typer.Option(Path("data"), "--data-dir", help="Folder holding the imported Parquet store", rich_help_panel=DATA)
-COMMISSION = typer.Option(0.0, "--commission", help="USD per contract per round trip", rich_help_panel=COSTS)
-SLIPPAGE = typer.Option(0.0, "--slippage", help="USD per contract per round trip (half per market/stop fill, none on limit fills)", rich_help_panel=COSTS)
+COMMISSION = typer.Option(None, "--commission", help="USD per contract per round trip (default: the contract's, config/contracts.toml)", rich_help_panel=COSTS)
+SLIPPAGE = typer.Option(None, "--slippage", help="USD per contract per round trip, half per market/stop fill, none on limit fills (default: the contract's, 1 tick)", rich_help_panel=COSTS)
 SET_INPUTS = typer.Option([], "--set", help="Input override name=value (repeatable); with --grid, a fixed input", rich_help_panel=STRAT)
 CLASS_NAME = typer.Option(None, "--class", help="Strategy class, when the file defines several", rich_help_panel=STRAT)
 GRID = typer.Option(..., "--grid", help="Input range name=start:stop[:step], name=a,b,c or name=v (repeatable; several per flag, space-separated)", rich_help_panel=SEARCH)
@@ -183,14 +207,20 @@ def main(
 @app.command("import")
 @_friendly
 def import_cmd(
-    source: Path = typer.Argument(..., exists=True, file_okay=False, help="Per-contract store folder, e.g. Database/NQ-CME"),
-    symbol: str = typer.Option(..., "--symbol", help="Symbol name to store under data/, e.g. NQ"),
-    roll: Literal["volume", "expiry"] = typer.Option("volume", "--roll", help="volume: highest-volume contract; expiry: N days before the 3rd Friday (MC continuous contract)"),
+    symbol: str = typer.Option(..., "--symbol", help="Store symbol to import into data/<SYMBOL>/1m.parquet: NQ, MNQ, ES, MES or BTC"),
+    roll: Literal["volume", "expiry"] = typer.Option("volume", "--roll", help="volume: the store's roll calendar (highest-volume contract); expiry: N days before the 3rd Friday (MC continuous contract; equity index only)"),
     days_before: int = typer.Option(2, "--roll-days-before", help="--roll expiry: days before expiration to switch (MC: 2, the Wednesday)"),
     data_dir: Path = typer.Option(Path("data"), "--data-dir", help="Folder for the Parquet store"),
+    root: Path = typer.Option(None, "--root", file_okay=False, help="Market-data store folder (default: config/store.toml root, D:\\Market Data)"),
+    source: Path = typer.Option(None, "--source", exists=True, file_okay=False, help="Read a DeepCharts per-contract folder instead of the store, e.g. Database/NQ-CME (old import, for comparisons)"),
 ) -> None:
-    """Build a continuous 1-minute series from a per-contract store and save it as Parquet."""
-    summary = import_store(source, symbol, data_dir, roll, days_before)
+    """Build a continuous 1-minute series from the shared market-data store (or a DeepCharts folder) and save it as Parquet."""
+    if source is not None:
+        summary = import_store(source, symbol, data_dir, roll, days_before)
+    else:
+        from guban.store.read import import_from_store
+
+        summary = import_from_store(symbol, data_dir, root, roll, days_before)
     typer.echo(str(summary))
     typer.echo(f"Wrote {data_dir / symbol / '1m.parquet'}")
 
@@ -256,13 +286,16 @@ def _exposure_notes(exposure: dict) -> list[str]:
     return notes
 
 
-def _details(symbol: str, tf: str, session: str, history_from: str | None, spec, tz: str, fill_mode: str, commission: float, slippage: float) -> dict:
+def _details(symbol: str, tf: str, session: str, history_from: str | None, spec, tz: str, fill_mode: str, commission: float, slippage: float,
+             costs_from: str = "flags", data_from: str | None = None) -> dict:  # fmt: skip
     return {
-        "Data": f"{symbol} {tf}, {session} session" + (f" (+{history_from} history)" if history_from else ""),
+        "Data": f"{symbol} {tf}, {session} session" + (f" (+{history_from} history)" if history_from else "")
+        + (f", from {data_from}" if data_from else ""),
         "Contract spec": f"{spec.symbol}: ${spec.point_value:g}/pt, tick {spec.tick_size:g}",
         "Chart time zone": tz,
         "Fill mode": fill_mode,
-        "Costs (per contract, round trip)": f"commission ${commission:g}, slippage ${slippage:g}",
+        "Costs (per contract, round trip)": f"commission ${commission:g}, slippage ${slippage:g}"
+        + ("" if costs_from == "flags" else f" ({costs_from})"),
     }
 
 
@@ -275,6 +308,7 @@ def run_cmd(
     tf: str = TF,
     session: str = SESSION,
     history_from: str = HISTORY_FROM,
+    data_from: str = DATA_FROM,
     tz: str = TZ,
     fill_mode: FillMode = FILL_MODE,
     data_dir: Path = DATA_DIR,
@@ -308,7 +342,8 @@ def run_cmd(
     except Exception as e:  # the strategy's own __init__ failed
         raise StrategyError(f"{cls.__name__}({', '.join(f'{k}={v!r}' for k, v in overrides.items())}) could not be created: {e!r}") from e
     spec = get_contract(contract or symbol)
-    bars, sub = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir)).load()
+    commission, slippage, costs_from = _costs(spec, commission, slippage)
+    bars, sub = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from).load()
     t1 = time.perf_counter()
     res = run_backtest(strategy, bars, spec, Costs(commission=commission, slippage=slippage), sub_bars=sub, fill_mode=fill_mode)
     t2 = time.perf_counter()
@@ -346,7 +381,7 @@ def run_cmd(
         "title": title,
         "subtitle": f"{bars.index[0]:%Y-%m-%d} → {bars.index[-1]:%Y-%m-%d} · {strategy_file.name}",
         "details": {
-            **_details(symbol, tf, session, history_from, spec, tz, fill_mode, commission, slippage),
+            **_details(symbol, tf, session, history_from, spec, tz, fill_mode, commission, slippage, costs_from, data_from),
             "Bars": f"{len(bars):,}",
             "First / last bar": f"{bars.index[0]:%Y-%m-%d %H:%M} / {bars.index[-1]:%Y-%m-%d %H:%M}",
             "Backtest time": f"{t2 - t1:.1f} s",
@@ -356,7 +391,7 @@ def run_cmd(
     }
     meta_json = {"strategy": cls.__name__, "file": str(strategy_file), "symbol": symbol, "contract": spec.symbol, "tf": tf,
                  "session": session, "tz": tz, "fill_mode": fill_mode, "history_from": history_from,
-                 "commission": commission, "slippage": slippage, "capital": capital, "inputs": vars(strategy.p),
+                 "commission": commission, "slippage": slippage, "costs": costs_from, "data_from": data_from, "capital": capital, "inputs": vars(strategy.p),
                  "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)}  # fmt: skip
     meta_json["contract_rolls"] = rolls
     meta_json["session_exposure"] = exposure
@@ -496,6 +531,7 @@ def optimize_cmd(
     tf: str = TF,
     session: str = SESSION,
     history_from: str = HISTORY_FROM,
+    data_from: str = DATA_FROM,
     tz: str = TZ,
     fill_mode: FillMode = FILL_MODE,
     data_dir: Path = DATA_DIR,
@@ -530,10 +566,11 @@ def optimize_cmd(
     except ValueError as e:
         raise typer.BadParameter(str(e), param_hint="--x / --y") from e
     spec = get_contract(contract or symbol)
+    commission, slippage, costs_from = _costs(spec, commission, slippage)
     out = out or run_dir(strategy_file, symbol, contract, tf, session, "_opt")
 
     t0 = time.perf_counter()
-    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir))
+    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from)
     bars, _ = data.load()  # also builds any missing bar caches before the workers read them
     typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz}): "
                f"{n:,} combinations, {len(bars):,} bars")  # fmt: skip
@@ -551,7 +588,7 @@ def optimize_cmd(
         "title": f"Optimization · {cls.__name__} · {spec.symbol} {tf}",
         "subtitle": f"{bars.index[0]:%Y-%m-%d} → {bars.index[-1]:%Y-%m-%d} · {strategy_file.name}",
         "details": {
-            **_details(symbol, tf, session, history_from, spec, tz, fill_mode, commission, slippage),
+            **_details(symbol, tf, session, history_from, spec, tz, fill_mode, commission, slippage, costs_from, data_from),
             "Ranked by": f"{label}, runs with ≥ {min_trades:,} trades",
             "Grid": grid_text,
         },
@@ -563,7 +600,7 @@ def optimize_cmd(
     summary = {
         "run": {"strategy": cls.__name__, "file": str(strategy_file), "symbol": symbol, "contract": spec.symbol, "tf": tf,
                 "session": session, "tz": tz, "fill_mode": fill_mode, "history_from": history_from,
-                "commission": commission, "slippage": slippage, "fixed": fixed,
+                "commission": commission, "slippage": slippage, "costs": costs_from, "data_from": data_from, "fixed": fixed,
                 "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)},
         "grid": grid, "metric": metric, "min_trades": min_trades, "combinations": n, "ranked": int(opt.results["rank"].notna().sum()),
         "workers": opt.workers, "seconds": round(opt.seconds, 2),
@@ -593,6 +630,7 @@ def wfo_cmd(
     tf: str = TF,
     session: str = SESSION,
     history_from: str = HISTORY_FROM,
+    data_from: str = DATA_FROM,
     tz: str = TZ,
     fill_mode: FillMode = FILL_MODE,
     data_dir: Path = DATA_DIR,
@@ -627,8 +665,9 @@ def wfo_cmd(
     cls = _load_strategy_class(strategy_file, class_name)
     grid, fixed, n = _parse_search(grid_specs, inputs, cls.inputs, metric, yes)
     spec = get_contract(contract or symbol)
+    commission, slippage, costs_from = _costs(spec, commission, slippage)
     out = out or run_dir(strategy_file, symbol, contract, tf, session, "_wfo")
-    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir))
+    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from)
     typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz}): "
                f"{n:,} combinations, each run once per window start")  # fmt: skip
     t0 = time.perf_counter()
@@ -667,7 +706,7 @@ def wfo_cmd(
         "title": f"Walk-forward · {cls.__name__} · {spec.symbol} {tf}",
         "subtitle": f"Out of sample {s['oos_from'].iat[0]:%Y-%m-%d} → {s['oos_to'].iat[-1]:%Y-%m-%d} · {strategy_file.name}",
         "details": {
-            **_details(symbol, tf, session, history_from, spec, tz, fill_mode, commission, slippage),
+            **_details(symbol, tf, session, history_from, spec, tz, fill_mode, commission, slippage, costs_from, data_from),
             "Windows": layout,
             "Chosen by": f"{label}, runs with ≥ {min_trades:,} in-sample trades",
             "Grid": " · ".join(f"{k}: {', '.join(map(str, v))}" for k, v in grid.items()),
@@ -680,7 +719,7 @@ def wfo_cmd(
     summary = {
         "run": {"strategy": cls.__name__, "file": str(strategy_file), "symbol": symbol, "contract": spec.symbol, "tf": tf,
                 "session": session, "tz": tz, "fill_mode": fill_mode, "history_from": history_from,
-                "commission": commission, "slippage": slippage, "fixed": fixed, "capital": capital,
+                "commission": commission, "slippage": slippage, "costs": costs_from, "data_from": data_from, "fixed": fixed, "capital": capital,
                 "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)},
         "grid": grid, "metric": metric, "min_trades": min_trades, "combinations": n,
         "layout": {"anchored": anchored, "is_months": is_months, "oos_months": oos_months, "step_months": wf.step_months, "start": s["is_from"].iat[0]},
@@ -771,7 +810,7 @@ def store_build_cmd(
     workers: int = WORKERS,
     settle_minutes: float = typer.Option(None, "--settle-minutes", help="Minutes a session file must be unmodified (default: config)", rich_help_panel=STORE),
 ) -> None:
-    """Add every finished session of NQ, MNQ, ES, GC, BTC to the write-once store; list skipped and changed sources."""
+    """Add every finished session of the symbols in config/store.toml to the write-once store; list skipped and changed sources."""
     from guban.store import build_store
 
     cfg = _store_config(root, source, settle_minutes=settle_minutes)

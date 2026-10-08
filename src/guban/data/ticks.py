@@ -16,8 +16,14 @@ Known defects, found by comparing each session with the same contract's Minute f
 the minute volume exactly. The reader does not repair these; callers keep a day only when its RTH tick volume agrees
 with the minute volume (guban.research.days).
 
+Two layouts are read (`store` is one symbol's folder): the DeepCharts folder above (`<contract>/Tick/<session>.data`)
+and the shared market-data store (Phase 15; `D:\\Market Data\\<SYM>`, recognized by its quality.csv:
+`tick/<contract>/<session>.parquet`, UTC times). Store ticks are turned into the same record fields (`ticks` as .NET
+ticks of the Eastern wall clock, `price`, `size`), so everything downstream is shared. In the store, use a session's
+ticks only where quality.csv `tick_ok` is True (guban.research.days adds it to each day).
+
 The cache (`data/<SYM>/vap_rth_tick.parquet` + `rth_tick_days.parquet`) is fingerprinted by the tick files read
-(size, mtime), the RTH session template, the early-close calendar and CACHE_VERSION.
+(path, size, mtime), the RTH session template, the early-close calendar and CACHE_VERSION.
 """
 
 from __future__ import annotations
@@ -53,7 +59,8 @@ assert TICK_RECORD.itemsize == 57
 # .NET ticks (100 ns since 0001-01-01) -> Unix epoch nanoseconds
 _DOTNET_EPOCH_TICKS = 621_355_968_000_000_000
 # Bump when the cached columns or the RTH aggregation change: the tick cache is rebuilt.
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # 2: file paths in the fingerprint (two layouts)
+STORE_TICK = np.dtype([("ticks", "<i8"), ("price", "<f8"), ("size", "<i4")])  # the fields read from the market-data store
 
 
 def dotnet_ticks(wall: pd.Timestamp) -> int:
@@ -104,6 +111,36 @@ def _check(raw: np.ndarray, path: Path) -> None:
             )
 
 
+def is_market_data(store: Path) -> bool:
+    """True for a symbol folder of the shared market-data store (it holds quality.csv), False for a DeepCharts folder."""
+    return (Path(store) / "quality.csv").exists()
+
+
+def tick_path(store: Path, contract: str, session_file: str) -> Path:
+    store = Path(store)
+    if is_market_data(store):
+        return store / "tick" / contract / f"{session_file}.parquet"
+    return store / contract / "Tick" / f"{session_file}.data"
+
+
+def read_store_ticks(path: Path) -> np.ndarray:
+    """A market-data store tick file as records with the binary reader's fields: ticks (.NET ticks, Eastern wall
+    clock), price, size -- in file order."""
+    df = pd.read_parquet(path, columns=["ts_utc", "price", "size"])
+    wall = pd.DatetimeIndex(df["ts_utc"]).tz_convert("America/New_York").tz_localize(None).as_unit("ns")
+    out = np.empty(len(df), STORE_TICK)
+    out["ticks"] = wall.asi8 // 100 + _DOTNET_EPOCH_TICKS
+    out["price"] = df["price"].to_numpy(float)
+    out["size"] = df["size"].to_numpy(np.int32)
+    return out
+
+
+def _read_any(path: Path) -> np.ndarray:
+    if path.suffix == ".parquet":
+        return read_store_ticks(path)
+    return read_ticks(path) if path.stat().st_size else np.empty(0, TICK_RECORD)
+
+
 def window_trades(raw: np.ndarray, start: pd.Timestamp, end: pd.Timestamp) -> np.ndarray:
     """Trades with start <= time < end (naive Eastern wall clock), in time order."""
     t = raw["ticks"]
@@ -127,17 +164,17 @@ def build_rth_profiles(
     store: Path, days: pd.DataFrame, tick_size: float, progress=None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """RTH trades of each day in `days` (index: trade date; columns session_file, contract, rth_start, rth_end), read
-    from `store/<contract>/Tick/<session_file>.data`.
+    from `store` in either layout (tick_path).
 
     Returns (summary, vap). summary: one row per day with a tick file (DAY_COLUMNS; trades = 0 when the file has no
     RTH trades). vap: long table (session_date, price_tick, volume) of the days with RTH trades.
     """
     rows, vaps = [], []
     for n, (day, d) in enumerate(days.iterrows()):
-        path = Path(store) / d.contract / "Tick" / f"{d.session_file}.data"
+        path = tick_path(store, d.contract, d.session_file)
         if not path.exists():
             continue
-        raw = read_ticks(path) if path.stat().st_size else np.empty(0, TICK_RECORD)
+        raw = _read_any(path)
         tr = window_trades(raw, d.rth_start, d.rth_end) if raw.size else raw
         row = {"session_date": day, "contract": d.contract, "session_file": d.session_file, "trades": int(tr.size),
                "volume": int(tr["size"].sum(dtype=np.int64)) if tr.size else 0}  # fmt: skip
@@ -159,10 +196,10 @@ def build_rth_profiles(
 def _fingerprint(store: Path, days: pd.DataFrame, tick_size: float) -> dict:
     files = []
     for day, d in days.iterrows():
-        path = Path(store) / d.contract / "Tick" / f"{d.session_file}.data"
+        path = tick_path(store, d.contract, d.session_file)
         if path.exists():
             st = path.stat()
-            files.append([str(day.date()), d.contract, d.session_file, st.st_size, st.st_mtime_ns, str(d.rth_start), str(d.rth_end)])
+            files.append([str(day.date()), path.relative_to(store).as_posix(), st.st_size, st.st_mtime_ns, str(d.rth_start), str(d.rth_end)])
     digest = hashlib.sha256(json.dumps(files).encode()).hexdigest()
     return {"version": CACHE_VERSION, "tick_size": tick_size, "files": len(files), "digest": digest}
 

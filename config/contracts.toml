@@ -1,26 +1,47 @@
 # CME contract specifications. point_value is USD per 1.0 price point per contract.
 # tick_value = point_value * tick_size. calendar: scheduled early closes, from config/calendar.toml.
+# commission, slippage: default costs, USD per contract per round trip, used by run/optimize/wfo when no
+# --commission/--slippage is given (explicit flags, e.g. MC-parity runs, win). Slippage = 1 tick round trip (half a
+# tick per side), charged half per market/stop fill, none on limit fills. Sources: PLAN.md "Phase 14–15 plan" costs
+# table (NQ, MNQ: the user's pipeline values; ES: Topstep itemized all-in; BTC: $1.00 commission + 2 x $7.50 CME
+# non-member exchange fee + 2 x $0.02 NFA) and "Phase 15 plan" (MES: Topstep $0.50 + $0.70 exchange + $0.02 NFA).
 
 [NQ]
 name = "E-mini Nasdaq-100"
 point_value = 20.0
 tick_size = 0.25
 calendar = "cme_equity"
+commission = 2.50
+slippage = 5.00
 
 [MNQ]
 name = "Micro E-mini Nasdaq-100"
 point_value = 2.0
 tick_size = 0.25
 calendar = "cme_equity"
+commission = 2.00
+slippage = 0.50
 
 [ES]
 name = "E-mini S&P 500"
 point_value = 50.0
 tick_size = 0.25
 calendar = "cme_equity"
+commission = 3.78
+slippage = 12.50
 
 [MES]
 name = "Micro E-mini S&P 500"
 point_value = 5.0
 tick_size = 0.25
 calendar = "cme_equity"
+commission = 1.22
+slippage = 1.25
+
+[BTC]
+name = "CME Bitcoin (5 BTC)"
+point_value = 5.0
+tick_size = 5.0
+calendar = "cme_crypto"
+commission = 16.04
+slippage = 25.00

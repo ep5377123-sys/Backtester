@@ -31,20 +31,24 @@ Every command has `--help`. `run`, `optimize` and `wfo` share the same data, cos
 
 Two kinds of input, from two places. Neither goes into git: `Database/`, `data/` and `reports/` are git-ignored.
 
-### 1. Bar data: per-contract minute files from DeepCharts (dxFeed)
+### 1. Bar data: the shared market-data store (from DeepCharts / dxFeed)
 
-The bar history comes from **DeepCharts**, which gets its data from dxFeed. It does not come from MultiCharts. Copy
-DeepCharts' per-contract store into this folder with this layout:
+The bar history comes from **DeepCharts**, which gets its data from dxFeed. It does not come from MultiCharts.
+`guban store build` turns DeepCharts' live folder (`D:\Deepchart\Database`, opened read-only) into a write-once store
+of Parquet files at `D:\Market Data`, shared with the Research Pipeline:
 
 ```
-Database/<SYM>-CME/<YYYYMM contract>/Minute/<YYYYMMDD>.data     e.g. Database/NQ-CME/202609/Minute/20260524.data
+D:\Market Data\<SYM>\minute\<YYYYMM contract>\<YYYYMMDD>.parquet   one contract session of 1-minute bars
+D:\Market Data\<SYM>\tick\<YYYYMM contract>\<YYYYMMDD>.parquet     its trades (where DeepCharts has ticks)
+D:\Market Data\<SYM>\quality.csv, roll_calendar.csv                 per-session checks; the volume roll
 ```
 
-- There is one binary file per contract per Globex session. The record format is documented in
-  `src/guban/data/importer.py`.
-- The `Tick/` folders next to `Minute/` are not used yet.
-- To extend the history (for example, MNQ before June 2025), copy the extra contract folders in and re-run
-  `guban import`. The importer rebuilds the whole continuous series.
+- Symbols: NQ (from 2018-12-30), ES (2019-12-29), MNQ, MES, BTC (2020-01-01). The store's `README.md` documents
+  every column and rule; settings are in `config/store.toml`.
+- `guban store build` adds sessions as they finish; `guban store verify` checks the stored files against their source.
+- `guban import --symbol <SYM>` then builds Guban's continuous series from the store (step 1 below).
+- Bars come from DeepCharts' 1-minute records. Ticks are used only by studies that need them, and only for sessions
+  whose `quality.csv` `tick_ok` is True.
 
 ### 2. MC trade lists: the parity oracle
 
@@ -63,6 +67,7 @@ For parity, run guban with the same settings as the MC chart. The Vault Break MN
 |---|---|---|
 | Time zone | Exchange (Central) | `--tz America/Chicago` |
 | Session | 24-hour Globex | `--session eth` |
+| Chart start | ~2021-01-01 (first trade 2021-01-20) | `--data-from 2021-01-03` |
 | Continuous contract | Rolls on the Wednesday of expiration week | `guban import --roll expiry` |
 | Bar Magnifier | On, 1 minute | `--fill-mode magnifier` (default) |
 | Commission / slippage | $0.40 / $0.04 per contract per round trip | `--commission 0.40 --slippage 0.04` |
@@ -74,32 +79,34 @@ These commands reproduce the Vault Break MNQ results from PLAN.md. They are writ
 that `run`, `optimize` and `wfo` share: data, costs, and the inputs of the MC run.
 
 ```powershell
-$vb = @('--symbol','MNQ','--history-from','NQ','--tf','5m','--session','eth','--tz','America/Chicago',
+$vb = @('--symbol','MNQ','--data-from','2021-01-03','--tf','5m','--session','eth','--tz','America/Chicago',
         '--commission','0.40','--slippage','0.04',
         '--set','take_profit_usd=500','--set','stop_loss_usd=500','--set','num_contracts=5',
-        '--set','atr_seed_sum=171120','--set','atr_seed_count=620','--set','sess_count_seed=620',
         '--set','earliest_entry=945','--set','latest_entry=1500','--set','flatten_time=1550','--set','flatten_early_close=false')
 ```
 
 The last line pins the MC chart's Central-time entry/flatten inputs (the strategy's defaults are now Eastern) and turns
 off the scheduled early-close flatten, which the MC strategy does not have.
 
-### 1. import: build the 1-minute store
+### 1. import: build the continuous 1-minute series from the store
 
 ```powershell
-uv run guban import Database/NQ-CME  --symbol NQ  --roll expiry
-uv run guban import Database/MNQ-CME --symbol MNQ --roll expiry
+uv run guban import --symbol NQ  --roll expiry
+uv run guban import --symbol MNQ --roll expiry
 ```
 
-- Writes `data/<SYM>/1m.parquet`: one unadjusted continuous series, in Eastern time.
-- Prints the first and last bar, the bar count and the missing session days.
-- `--roll expiry` switches contracts on the Wednesday of expiration week, like MC. `--roll volume` (the default) trades
-  the contract that had the most volume in the previous session. The series is unadjusted either way, so `run` and
+- Writes `data/<SYM>/1m.parquet`: one unadjusted continuous series, in Eastern time, bars labeled by their close.
+  About 15 s per symbol. `--root` reads another store folder.
+- Prints the first and last bar, the bar count, the rolls, the missing session days and the store's thin sessions.
+- `--roll expiry` switches contracts on the Wednesday of expiration week, like MC (equity index contracts only).
+  `--roll volume` (the default) uses the store's roll calendar: the contract that had the most volume in the previous
+  session, except that a contract is never traded in its expiration session (BTC stops at 11:00 ET that day).
+- `--source Database/NQ-CME` reads a DeepCharts per-contract folder directly instead (the import before the store). The series is unadjusted either way, so `run` and
   `wfo` list any trade held across a roll (its P&L includes the gap between the contracts). They also list trades
   held past their session's scheduled close, and trades held across missing bars (a data gap inside a session, or
   a session whose data stops before its scheduled close). These are notes in the report and `session_exposure` in the JSON.
-- Every `.data` file is checked while it is read (whole records, sane prices and volume, times inside the session);
-  a bad file stops the import with its name and the record's byte offset.
+- The store checks every source file when it is built (whole records, sane prices and volume, times inside the
+  session); the import stops with the file's name if a session the roll needs is missing.
 - Optional: `guban bars --symbol NQ --tf 5m --session rth` builds and caches strategy bars and prints a per-session summary. `run` builds these caches on its own, and rebuilds them when `1m.parquet` or the session in `config/sessions.toml` changes.
 
 ### 2. run: backtest one set of inputs
@@ -117,17 +124,19 @@ uv run guban run strategies/vault_break.py @vb --out reports/vault_break_mnq --o
   histograms, and a percentile table; `metrics.json` gets the numbers under `monte_carlo`. Drawdowns are close-to-close
   (a trade list has no intraday path), and trades are drawn one at a time. `--mc-sims 0` turns it off, `--mc-seed`
   sets the seed (default 42), `--mc-dd-limit 2500` adds the chance the max drawdown reaches $2,500.
-- Expected result: 737 trades, net 30,891.70, max drawdown −7,315.00, about 3 s. The max drawdown is peak to valley
+- Expected result: 1,094 trades, net 45,579.80, max drawdown −7,315.00, about 5 s. The max drawdown is peak to valley
   along the intrabar equity path, so a rise and a fall inside one bar both count.
-- `--history-from NQ` fills in NQ bars before MNQ's first bar, so long-memory indicators warm up. The `atr_seed_*`
-  inputs stand in for the MC chart's pre-2023 history (PLAN.md, Phase 5).
+- `--data-from 2021-01-03` starts the data where MC's chart starts, so Vault Break's long-memory DailyATR sees the same
+  history MC did. (The `atr_seed_*` inputs, fitted in Phase 5 when local MNQ data began in 2025, are no longer needed.)
+- Costs: without `--commission` / `--slippage`, a run uses the contract's default costs from `config/contracts.toml`.
+- `--history-from NQ` fills in NQ bars before a symbol's first bar, so long-memory indicators warm up.
 - `--fill-mode ohlc` resolves exits with the OHLC path rule on the whole bar instead of 1-minute sub-bars.
 
 ### 3. compare: check parity against MC
 
 ```powershell
 uv run guban compare --ours reports/vault_break_mnq/trades.csv `
-    --mc "D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv" --contract MNQ --start 2025-06-08 --open
+    --mc "D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv" --contract MNQ --open
 ```
 
 - Pairs trades that have the same direction and entries within one bar, one to one, pairing as many as possible
@@ -136,8 +145,8 @@ uv run guban compare --ours reports/vault_break_mnq/trades.csv `
   Writes `diff.html`, listing every unmatched and price-mismatched trade, into the `--ours` folder (or into `--out`).
 - **Pass** (the plan's S3 gate): ≥ 95% of trades matched, ≥ 95% of matched trades within 1 tick, net profit within 3%.
   Exit code 1 means FAIL.
-- `--start` / `--end` are in MC chart time (`--mc-tz`, default America/Chicago). Here `--start` limits the check to the
-  window with MNQ data. Expected: 300 of 302 trades matched, net −0.23%, PASS.
+- `--start` / `--end` limit the window, in MC chart time (`--mc-tz`, default America/Chicago). Expected on the full span
+  2021-01-20 → 2026-09-22: 1,072 of 1,081 MC trades matched (99.2%), 97.8% within 1 tick, net +0.03%, PASS.
 
 ### 4. optimize: grid-search inputs
 
@@ -151,7 +160,7 @@ uv run guban optimize strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 v
   `--min-trades` trades (default 30).
 - Writes `results.csv`, `optimize.json`, and `optimize.html` with a heatmap (`--x/--y` pick its axes). Grids over 5,000
   combinations need `--yes`.
-- Expected: 28 runs in about 15 s. The best is noise_mult 0.6 / vwap_exit_bars 4, net 32,769.50.
+- Expected: 28 runs in about 40 s. The best is noise_mult 0.5 / vwap_exit_bars 4, net 56,341.80.
 
 ### 5. wfo: walk-forward the inputs
 
@@ -166,7 +175,7 @@ uv run guban wfo strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 vwap_e
   score, and the stitched equity always equals the sum of the stitched trades.
 - Writes the stitched out-of-sample `trades.csv`, `windows.csv`, `results.csv`, `wfo.json` and `wfo.html`, with
   walk-forward efficiency = annualized OOS net ÷ annualized IS net.
-- Expected: 11 windows, 675 OOS trades, OOS net 19,777.90, WFE 71%, about 3 minutes on 6 cores.
+- Expected: 19 windows, 1,067 OOS trades, OOS net 43,531.10, WFE 77%. It took 998 s on 6 workers (measured with the test suite running alongside, so expect less).
 
 ### 6. propfirm: prop-firm evaluation Monte Carlo
 
@@ -281,23 +290,23 @@ traceback instead.
 
 ## Configuration
 
-- `config/contracts.toml`: contract specs (point value, tick size). NQ, MNQ, ES and MES are included. Add a symbol
+- `config/contracts.toml`: contract specs (point value, tick size, calendar) and default costs (commission and 1 tick
+  slippage per round trip, used when a run gives no cost flags). NQ, MNQ, ES, MES and BTC are included. Add a symbol
   here before you import or run it.
-- `config/sessions.toml`: session templates. `rth` is 09:30–16:00 ET; `eth` is the 24-hour Globex session, 18:00–17:00
-  ET. The timeframe must divide the session length.
-- `config/calendar.toml`: scheduled early closes per exchange calendar (13:00 ET on CME holidays, 13:15 ET half days,
-  Good Friday mornings), named by `calendar` in `contracts.toml`. They set each bar's `session_close`. Add each new
-  year's dates from CME's holiday calendar (2023–2026 are listed and were checked against the NQ data).
+- `config/sessions.toml`: session templates. `rth` is 09:30–16:00 ET; `eth` is the 23-hour Globex session, 18:00–17:00
+  ET; `h24` is 18:00–18:00 ET for BTC, which trades 24/7 since 2026-05-29. The timeframe must divide the session length.
+- `config/calendar.toml`: scheduled early closes per exchange calendar (`cme_equity`: 13:00 ET on CME holidays, 13:15 ET
+  half days, Good Friday mornings; `cme_crypto` for BTC), named by `calendar` in `contracts.toml`. They set each bar's
+  `session_close`. 2019–2026 were derived from the store's short sessions and checked against QuantConnect Lean's
+  market-hours database; add each new year's dates from CME's holiday calendar.
+- `config/store.toml`: the market-data store's folders, symbols and build rules.
 - `config/propfirm/<rules>.toml`: prop-firm rules, costs, simulation settings and degradation scenarios.
   `apex_50k_eod` is copied from the notebook; review its values (see below).
 
 ## Known limits
 
-- **MNQ history starts in June 2025**, so the parity window is 2025-06-08 → 2026-09-17. Before that, NQ bars stand in,
-  and NQ prices are not MNQ prices. Full 2021–2026 parity needs older MNQ minute data from DeepCharts. It would also
-  replace the fitted Vault Break ATR seed (`atr_seed_sum=171120`, fitted against MC's export).
 - **Bar data differs slightly from MC's.** Guban's bars come from DeepCharts/dxFeed, and MC charts its own feed. The few
-  trades that don't match in the parity window are 0.5–2.75-point price differences between the two data sources.
+  trades that don't match in the parity window are small price differences between the two data sources.
 - **Prop-firm rules need review.** `apex_50k_eod` is labeled 50K but uses the notebook's $25,000 / $1,250 target /
   $1,000 drawdown values. The report's notes list this and the notebook's other quirks.
 - **The trade Monte Carlo treats trades as independent.** Trades that tend to win or lose together (several on one

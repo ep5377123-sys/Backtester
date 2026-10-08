@@ -1,5 +1,9 @@
 """Import the binary per-contract minute store into one continuous Parquet series.
 
+Since Phase 15 `guban import` reads the shared market-data store (guban.store.read.import_from_store); this module is
+the DeepCharts-folder import (`guban import --source <folder>`), and its record checks and roll rules are shared by the
+store builder and reader.
+
 Source layout (decoded 2026-09-28 from Database/NQ-CME):
     <SYMBOL>-<EXCH>/<YYYYMM contract>/Minute/<YYYYMMDD session>.data
 Each file is one Globex session (18:00 ET -> 16:59 ET next day), a flat array of 60-byte records:
@@ -22,7 +26,7 @@ Roll rules for the continuous series:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -140,17 +144,36 @@ class ImportSummary:
     rolls: list[tuple[str, str]]  # (session date, contract rolled into)
     missing_weekdays: list[str]
     duplicate_bars_merged: int
+    thin_sessions: list[str] = field(default_factory=list)  # store import: front sessions quality.csv flags thin
+    expiry_switches: list[str] = field(default_factory=list)  # store import: sessions moved off an expiring contract
+    source: str = ""  # where the bars came from
 
     def __str__(self) -> str:
         lines = [
-            f"{self.symbol}: {self.bars:,} one-minute bars in {self.sessions} sessions",
+            f"{self.symbol}: {self.bars:,} one-minute bars in {self.sessions} sessions" + (f" from {self.source}" if self.source else ""),
             f"  first bar: {self.first_bar}   last bar: {self.last_bar}",
             f"  duplicate records merged: {self.duplicate_bars_merged:,}",
             f"  contract rolls ({len(self.rolls)}): " + ", ".join(f"{d}->{c}" for d, c in self.rolls),
-            f"  weekday sessions with no data ({len(self.missing_weekdays)}): "
-            + (", ".join(self.missing_weekdays[:20]) + (" ..." if len(self.missing_weekdays) > 20 else "")),
+            f"  weekday sessions with no data ({len(self.missing_weekdays)}): " + _first(self.missing_weekdays),
         ]
+        if self.expiry_switches:
+            lines.append(f"  expiration sessions traded in the next contract ({len(self.expiry_switches)}): " + _first(self.expiry_switches))
+        if self.thin_sessions:
+            lines.append(f"  thin front sessions ({len(self.thin_sessions)}): " + _first(self.thin_sessions))
         return "\n".join(lines)
+
+
+def _first(items: list[str], n: int = 20) -> str:
+    return ", ".join(items[:n]) + (" ..." if len(items) > n else "")
+
+
+def missing_weekdays(sessions: pd.Index) -> list[str]:
+    """Sun..Thu session starts (Mon..Fri trading days) between the first and last of `sessions` (YYYYMMDD) with no
+    session."""
+    starts = pd.to_datetime(sessions)
+    expected = pd.bdate_range(starts.min(), starts.max()) - pd.Timedelta(days=1)  # Mon..Fri -> Sun..Thu
+    expected = expected[(expected >= starts.min()) & (expected <= starts.max())]
+    return sorted(set(expected.strftime("%Y%m%d")) - set(sessions))
 
 
 def _session_volumes(source: Path) -> pd.DataFrame:
@@ -259,22 +282,22 @@ def import_store(source: Path, symbol: str, out_dir: Path, roll: str = "volume",
 
     write_parquet(data, Path(out_dir) / symbol / "1m.parquet")  # atomic: never a partial file under the final name
 
-    rolls = [(s, c) for s, c, prev in zip(contracts.index, contracts, contracts.shift()) if c != prev]
-    # Sessions are named by their 18:00 start date; Sun..Thu starts cover Mon..Fri trading days.
-    starts = pd.to_datetime(contracts.index)
-    expected = pd.bdate_range(starts.min(), starts.max()) - pd.Timedelta(days=1)  # Mon..Fri -> Sun..Thu
-    expected = expected[(expected >= starts.min()) & (expected <= starts.max())]
-    missing = sorted(set(expected.strftime("%Y%m%d")) - set(contracts.index))
     return ImportSummary(
         symbol=symbol,
         first_bar=data.index[0],
         last_bar=data.index[-1],
         bars=len(data),
         sessions=len(contracts),
-        rolls=rolls,
-        missing_weekdays=missing,
+        rolls=rolls_of(contracts),
+        missing_weekdays=missing_weekdays(contracts.index),  # sessions are named by their 18:00 start date
         duplicate_bars_merged=raw_count - len(data),
+        source=str(source),
     )
+
+
+def rolls_of(contracts: pd.Series) -> list[tuple[str, str]]:
+    """(session, contract) for the first session and every session whose contract differs from the previous one."""
+    return [(s, c) for s, c, prev in zip(contracts.index, contracts, contracts.shift()) if c != prev]
 
 
 def load_bars(symbol: str, data_dir: Path = Path("data")) -> pd.DataFrame:

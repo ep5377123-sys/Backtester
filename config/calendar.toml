@@ -7,12 +7,52 @@
 # These are published in advance, so a strategy may use them without looking ahead (Strategy.session_close).
 #
 # Update every year from CME's holiday calendar: https://www.cmegroup.com/tools-information/holiday-calendar.html
-# 2023-2026 were checked against the NQ minute store (the last bar of each short session).
+# Every entry was derived from the last bar of each short front session in the market-data store (D:\Market Data;
+# NQ from 2019, ES/MES/MNQ/BTC from 2020) and checked against QuantConnect Lean's market-hours database
+# (Data/market-hours/market-hours-database.json, 2026-10-07) and CME's 2021 Good Friday advisory.
+# Not a scheduled close: 2026-05-14 (NQ, ES, BTC end at 14:22 ET: a source outage, not an exchange halt).
 
 [cme_equity]
 name = "CME equity index futures (NQ, MNQ, ES, MES) on Globex"
 
 [cme_equity.early_close]
+# 2019
+"2019-01-21" = "13:00"  # Martin Luther King Jr. Day
+"2019-02-18" = "13:00"  # Presidents' Day
+"2019-05-27" = "13:00"  # Memorial Day
+"2019-07-03" = "13:15"  # day before Independence Day
+"2019-07-04" = "13:00"  # Independence Day
+"2019-09-02" = "13:00"  # Labor Day
+"2019-11-28" = "13:00"  # Thanksgiving
+"2019-11-29" = "13:15"  # day after Thanksgiving
+"2019-12-24" = "13:15"  # Christmas Eve
+# 2020
+"2020-01-20" = "13:00"  # Martin Luther King Jr. Day
+"2020-02-17" = "13:00"  # Presidents' Day
+"2020-05-25" = "13:00"  # Memorial Day
+"2020-07-03" = "13:00"  # Independence Day (observed)
+"2020-09-07" = "13:00"  # Labor Day
+"2020-11-26" = "13:00"  # Thanksgiving
+"2020-11-27" = "13:15"  # day after Thanksgiving
+"2020-12-24" = "13:15"  # Christmas Eve
+# 2021
+"2021-01-18" = "13:00"  # Martin Luther King Jr. Day
+"2021-02-15" = "13:00"  # Presidents' Day
+"2021-04-02" = "09:15"  # Good Friday (payrolls release: short morning session)
+"2021-05-31" = "13:00"  # Memorial Day
+"2021-07-05" = "13:00"  # Independence Day (observed)
+"2021-09-06" = "13:00"  # Labor Day
+"2021-11-25" = "13:00"  # Thanksgiving
+"2021-11-26" = "13:15"  # day after Thanksgiving
+# 2022
+"2022-01-17" = "13:00"  # Martin Luther King Jr. Day
+"2022-02-21" = "13:00"  # Presidents' Day
+"2022-05-30" = "13:00"  # Memorial Day
+"2022-06-20" = "13:00"  # Juneteenth (observed)
+"2022-07-04" = "13:00"  # Independence Day
+"2022-09-05" = "13:00"  # Labor Day
+"2022-11-24" = "13:00"  # Thanksgiving
+"2022-11-25" = "13:15"  # day after Thanksgiving
 # 2023
 "2023-01-16" = "13:00"  # Martin Luther King Jr. Day
 "2023-02-20" = "13:00"  # Presidents' Day
@@ -58,3 +98,43 @@ name = "CME equity index futures (NQ, MNQ, ES, MES) on Globex"
 "2026-11-26" = "13:00"  # Thanksgiving
 "2026-11-27" = "13:15"  # day after Thanksgiving
 "2026-12-24" = "13:15"  # Christmas Eve
+
+[cme_crypto]
+name = "CME cryptocurrency futures (BTC) on Globex"
+
+[cme_crypto.early_close]
+# Through 2021 BTC kept the equity holiday hours. From 2022 it trades through most US holidays (halting only at its
+# usual 17:00 ET) and closes early only on the days below. 24/7 trading since 2026-05-29: on 2026-06-19 and 2026-07-03
+# BTC traded through the day although Lean lists 13:00; check CME's crypto holiday hours for later years.
+# 2020
+"2020-01-20" = "13:00"  # Martin Luther King Jr. Day
+"2020-02-17" = "13:00"  # Presidents' Day
+"2020-05-25" = "13:00"  # Memorial Day
+"2020-07-03" = "13:00"  # Independence Day (observed)
+"2020-09-07" = "13:00"  # Labor Day
+"2020-11-26" = "13:00"  # Thanksgiving
+"2020-11-27" = "13:15"  # day after Thanksgiving
+"2020-12-24" = "13:15"  # Christmas Eve
+# 2021
+"2021-01-18" = "13:00"  # Martin Luther King Jr. Day
+"2021-02-15" = "13:00"  # Presidents' Day
+"2021-04-02" = "09:15"  # Good Friday (CME advisory: equity and Bitcoin close 8:15 CT)
+"2021-05-31" = "13:00"  # Memorial Day
+"2021-07-05" = "13:00"  # Independence Day (observed)
+"2021-09-06" = "13:00"  # Labor Day
+"2021-11-25" = "13:00"  # Thanksgiving
+"2021-11-26" = "13:45"  # day after Thanksgiving
+# 2022
+"2022-11-25" = "13:45"  # day after Thanksgiving
+# 2023
+"2023-04-07" = "11:15"  # Good Friday
+"2023-11-24" = "13:45"  # day after Thanksgiving
+# 2024
+"2024-11-29" = "14:45"  # day after Thanksgiving (not in Lean; the data trades to 14:45, as in 2025)
+"2024-12-24" = "13:45"  # Christmas Eve
+# 2025
+"2025-07-04" = "13:00"  # Independence Day
+"2025-11-28" = "14:45"  # day after Thanksgiving
+"2025-12-24" = "13:45"  # Christmas Eve
+# 2026
+"2026-04-03" = "11:15"  # Good Friday

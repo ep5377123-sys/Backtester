@@ -167,6 +167,7 @@ class DataSpec:
     history_from: str | None = None
     fill_mode: str = "magnifier"
     data_dir: str = "data"
+    data_from: str | None = None  # drop bars before this date (chart time zone): the warm-up starts there
 
     def load(self) -> tuple[pd.DataFrame, pd.DataFrame | None]:
         from guban.data.resample import load_bars, splice_history
@@ -178,6 +179,12 @@ class DataSpec:
             bars = splice_history(bars, load_bars(self.history_from, self.tf, self.session, d, tz=self.tz))
             if sub is not None:
                 sub = splice_history(sub, load_bars(self.history_from, "1m", self.session, d, tz=self.tz))
+        if self.data_from:
+            start = pd.Timestamp(self.data_from).tz_localize(bars.index.tz)
+            if not len(bars) or start > bars.index[-1]:
+                raise ValueError(f"--data-from {self.data_from} is after the last bar ({bars.index[-1] if len(bars) else 'no bars'})")
+            bars = bars[bars.index >= start]
+            sub = sub[sub.index >= start] if sub is not None else None
         return bars, sub
 
 

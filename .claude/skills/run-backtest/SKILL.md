@@ -22,9 +22,11 @@ Runs one strategy through `guban run` on NQ data and opens the HTML report in th
    - Defaults: 5m bars, the 24-hour Globex session, Eastern chart time (user, 2026-09-29; strategy input times are Eastern), 1-minute magnifier fills, and $2.25 commission + $5 slippage per NQ contract per round trip. The MC exports were made on Chicago chart time, so a run meant for `guban compare` against an old MC export needs `--tz America/Chicago` and the old input times.
    - `--open` opens `report.html` in the default browser. Always pass it.
    - `<strategy --set flags>`:
-     - `vault_break.py`: `--set take_profit_usd=1000 --set stop_loss_usd=1000 --set num_contracts=1 --set atr_seed_sum=171120 --set atr_seed_count=620 --set sess_count_seed=620`. That is 1 NQ with a 50-point target and stop, the same distance as the MC run, plus the fitted ATR warm-up seed (PLAN.md Phase 5).
+     - `vault_break.py`: `--set take_profit_usd=1000 --set stop_loss_usd=1000 --set num_contracts=1`. That is 1 NQ with a 50-point target and stop, the same distance as the MC run. No ATR warm-up seed: NQ data now starts 2018-12-30 (the fitted `atr_seed_*` inputs are retired, PLAN.md Phase 15).
      - Any other strategy: no `--set` flags (its own input defaults), unless the user gives inputs.
-   - If the user names a different symbol, timeframe, costs or inputs, use theirs.
+   - If the user names a different symbol, timeframe, costs or inputs, use theirs. Imported symbols: NQ, MNQ, ES, MES, BTC
+     (BTC: `--session h24`, it trades 24/7 since 2026-05-29). Leaving out `--commission`/`--slippage` uses the contract's
+     default costs (config/contracts.toml); keep the explicit NQ costs above unless the user asks for the defaults.
 
 4. **Report the results** from the command's stdout, briefly:
    - trades, net profit, profit factor, max drawdown, ambiguous fills, run time

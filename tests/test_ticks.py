@@ -134,3 +134,31 @@ def test_cache_is_reused_and_rebuilt_when_a_file_changes(tmp_path):
     write_ticks(tmp_path / "store" / "202509" / "Tick" / "20250804.data", TRADES[:4])
     s3, _ = load_rth_profiles(tmp_path / "store", days, 0.25, tmp_path / "cache", progress=lambda i, n: calls.append(i))
     assert calls and s3.loc["2025-08-05"].volume == 5
+
+
+def write_store_ticks(path, trades, contract="202509"):
+    """The market-data store's tick layout (D:\Market Data\<SYM>\tick\<contract>\<session>.parquet): UTC ms times."""
+    ts = pd.DatetimeIndex([pd.Timestamp(t) for t, _, _ in trades]).tz_localize("America/New_York").tz_convert("UTC").as_unit("ms")
+    df = pd.DataFrame({"ts_utc": ts, "price": [p for _, p, _ in trades], "size": np.array([s for _, _, s in trades], np.int32),
+                       "side": np.int8(1), "seq": np.int32(0), "contract": contract})  # fmt: skip
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, index=False)
+    return path
+
+
+def test_build_rth_profiles_reads_the_market_data_store_the_same_way(tmp_path):
+    binary = build_rth_profiles(tmp_path / "bin", _days(tmp_path / "bin"), 0.25)
+    sym = tmp_path / "Market Data" / "NQ"
+    (sym).mkdir(parents=True)
+    (sym / "quality.csv").write_text("session\n", encoding="utf-8")  # marks the store layout
+    write_store_ticks(sym / "tick" / "202509" / "20250804.parquet", TRADES)
+    write_store_ticks(sym / "tick" / "202509" / "20250805.parquet", [("2025-08-05 18:00", 100.0, 1), ("2025-08-06 09:29", 100.0, 1)])
+    write_store_ticks(sym / "tick" / "202509" / "20250806.parquet", [])
+    days = _days(tmp_path / "bin")
+    store = build_rth_profiles(sym, days, 0.25)
+    pd.testing.assert_frame_equal(store[0], binary[0], check_dtype=False)
+    pd.testing.assert_frame_equal(store[1], binary[1], check_dtype=False)
+    s1, _ = load_rth_profiles(sym, days, 0.25, tmp_path / "cache")
+    write_store_ticks(sym / "tick" / "202509" / "20250804.parquet", TRADES[:4])
+    s2, _ = load_rth_profiles(sym, days, 0.25, tmp_path / "cache")
+    assert (s1.loc["2025-08-05"].volume, s2.loc["2025-08-05"].volume) == (10, 5)  # the cache sees the store file change

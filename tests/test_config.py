@@ -51,7 +51,13 @@ def test_every_contract_names_a_calendar_with_its_early_closes():
 
     for spec in _contracts(None).values():
         closes = get_early_closes(spec.calendar)
-        assert closes[date(2024, 12, 24)] == time(13, 15) and closes[date(2024, 7, 4)] == time(13, 0)
+        if spec.calendar == "cme_crypto":  # BTC trades through most US holidays since 2022
+            assert closes[date(2024, 12, 24)] == time(13, 45) and date(2024, 7, 4) not in closes
+            assert closes[date(2021, 4, 2)] == time(9, 15)
+        else:
+            assert closes[date(2024, 12, 24)] == time(13, 15) and closes[date(2024, 7, 4)] == time(13, 0)
+            assert closes[date(2019, 11, 29)] == time(13, 15) and closes[date(2022, 6, 20)] == time(13, 0)
+    assert {s.calendar for s in _contracts(None).values()} == {"cme_equity", "cme_crypto"}
     assert get_early_closes(None) == {}
     with pytest.raises(KeyError, match="calendar.toml"):
         get_early_closes("nyse")
@@ -63,3 +69,19 @@ def test_calendar_rejects_bad_entries(tmp_path):
     (tmp_path / "calendar.toml").write_text('[x.early_close]\n"2024-12-24" = "1:15 pm"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
         get_early_closes("x", tmp_path)
+
+
+def test_default_costs_per_contract():
+    # PLAN.md "Phase 15 plan": commission RT, slippage RT = 1 tick (half a tick per side)
+    costs = {s: (get_contract(s).commission, get_contract(s).slippage) for s in ("NQ", "MNQ", "ES", "MES", "BTC")}
+    assert costs == {"NQ": (2.50, 5.00), "MNQ": (2.00, 0.50), "ES": (3.78, 12.50), "MES": (1.22, 1.25), "BTC": (16.04, 25.00)}
+    for s in costs:
+        assert get_contract(s).slippage == get_contract(s).tick_value
+
+
+@pytest.mark.parametrize("field", ["commission", "slippage"])
+def test_contract_spec_rejects_negative_default_costs(field):
+    from guban.config import ContractSpec
+
+    with pytest.raises(ValueError, match=field):
+        ContractSpec(symbol="X", name="x", point_value=2.0, tick_size=0.25, **{field: -1.0})

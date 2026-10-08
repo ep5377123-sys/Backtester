@@ -10,6 +10,9 @@ Primary test (pre-registered, 2026-10-05): tick-data POCs on clean days. A side 
 Everything else is secondary: the minute-bar POC study over the full minute history, the 2x2 table, shift-size
 buckets, value-area relationships, RTH close > open on D, and minute-vs-tick agreement.
 
+Data: the shared market-data store (D:\\Market Data\\NQ, Phase 15; `--store Database/NQ-CME` reads the DeepCharts folder as
+Phase 13 did). From the store, a day's ticks are used only when quality.csv `tick_ok` is True (user rule, 2026-10-07).
+
 Days: RTH 09:30-16:00 ET (to the scheduled early close on half-days). Clean (tick) day: RTH tick volume within 2% of the
 same contract's RTH minute volume and the last RTH trade within 2 minutes of the close. A triple (D-2, D-1, D) needs
 three consecutive trading days that are all clean and on the same contract (a roll's calendar spread is not a POC
@@ -38,7 +41,10 @@ from guban.research.report import write_study_report
 from guban.research.stats import by_period, rate_test, verdict
 
 SYMBOL = "NQ"
-STORE = Path("Database/NQ-CME")
+def _default_store() -> Path:
+    from guban.store.read import store_root
+
+    return store_root() / SYMBOL
 VOLUME_TOL = 0.02  # clean tick day: |RTH tick volume / RTH minute volume - 1| <= this
 END_SLACK = pd.Timedelta(minutes=2)  # the data must reach within this of the RTH close
 MIN_CLEAN_DAYS = 500
@@ -68,6 +74,8 @@ def build_days(store: Path, cache_dir: Path, rebuild: bool) -> pd.DataFrame:
     rows = []
     for day, d in days.iterrows():
         r = {"date": day, "contract": d.contract, "session_file": d.session_file, "rth_end": d.rth_end, "early_close": d.early_close}
+        if "tick_ok" in d:
+            r["tick_ok"] = bool(d.tick_ok)
         mb = minute_bars(store, d)
         if len(mb) and mb["volume"].sum() > 0:
             p = from_bars(mb["low"].to_numpy(), mb["high"].to_numpy(), mb["volume"].to_numpy(), tick)
@@ -106,6 +114,8 @@ def _minute_reason(r) -> str:
 
 
 def _tick_reason(r) -> str:
+    if getattr(r, "tick_ok", True) is False:
+        return "store tick check failed (tick_ok)"
     if pd.isna(r.tick_trades):
         return "no tick file"
     if r.tick_trades == 0:
@@ -344,7 +354,7 @@ def write_report(res: dict, path: Path) -> None:
             {"title": "Data", "caption": "Why days and triples were left out.", "frame": drops},
         ],
         notes=[
-            "A clean tick day: RTH tick volume within 2% of the same contract's RTH minute volume and the last trade within 2 minutes of the RTH close. Some tick sessions in the store stop at 09:29:59 or repeat every trade three times; they are excluded, not repaired.",
+            "A clean tick day: RTH tick volume within 2% of the same contract's RTH minute volume and the last trade within 2 minutes of the RTH close. Some tick sessions in the store stop at 09:29:59 or repeat every trade three times; they are excluded, not repaired. From the market-data store, only sessions whose quality.csv tick_ok is True are used.",
             "Triples spanning a contract roll are dropped: the calendar spread between contracts is not a POC shift.",
             "The p-value asks how likely a conditional rate at least this high would be if the signal carried no information (Binomial(n, base rate)). Tests on overlapping triples are not fully independent, so treat p-values near 0.05 with care.",
             "POC ties go to the price nearest the middle of the day's range. Value area: grown one tick at a time from the POC toward the side with more volume until it holds 70%.",
@@ -354,13 +364,13 @@ def write_report(res: dict, path: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--store", type=Path, default=STORE)
+    ap.add_argument("--store", type=Path, default=None, help="symbol folder: the market-data store's (default) or a DeepCharts one")
     ap.add_argument("--cache", type=Path, default=Path("data") / SYMBOL)
     ap.add_argument("--out", type=Path, default=Path("reports/poc_shift"))
     ap.add_argument("--rebuild", action="store_true", help="re-read every tick file instead of using the cache")
     args = ap.parse_args()
 
-    days = build_days(args.store, args.cache, args.rebuild)
+    days = build_days(args.store or _default_store(), args.cache, args.rebuild)
     n_clean = int(days["tick_clean"].sum())
     if n_clean < MIN_CLEAN_DAYS:
         reasons = days.loc[~days["tick_clean"], "tick_reason"].value_counts().to_dict()

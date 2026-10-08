@@ -201,3 +201,18 @@ def test_load_bars_adds_session_close_from_the_symbols_calendar_in_chart_time(tm
     assert (b["session_close"] == pd.Timestamp("2024-12-24 12:15", tz="America/Chicago")).all()
     assert str(b["session_close"].dt.tz) == "America/Chicago"
     assert "session_close" not in pd.read_parquet(cache_path("NQ", "5m", "rth", tmp_path)).columns  # not cached
+
+
+def test_h24_session_is_one_trading_day_from_1800_to_1800():
+    # BTC trades 24/7 since 2026-05-29: Friday 18:00 -> Saturday 18:00 is Saturday's session
+    from guban.data.resample import resample
+
+    idx = pd.date_range("2026-06-05 18:01", "2026-06-06 18:00", freq="1min", tz="America/New_York")
+    bars = pd.DataFrame({"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 1}, index=idx)
+    hourly = resample(bars, "1h", "h24")
+    assert len(hourly) == 24 and set(hourly["session_date"]) == {pd.Timestamp("2026-06-06")}
+    assert hourly.index[0] == pd.Timestamp("2026-06-05 19:00", tz="America/New_York")
+    assert hourly.index[-1] == pd.Timestamp("2026-06-06 18:00", tz="America/New_York")
+    assert (hourly["volume"] == 60).all()
+    daily = resample(bars, "1d", "h24")
+    assert list(daily.index) == [pd.Timestamp("2026-06-06 18:00", tz="America/New_York")] and daily["volume"].iat[0] == 1440

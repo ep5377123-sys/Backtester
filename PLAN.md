@@ -265,9 +265,10 @@ class VaultBreak(Strategy):
       Done when: `guban store build` has written every finished session of NQ, MNQ, ES, GC, BTC; `guban store verify`
       meets SR3 per symbol; a second build writes 0 files; full `pytest` green.
       Covers: SR1–SR5
-- [ ] Phase 15: Guban reads the store; GC/BTC specs, costs, calendars (see "Phase 14–15 plan" below — build steps 4–7)
-      Done when: `guban import --symbol <SYM>` builds all five symbols from the store; Vault Break MC compare still passes
-      the S3 gate; `guban run` works on every symbol; `research/poc_shift.py` runs on store ticks; full `pytest` green.
+- [x] Phase 15: Guban reads the store; BTC spec, costs, calendars (done 2026-10-07 — see "Phase 15 plan (revised 2026-10-07)" and "Phase 15 results" below)
+      Done when: `guban import --symbol <SYM>` builds NQ, MNQ, ES, MES, BTC from the store; Vault Break passes S3 both on
+      the full span (literal port, `--data-from 2021-01-03`) and with the Phase 5 recipe; `guban run` works on every
+      symbol with default costs; `research/poc_shift.py` runs on store ticks (`tick_ok` only); full `pytest` green.
       Covers: SR6–SR9, SR11
 
 ---
@@ -981,3 +982,95 @@ the commits and delete `D:\Market Data\`.
   (NQ 2018-12..2019, the old NQ/MNQ/ES ticks) stay in the store as built.
 - Known source hole: trade date 2020-11-30 holds ~1–2% of normal volume on NQ and ES.
 - Tests: `tests/test_store.py` (27). Full suite: 324 passed.
+
+## Phase 15 plan (revised 2026-10-07, approved)
+Replaces build steps 4–7 above. Interview: Q1 read access (yes), Q2 plan approval (yes).
+- **Symbols:** NQ, MNQ, ES, MES, BTC (user, commit 0ab8b59). GC is out: no GC spec, `cme_metals` or `rth_comex`.
+- **Recon (2026-10-07):**
+  - Store front sessions: NQ 2018-12-30 →, MNQ/MES/BTC 2020-01-01 →, ES 2019-12-29 → 2026-10-06; every front session
+    minute-built. NQ has 691 `tick_ok` front sessions; MES has no ticks.
+  - Store vs today's imports: NQ 99.56% of bars identical, MNQ 99.42%; every difference is in 2026-05..09, where
+    DeepCharts rewrote sessions at its reinstall (MNQ: mostly volume, a few prices up to 52 points). The store is the truth.
+  - **Vault Break on store data passes S3 twice** (scratch import + run): the Phase 5 recipe with data cut at the old
+    starts (NQ 2022-12-28, MNQ 2025-06-08): 308 MC trades, 99.4% matched, 97.7% within 1 tick, net −0.17%. The
+    **literal port** (no ATR seed, no `--history-from`, MNQ from 2021-01-03): **1,081 MC trades 2021-01-20 → 2026-09-22,
+    99.2% matched, 97.8% within 1 tick, net +0.03%** — this closes Phase 5's open item. `--bars minute` is not needed.
+  - MES cost: Topstep $1.22 RT ($0.50 commission + $0.70 exchange + $0.02 NFA; help.topstep.com, 2026-10-07).
+- **Default costs** (USD per contract per round trip; slippage = 1 tick, charged half per market/stop fill):
+  NQ 2.50 / 5.00, MNQ 2.00 / 0.50, ES 3.78 / 12.50, MES 1.22 / 1.25, BTC 16.04 / 25.00.
+- **Decisions:** volume roll = quality.csv `front`; expiry roll = third-Friday rule on store minute volumes (equity only,
+  BTC errors); thin front sessions imported as-is (summary counts them); old binary import kept behind `--source`;
+  `--data-from` (shared run/optimize/wfo option) drops bars before a date so warm-up starts there; BTC gets `h24`
+  (18:00 → 18:00); `CACHE_VERSION` unchanged (the fingerprint already sees a new 1m.parquet); `data/NQ`, `data/MNQ`
+  backed up to `data/_pre15/` before re-import.
+- **Steps:**
+  1. Import from the store (tests first; all five imported; NQ/MNQ comparison shows only 2026-05+ differences).
+  2. Per-contract default costs (`--commission/--slippage` default None) and `--data-from`.
+  3. BTC spec (5 $/pt, tick 5, `cme_crypto`) and `h24` session.
+  4. Calendars: `cme_equity` 2019–2022, `cme_crypto` 2020–2026, from each front session's last bar, spot-checked vs CME.
+  5. Research ticks from the store (`tick_ok` only); `poc_shift.py` vs Phase 13, differences listed.
+  6. Both Vault Break gates, `guban run` on all five, docs (CLAUDE.md, USE.md, README, run-backtest skill), commit.
+- **Assumptions:** A1 MC's chart starts with the 2021-01-03 session; A2 thin sessions are real data; A3 `resample`
+  handles a 1,440-minute session; A4 early closes in the data are the scheduled ones; A5 store ticks reproduce Phase 13.
+
+## Phase 15 results (2026-10-07)
+- **Import from the store (SR6):** `guban import --symbol SYM [--roll volume|expiry] [--root] [--source]`
+  (`src/guban/store/read.py`: `import_from_store`, `read_minute`, `front_sessions`). Bars = the store's minute files,
+  ts_utc + 1 min in New York (close label); volume roll = quality.csv `front`; expiry roll = third-Friday rule on the
+  store's minute volumes (equity only; BTC errors). The DeepCharts-folder import stays behind `--source`. ~15 s per symbol.
+
+  | Symbol | Bars | First bar | Roll | Thin front sessions |
+  |---|---|---|---|---|
+  | NQ | 2,740,357 | 2018-12-30 18:01 | expiry | 48 |
+  | MNQ | 2,389,143 | 2020-01-01 18:01 | expiry | 29 |
+  | ES | 2,392,190 | 2019-12-29 18:01 | expiry | 49 |
+  | MES | 2,388,074 | 2020-01-01 18:01 | expiry | 45 |
+  | BTC | 1,588,012 | 2020-01-01 18:05 | volume | 102 |
+
+  - **vs the old imports** (backed up in `data/_pre15/`): the same contract on 100% of shared bars. NQ 99.46% and MNQ
+    99.40% of bars identical (all seven fields); every difference is in 2026-05..09, where DeepCharts rewrote sessions at
+    its 2026-10-07 reinstall (MNQ: mostly volume, a few prices up to 52 points). NQ gains 360 bars in 2025-05 (the
+    Memorial Day 2025 session the reinstall completed). The store is the truth.
+  - **Bug found and fixed: BTC expiration sessions.** The store's volume roll still named the expiring contract front on
+    38 of 82 BTC expiry days (it stops trading at 11:00 ET; the roll is decided on the previous session's volume), so
+    those days ended at 11:00. The import now never trades a contract in its expiration session (`last_trade_date`:
+    3rd Friday for equity, last Friday of the month for BTC, the business day before when closed); the next contract
+    takes it (+24,738 BTC bars). Equity volume rolls never reach expiry: no change. The store's roll calendar is untouched.
+  - Thin front sessions are imported as they are (holiday sessions, BTC weekends); the summary lists them (A2 holds).
+- **Default costs (SR8):** `ContractSpec.commission/slippage` (`config/contracts.toml`): NQ 2.50/5.00, MNQ 2.00/0.50,
+  ES 3.78/12.50, MES 1.22/1.25 (Topstep), BTC 16.04/25.00. `--commission/--slippage` default to None; `cli._costs`
+  fills each missing one from the `--contract` spec; `metrics.json` `run.costs` names the source.
+- **`--data-from YYYY-MM-DD`:** shared `run/optimize/wfo` option (`DataSpec.data_from`), drops bars and sub-bars before
+  the date in the chart time zone (after any `--history-from` splice).
+- **BTC spec + `h24` session (SR7):** BTC $5/pt, tick 5, calendar `cme_crypto`. `h24` = 18:00 → 18:00 (A3 holds:
+  `resample` handles the 1,440-minute day); it keeps the 17:00–18:00 hour BTC trades since 2026-05-29 (+414 5m bars).
+- **Calendars (SR9):** `cme_equity` 2019–2022 added (33 dates) and `cme_crypto` 2020–2026 (24 dates), each from the
+  last bar of every short front session, checked against QuantConnect Lean's open-source market-hours database
+  (its NQ entries equal every derived equity date 2019–2026) and CME's 2021 Good Friday advisory. From 2022 BTC trades
+  through most US holidays; its own short days: 13:45 ET day after Thanksgiving / Christmas Eve, 11:15 Good Friday,
+  14:45 day after Thanksgiving from 2024 (2024-11-29 is missing in Lean; the data trades to 14:45). Lean lists
+  2026-06-19 and 2026-07-03 13:00 for BTC, but the data trades through both (24/7 since 2026-05-29): left out.
+  Every short front session of all five symbols is now explained, except 2026-05-14 (all symbols end 14:22 ET: a source
+  outage, not a halt) and one thin BTC weekend session (2026-07-26). A4 holds.
+- **Research ticks from the store (step 6):** `guban/data/ticks.py` reads a store symbol folder (recognized by its
+  quality.csv; Parquet ticks in UTC → the binary reader's fields) or a DeepCharts folder; tick cache `CACHE_VERSION` 2
+  (paths in the fingerprint). `research.days.trading_days` takes the contract from the store's roll and adds `tick_ok`;
+  `poc_shift.py` defaults to `D:\Market Data\NQ` and drops days whose store `tick_ok` is not True.
+  - **Same verdict, NOT REAL on both sides** (A5 holds). Up: gap −0.98 pp, p = 0.67 (Phase 13: −1.58 pp, p = 0.74);
+    down: −1.26 pp, p = 0.69 (Phase 13: −2.21 pp, p = 0.78). 688 clean tick days (Phase 13: 678), through 2026-10-07.
+  - Differences on the 964 Phase 13 days: 18 days are clean only now (14 whose old tick files stopped at 09:29:59 are
+    complete in the store; 3 volume mismatches; 1 cut short), 17 only then (store `tick_ok` False: 2024-02-01,
+    2024-02-13, 2024-06-05 and 14 sessions in 2026-05..09). Tick POCs equal on 98.9% of days clean in both; the 7
+    that differ are all 2026-05+ (rewritten sessions).
+- **Vault Break MC parity (SR11), both gates PASS:**
+  - **Full span, literal port** (new reference; `--data-from 2021-01-03`, no seed, no `--history-from`): 1,081 MC
+    trades 2021-01-20 → 2026-09-22, 1,072 matched (99.2%), 97.8% within 1 tick, net 49,017.50 vs 49,003.20 (+0.03%).
+    This closes Phase 5's open item: the fitted ATR seed is retired.
+  - **Phase 5 recipe** (fitted seed, NQ cut at 2022-12-28 and MNQ at 2025-06-08, window from 2025-06-08): 308 MC trades,
+    306 matched (99.4%), 97.7% within 1 tick, net −0.17%. `--bars minute` was not needed.
+- **`guban run` on all five** (Vault Break defaults, 5m RTH, no cost flags; a smoke test, not a tuned result): every run
+  writes trades.csv / metrics.json / report.html with the contract's default costs, 5–7 s each; BTC also on `h24`.
+- USE.md examples rerun on the new data with the parity flags: optimize best noise_mult 0.5 / vwap_exit_bars 4, net
+  56,341.80 (28 runs, 41 s); wfo 19 windows, 1,067 OOS trades, net 43,531.10, WFE 77%.
+- Docs: CLAUDE.md, USE.md, README.md, `.claude/skills/run-backtest/SKILL.md` (seed flags removed). Tests: new
+  `tests/test_store_read.py` (9) + cost/`--data-from`/`h24`/calendar/store-tick/store-days tests. Full suite: 342 passed.
