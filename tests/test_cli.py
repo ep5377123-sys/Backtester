@@ -285,7 +285,22 @@ def test_run_passes_the_ev_flags_to_the_monte_carlo(workdir):
     assert (ev["risk_per_contract"], ev["risk_source"], ev["oos_from"]) == (50.0, "--mc-risk", "2024-01-02 11:00")
     groups = ev["groups"]
     assert groups["in_sample"]["trades"] + groups["out_of_sample"]["trades"] == groups["all"]["trades"]
-    assert "R at 50.00 risk per contract" in res.output and "out of sample:" in res.output
+    assert "R (--mc-risk, avg 50.00 per contract)" in res.output and "out of sample:" in res.output
+
+
+def test_run_records_each_trades_risk_and_the_monte_carlo_uses_it(workdir):
+    stops = "    def on_bar(self):\n        self.set_stop_loss(200)\n        self.set_profit_target(400)\n"
+    (workdir / "flip_sl.py").write_text(FLIP.replace("class Flip", "class FlipSL").replace("    def on_bar(self):\n", stops))
+    res = runner.invoke(app, ["run", "flip_sl.py", "--symbol", "NQ", "--fill-mode", "ohlc", "--no-trade-charts", "--out", "sl"])
+    assert res.exit_code == 0, res.output
+    tr = pd.read_csv(workdir / "sl" / "trades.csv")
+    assert (tr["risk_usd"] == 200).all() and (tr["planned_rr"] == 2).all()  # 10 pts and 20 pts on 1 NQ
+    assert np.allclose(tr["r_multiple"], tr["profit_usd"] / 200)
+    m = json.loads((workdir / "sl" / "metrics.json").read_text(encoding="utf-8"))
+    assert m["all"]["avg_planned_rr"] == 2 and m["all"]["trades_with_stop"] == len(tr)
+    assert m["monte_carlo"]["ev"]["risk_source"] == "per-trade stop" and "R (per-trade stop" in res.output
+    page = (workdir / "sl" / "report.html").read_text(encoding="utf-8")
+    assert "'R', 'RR'" in page and "Avg planned reward : risk" in page
 
 
 def test_run_monte_carlo_is_deterministic_and_seeded(workdir):

@@ -101,13 +101,18 @@ def write_report(
 
 def _trade_rows(tr: pd.DataFrame) -> list[list]:
     """[no, dir, qty, entry time, entry name, entry price, exit time, exit name, exit price, net, cum net, run-up,
-    drawdown, ambiguous] per trade, for the trade list and the viewer's info line."""
+    drawdown, ambiguous, R multiple, planned RR] per trade, for the trade list and the viewer's info line (R and RR:
+    null without a stop / target)."""
     fmt = lambda t: t.strftime("%Y-%m-%d %H:%M")  # noqa: E731
+    num = lambda v: None if v is None or not math.isfinite(v) else round(float(v), 3)  # noqa: E731
+    nan = [math.nan] * len(tr)
+    r_mult = tr["r_multiple"].tolist() if "r_multiple" in tr else nan
+    plan_rr = tr["planned_rr"].tolist() if "planned_rr" in tr else nan
     return [
         [int(r.trade_no), 1 if r.direction == "long" else -1, int(r.qty), fmt(r.entry_time), str(r.entry_name), float(r.entry_price),
          fmt(r.exit_time), str(r.exit_name), float(r.exit_price), round(float(r.net_pnl), 2), round(float(r.cum_net_pnl), 2),
-         round(float(r.runup), 2), round(float(r.drawdown), 2), int(bool(r.ambiguous))]
-        for r in tr.itertuples(index=False)
+         round(float(r.runup), 2), round(float(r.drawdown), 2), int(bool(r.ambiguous)), num(r_mult[k]), num(plan_rr[k])]
+        for k, r in enumerate(tr.itertuples(index=False))
     ]  # fmt: skip
 
 
@@ -350,8 +355,13 @@ def _ev_html(ev: dict) -> str:
                      f"{usd(g['usd']['lo'])} to {usd(g['usd']['hi'])}", r2(r["mean"]) if r else "n/a",
                      f"{r2(r['lo'])} to {r2(r['hi'])}" if r else "n/a", fmt_value(g["p_ev_le_0"], "pct")])  # fmt: skip
     risk = ev["risk_per_contract"]
-    r_cap = (f"R = net / (contracts × {usd(risk)} risk per contract; {ev['risk_source']})." if risk is not None
-             else f"No R: {ev['risk_source']}.")  # fmt: skip
+    if risk is None:
+        r_cap = f"No R: {ev['risk_source']}."
+    elif ev["risk_source"].startswith("per-trade stop"):
+        r_cap = (f"R = net ÷ the trade's risk to its initial stop (average {usd(risk)} per contract); "
+                 f"{ev['risk_source'].removeprefix('per-trade stop').strip(' ()') or 'every trade had a stop'}.")  # fmt: skip
+    else:
+        r_cap = f"R = net / (contracts × {usd(risk)} risk per contract; {ev['risk_source']})."
     skipped = ev.get("skipped") or {}
     sk = (" Too few trades for: " + ", ".join(f"{EV_GROUPS.get(k, k)} ({v})" for k, v in skipped.items()) + ".") if skipped else ""
     return (
@@ -479,6 +489,7 @@ table.mc-table { margin:12px 0 4px; }
 _JS = r"""
 (function () {
   const money = x => (x < 0 ? '−' : '') + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const ratio = x => x === null ? '' : (x < 0 ? '−' : '') + Math.abs(x).toFixed(2);  // R and RR; empty without a stop
 
   // --- trade viewer: one pre-rendered image per trade ---
   const T = D.trades, byNo = new Map(T.map((t, i) => [t[0], i]));
@@ -504,14 +515,15 @@ _JS = r"""
     }
     document.getElementById('tno').value = t[0];
     document.getElementById('tinfo').textContent =
-      `${t[1] > 0 ? 'Long' : 'Short'} ${t[2]} · ${t[3]} → ${t[6]} · ${t[7]} · net ${money(t[9])}` + (t[13] ? ' · ambiguous fill' : '');
+      `${t[1] > 0 ? 'Long' : 'Short'} ${t[2]} · ${t[3]} → ${t[6]} · ${t[7]} · net ${money(t[9])}` + (t[14] !== null ? ` · ${ratio(t[14])} R` : '') +
+      (t[15] !== null ? ` · planned ${ratio(t[15])} RR` : '') + (t[13] ? ' · ambiguous fill' : '');
     markRow();
   }
   function go(i) { cur = Math.max(0, Math.min(T.length - 1, i)); show(); }
 
   // --- trade list ---
   const PAGE = 50; let rows = T.map((_, i) => i), page = 0;
-  const heads = ['#', 'Dir', 'Qty', 'Entry time', 'Entry signal', 'Entry price', 'Exit time', 'Exit signal', 'Exit price', 'Net profit', 'Cum. net', 'Run-up', 'Drawdown', 'Ambig.'];
+  const heads = ['#', 'Dir', 'Qty', 'Entry time', 'Entry signal', 'Entry price', 'Exit time', 'Exit signal', 'Exit price', 'Net profit', 'Cum. net', 'Run-up', 'Drawdown', 'R', 'RR', 'Ambig.'];
   function drawTable() {
     const tb = document.getElementById('tlist'); if (!tb) return;
     const pages = Math.max(1, Math.ceil(rows.length / PAGE)); page = Math.max(0, Math.min(page, pages - 1));
@@ -519,7 +531,7 @@ _JS = r"""
     const td = (v, l) => `<td${l ? " class='l'" : ''}>${v}</td>`;
     tb.innerHTML = '<thead><tr>' + heads.map((h, i) => `<th${[1, 3, 4, 6, 7].includes(i) ? " class='l'" : ''}>${h}</th>`).join('') + '</tr></thead><tbody>' +
       part.map(i => { const r = T[i]; return `<tr data-i='${i}'>` + td(r[0]) + td(r[1] > 0 ? 'Long' : 'Short', 1) + td(r[2]) + td(r[3], 1) + td(r[4], 1) + td(r[5]) +
-        td(r[6], 1) + td(r[7], 1) + td(r[8]) + td(money(r[9])) + td(money(r[10])) + td(money(r[11])) + td(money(r[12])) + td(r[13] ? 'yes' : '') + '</tr>'; }).join('') + '</tbody>';
+        td(r[6], 1) + td(r[7], 1) + td(r[8]) + td(money(r[9])) + td(money(r[10])) + td(money(r[11])) + td(money(r[12])) + td(ratio(r[14])) + td(ratio(r[15])) + td(r[13] ? 'yes' : '') + '</tr>'; }).join('') + '</tbody>';
     document.getElementById('tpage').textContent = `${rows.length.toLocaleString()} trades · page ${page + 1} of ${pages}`;
     markRow();
   }

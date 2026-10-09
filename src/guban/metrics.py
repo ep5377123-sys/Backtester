@@ -37,6 +37,9 @@ TRADE_STATS = [
     ("avg_winning_trade", "Avg winning trade", "usd"),
     ("avg_losing_trade", "Avg losing trade", "usd"),
     ("ratio_avg_win_avg_loss", "Ratio avg win : avg loss", "ratio"),
+    ("avg_r_multiple", "Avg trade R multiple (net ÷ risk to the initial stop)", "ratio"),
+    ("avg_planned_rr", "Avg planned reward : risk (target ÷ stop at entry)", "ratio"),
+    ("trades_with_stop", "Trades with a stop (in the R figures)", "int"),
     ("largest_winning_trade", "Largest winning trade", "usd"),
     ("largest_losing_trade", "Largest losing trade", "usd"),
     ("max_consecutive_winners", "Max consecutive winning trades", "int"),
@@ -66,6 +69,9 @@ def trade_stats(trades: pd.DataFrame) -> dict:
     gp, gl = float(net[win].sum()), float(net[loss].sum())
     avg_win = float(net[win].mean()) if win.any() else 0.0
     avg_loss = float(net[loss].mean()) if loss.any() else 0.0
+    nan = np.full(n, np.nan)
+    r = trades["r_multiple"].to_numpy(float) if "r_multiple" in trades else nan  # Phase 17; absent in MC exports
+    rr = trades["planned_rr"].to_numpy(float) if "planned_rr" in trades else nan
     return {
         "net_profit": float(net.sum()),
         "gross_profit": gp,
@@ -80,6 +86,9 @@ def trade_stats(trades: pd.DataFrame) -> dict:
         "avg_winning_trade": avg_win,
         "avg_losing_trade": avg_loss,
         "ratio_avg_win_avg_loss": avg_win / -avg_loss if avg_loss else (math.inf if avg_win else None),
+        "avg_r_multiple": float(np.nanmean(r)) if np.isfinite(r).any() else None,
+        "avg_planned_rr": float(np.nanmean(rr)) if np.isfinite(rr).any() else None,
+        "trades_with_stop": int(np.isfinite(r).sum()),
         "largest_winning_trade": float(net.max()) if win.any() else 0.0,
         "largest_losing_trade": float(net.min()) if loss.any() else 0.0,
         "max_consecutive_winners": _longest_run(win),

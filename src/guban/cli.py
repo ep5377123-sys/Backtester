@@ -277,12 +277,13 @@ def _trade_list(nos: list[int], limit: int = 20) -> str:
 
 def _mc_trade_info(trades, bars) -> dict:
     """run_monte_carlo's per-trade inputs: the exit bar's session date as the trading day (the exit time's date when
-    bars have no session_date), contracts, side and exit time."""
+    bars have no session_date), contracts, side, exit time and USD risk to the initial stop (NaN without one)."""
     if "session_date" in bars.columns:
         days = bars["session_date"].to_numpy()[trades["exit_bar"].to_numpy(int)]
     else:
         days = pd.DatetimeIndex(trades["exit_time"]).date
-    return {"days": days, "contracts": trades["qty"].to_numpy(float), "sides": trades["direction"].to_numpy(str), "times": trades["exit_time"]}
+    return {"days": days, "contracts": trades["qty"].to_numpy(float), "sides": trades["direction"].to_numpy(str), "times": trades["exit_time"],
+            "risks": trades["risk_usd"].to_numpy(float)}  # fmt: skip
 
 
 def _exposure_notes(exposure: dict) -> list[str]:
@@ -331,7 +332,7 @@ def run_cmd(
     mc_sims: int = typer.Option(10_000, "--mc-sims", help="Monte Carlo runs per method (resample, reorder, whole days) and EV bootstrap on this run's trades; 0: off", rich_help_panel=MC),
     mc_seed: int = typer.Option(42, "--mc-seed", help="Monte Carlo random seed", rich_help_panel=MC),
     mc_dd_limit: float = typer.Option(None, "--mc-dd-limit", help="Also report the chance the max drawdown reaches this many USD, e.g. 2500", rich_help_panel=MC),
-    mc_risk: float = typer.Option(None, "--mc-risk", help="Risk per contract in USD for R multiples, e.g. 400 (default: the average losing trade per contract)", rich_help_panel=MC),
+    mc_risk: float = typer.Option(None, "--mc-risk", help="Risk per contract in USD for the Monte Carlo's R, e.g. 400 (default: each trade's own initial stop; no stops at all: the average losing trade per contract)", rich_help_panel=MC),
     mc_oos_from: str = typer.Option(None, "--mc-oos-from", callback=_check_date, help="Also split the EV into in/out of sample: trades exiting from this date (YYYY-MM-DD, chart time zone) are out of sample", rich_help_panel=MC),
     report: bool = typer.Option(True, "--report/--no-report", help="Write report.html", rich_help_panel=OUTPUT),
     trade_charts: bool = TRADE_CHARTS,
@@ -456,7 +457,7 @@ def run_cmd(
         if ev:
             r = ev["r"]
             typer.echo(f"  EV per trade: {u(ev['usd']['mean'])} ({mc.ev['ci']:.0%} CI {u(ev['usd']['lo'])} to {u(ev['usd']['hi'])})"
-                       + (f", {r['mean']:+.3f} R at {u(mc.ev['risk_per_contract'])} risk per contract" if r else "")
+                       + (f", {r['mean']:+.3f} R ({mc.ev['risk_source']}, avg {u(mc.ev['risk_per_contract'])} per contract)" if r else "")
                        + f", P(EV <= 0) {ev['p_ev_le_0']:.1%}")  # fmt: skip
             for g in ("in_sample", "out_of_sample"):
                 e = mc.ev["groups"].get(g)

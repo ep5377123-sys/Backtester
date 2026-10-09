@@ -332,3 +332,62 @@ def test_backtest_is_deterministic(tmp_path):
     b = run_backtest(Flipper(), bars, NQ, costs).write_trades_csv(tmp_path / "b.csv")
     assert a.read_bytes() == b.read_bytes()
     assert len(pd.read_csv(a)) > 100
+
+
+# --- reward:risk at entry (Phase 17) --------------------------------------------------------------
+# risk_usd / reward_usd = distance from the entry price to the stop / target in force from the entry fill on, x point
+# value x contracts; planned_rr = reward / risk; r_multiple = net / risk.
+
+FLAT = [100.0] * 8  # highs 101, lows 99: nothing far from the entry ever fills
+
+
+def test_set_stop_loss_and_profit_target_give_risk_reward_and_r():
+    plan = {0: [("buy", dict(qty=2)), ("set_stop_loss", dict(amount=800)), ("set_profit_target", dict(amount=1600))],
+            3: [("sell", {})]}  # fmt: skip
+    (t,) = run(plan, make_bars(FLAT), Costs(commission=4)).trades.itertuples()
+    assert (t.risk_usd, t.reward_usd, t.planned_rr) == (800.0, 1600.0, 2.0)  # 20 pts and 40 pts on 2 NQ
+    assert t.net_pnl == -8.0 and t.r_multiple == pytest.approx(-0.01)
+
+
+def test_stop_and_limit_exit_orders_placed_with_a_close_entry_give_risk_reward():
+    plan = {1: [("buy", dict(at="close")), ("sell", dict(name="SL", at="stop", price=90)), ("sell", dict(name="TP", at="limit", price=120))],
+            4: [("sell", {})]}  # fmt: skip  (IVB style: the exits are placed in the entry's own on_bar)
+    (t,) = run(plan, make_bars(FLAT)).trades.itertuples()
+    assert t.entry_price == 100.5
+    assert (t.risk_usd, t.reward_usd) == (210.0, 390.0) and t.planned_rr == pytest.approx(390 / 210)
+
+
+def test_protection_placed_after_the_entry_counts_from_when_it_is_live():
+    plan = {0: [("buy", {})], 2: [("sell", dict(at="stop", price=95))], 3: [("set_profit_target", dict(amount=300))], 5: [("sell", {})]}
+    (t,) = run(plan, make_bars(FLAT)).trades.itertuples()
+    assert (t.risk_usd, t.reward_usd, t.planned_rr) == (100.0, 300.0, 3.0)
+
+
+def test_no_stop_or_a_stop_on_the_wrong_side_leaves_risk_empty():
+    plain = run({0: [("buy", {})], 2: [("sell", {})]}, make_bars(FLAT)).trades
+    assert plain[["risk_usd", "reward_usd", "planned_rr", "r_multiple"]].isna().all(axis=None)
+    wrong = run({0: [("buy", {}), ("sell", dict(at="stop", price=150)), ("sell", dict(at="limit", price=50))], 2: [("sell", {})]}, make_bars(FLAT)).trades
+    assert wrong[["risk_usd", "reward_usd"]].isna().all(axis=None)
+
+
+def test_the_tightest_stop_and_nearest_target_win():
+    plan = {0: [("buy", dict(qty=2)), ("set_stop_loss", dict(amount=800)), ("sell", dict(at="stop", price=90)),
+                ("set_profit_target", dict(amount=1600)), ("sell", dict(at="limit", price=110))],
+            3: [("sell", {})]}  # fmt: skip
+    (t,) = run(plan, make_bars(FLAT)).trades.itertuples()
+    assert (t.risk_usd, t.reward_usd) == (400.0, 400.0)  # 10 pts beats 20, 10 pts beats 40
+
+
+def test_partial_exits_split_the_risk_and_a_reversal_takes_its_own():
+    plan = {0: [("buy", dict(qty=3)), ("set_stop_loss", dict(amount=600))], 1: [("sell", dict(qty=1))],
+            2: [("sell_short", dict(name="S", qty=1))], 4: [("buy_to_cover", {})]}  # fmt: skip
+    tr = run(plan, make_bars(FLAT)).trades
+    assert tr["risk_usd"].tolist() == [200.0, 400.0, 600.0]  # 10 pts x 1 and x 2 contracts; the short: $600 on 1 contract
+    assert tr["direction"].tolist() == ["long", "long", "short"]
+
+
+def test_window_end_trades_carry_their_risk():
+    plan = {0: [("buy", {}), ("set_stop_loss", dict(amount=200))]}
+    res = run_backtest(Script(plan=plan), make_bars(FLAT), NQ, flatten_at_end=True)
+    (t,) = res.trades.itertuples()
+    assert (t.exit_name, t.risk_usd) == ("Window End", 200.0)

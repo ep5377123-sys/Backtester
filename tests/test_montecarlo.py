@@ -218,6 +218,35 @@ def test_default_risk_is_the_average_losing_trade_per_contract():
     assert run_monte_carlo(net, sims=100, seed=0).ev["risk_per_contract"] is None  # no contracts: no R
 
 
+def test_r_uses_each_trades_own_risk_and_mc_risk_overrides_it():
+    net = np.array([500.0, -250.0, 1000.0, -500.0])
+    risks = np.array([500.0, 250.0, 500.0, 500.0])  # USD to the initial stop, per trade row
+    contracts = np.array([5, 5, 5, 5])
+    ev = run_monte_carlo(net, sims=500, seed=0, contracts=contracts, risks=risks).ev
+    assert ev["groups"]["all"]["r"]["mean"] == pytest.approx(np.mean(net / risks))  # (1 - 1 + 2 - 1) / 4
+    assert ev["risk_source"] == "per-trade stop" and ev["r_trades"] == 4
+    assert ev["risk_per_contract"] == pytest.approx(np.mean(risks / contracts))
+    over = run_monte_carlo(net, sims=500, seed=0, contracts=contracts, risks=risks, risk=50).ev
+    assert over["risk_source"] == "--mc-risk" and over["groups"]["all"]["r"]["mean"] == pytest.approx(np.mean(net / (5 * 50)))
+
+
+def test_trades_without_a_stop_are_left_out_of_r_only():
+    rng = np.random.default_rng(3)
+    net = rng.normal(20, 200, 60)
+    risks = np.where(np.arange(60) % 4 == 0, np.nan, 400.0)
+    a = run_monte_carlo(net, sims=400, seed=2, contracts=np.ones(60), risks=risks).ev
+    b = run_monte_carlo(net, sims=400, seed=2, contracts=np.ones(60)).ev
+    assert a["groups"]["all"]["usd"] == b["groups"]["all"]["usd"] and a["groups"]["all"]["p_ev_le_0"] == b["groups"]["all"]["p_ev_le_0"]
+    known = ~np.isnan(risks)
+    r = a["groups"]["all"]["r"]
+    assert r["mean"] == pytest.approx(np.mean(net[known] / 400)) and r["lo"] < r["mean"] < r["hi"]
+    assert a["r_trades"] == 45 and "15 of 60 trades without a stop" in a["risk_source"]
+    none = run_monte_carlo(net, sims=100, seed=2, contracts=np.ones(60), risks=np.full(60, np.nan)).ev
+    assert none["risk_source"] == "average losing trade per contract"  # no stops at all: the old default
+    with pytest.raises(ValueError, match="risks must be > 0"):
+        run_monte_carlo(net, sims=100, risks=np.zeros(60))
+
+
 def test_ev_splits_in_and_out_of_sample():
     net = np.r_[np.full(30, 50.0), np.full(20, -10.0)]
     times = pd.date_range("2025-12-01", periods=50, freq="D", tz="America/New_York")

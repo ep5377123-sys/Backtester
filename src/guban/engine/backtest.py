@@ -21,6 +21,12 @@ near the open as the low (MC's rule; a tie goes high first), else open -> low ->
     on, including the rest of the entry bar, and an entry blocked by the open position (no pyramiding) can
     still fill after that position exits in the same bar.
   - Fills due at the same moment go in placement order, then stop loss, then profit target.
+Reward:risk (Phase 17). A position's stop and target are the protection in force from its entry fill on: the
+set_stop_loss / set_profit_target prices and its stop / limit exit orders (live this bar, or just placed with an
+at="close" entry). The first moment either exists (the entry fill, else the start of a later bar) fixes it; the
+tightest stop and nearest target win, and one on the wrong side of the entry price is ignored. Later moves do not
+count (R is measured against the initial stop). Per trade row: risk_usd / reward_usd = distance x point value x the
+row's contracts, planned_rr = reward / risk, r_multiple = net_pnl / risk (NaN where there is no stop or target).
 A trade is tagged `ambiguous` when its exit was decided by the path rule rather than by the data: both a
 stop-type and a limit-type exit lay inside the exit sub-bar's high-low range, or the position was entered
 intrabar in that same sub-bar.
@@ -74,6 +80,7 @@ TRADE_COLUMNS = [
     "entry_time", "entry_price", "entry_name", "entry_bar",
     "exit_time", "exit_price", "exit_name", "exit_bar",
     "gross_pnl", "commission", "slippage", "net_pnl", "cum_net_pnl", "runup", "drawdown", "ambiguous",
+    "risk_usd", "reward_usd", "planned_rr", "r_multiple",
 ]  # fmt: skip
 FILL_MODES = ("magnifier", "ohlc")
 STOP_LOSS, PROFIT_TARGET = "Stop Loss", "Profit Target"  # MC's exit names for SetStopLoss / SetProfitTarget
@@ -130,6 +137,8 @@ class Position:
     entry_sub: tuple[int, int] | None = None  # (bar, sub-bar) of an intrabar entry
     entry_walk: bool = False  # filled along the path, not at a bar or sub-bar open
     entry_slip: bool = True  # entry was a market or stop fill (pays half the USD slippage)
+    stop_px: float | None = None  # initial protective stop / target price (Reward:risk above)
+    target_px: float | None = None
     hi: float = field(init=False)  # highest / lowest price seen since the entry fill
     lo: float = field(init=False)
 
@@ -212,6 +221,7 @@ class Broker:
         self._i, self._sub, self._walking = i, None, False
         orders, self.pending = self.pending, []
         self.live = [o for o in orders if o.kind != "market"]
+        self._protect(self.live)
         self.see(open_price)
         for o in orders:
             if o.kind == "market":
@@ -326,12 +336,35 @@ class Broker:
             if pos is not None:
                 self._close(pos.qty, px, o.name, amb, slip)
             self.position = Position(d, o.qty, px, self._i, self._times[self._i], o.name, self._sub, self._walking, slip)
+            self._protect(self.live + self.pending)
         else:
             d = 1 if o.action == SELL else -1  # direction of the position this order exits
             if pos is None or pos.direction != d:
                 return
             qty = pos.qty if o.qty is None else min(o.qty, pos.qty)
             self._close(qty, self._slipped(price, -d) if slip else price, o.name, amb, slip)
+
+    def _protect(self, orders: Iterable[Order]) -> None:
+        """Fix the open position's initial stop / target price from the protection in force now, if not yet fixed."""
+        pos = self.position
+        if pos is None or (pos.stop_px is not None and pos.target_px is not None):
+            return
+        d, e, per_point = pos.direction, pos.entry_price, self.spec.point_value * pos.qty
+        stops, targets = [], []
+        if self.stop_loss_usd is not None:
+            stops.append(self._tick(e - d * self.stop_loss_usd / per_point))
+        if self.profit_target_usd is not None:
+            targets.append(self._tick(e + d * self.profit_target_usd / per_point))
+        for o in orders:
+            if o.action in (BUY, SELL_SHORT) or o.price is None or (-1 if o.action == SELL else 1) != -d:
+                continue  # entries, and exits of the other side
+            (stops if o.kind == "stop" else targets if o.kind == "limit" else []).append(o.price)
+        stops = [p for p in stops if (e - p) * d > 0]
+        targets = [p for p in targets if (p - e) * d > 0]
+        if pos.stop_px is None and stops:
+            pos.stop_px = max(stops) if d == 1 else min(stops)
+        if pos.target_px is None and targets:
+            pos.target_px = min(targets) if d == 1 else max(targets)
 
     def _close(self, qty: int, price: float, name: str, amb: bool = False, slip: bool = True) -> None:
         pos, c, spec, i = self.position, self.costs, self.spec, self._i
@@ -342,12 +375,16 @@ class Broker:
         entry_cost = (c.commission + c.slippage * pos.entry_slip) / 2
         runup = max(0.0, spec.pnl(pos.entry_price, best, qty, pos.direction, entry_cost))  # MC floors run-up at 0
         drawdown = spec.pnl(pos.entry_price, worst, qty, pos.direction, entry_cost)
+        per_point = spec.point_value * qty
+        risk = math.nan if pos.stop_px is None else abs(pos.entry_price - pos.stop_px) * per_point
+        reward = math.nan if pos.target_px is None else abs(pos.target_px - pos.entry_price) * per_point
         self.closed_pnl += net
         self.trades.append((
             len(self.trades) + 1, "long" if pos.direction == 1 else "short", qty,
             pos.entry_time, pos.entry_price, pos.entry_name, pos.entry_bar,
             self._times[i], price, name, i,
             gross, c.commission * qty, slippage * qty, net, self.closed_pnl, runup, drawdown, amb,
+            risk, reward, reward / risk, net / risk,
         ))  # fmt: skip
         pos.qty -= qty
         if pos.qty == 0:

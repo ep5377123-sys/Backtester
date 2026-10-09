@@ -127,8 +127,13 @@ uv run guban run strategies/vault_break.py @vb --out reports/vault_break_mnq --o
   CI, P(EV ≤ 0); all, long, short) and results after the first 10/20/40/100 trades or days. `metrics.json` gets the
   numbers under `monte_carlo`. Drawdowns are close-to-close (a trade list has no intraday path). `--mc-sims 0` turns it
   off, `--mc-seed` sets the seed (default 42), `--mc-dd-limit 2500` adds the chance the max drawdown reaches $2,500,
-  `--mc-risk 400` sets the risk per contract for R (default: the average losing trade per contract), and
+  `--mc-risk 400` overrides the risk per contract for R (default: each trade's own stop, below), and
   `--mc-oos-from 2025-01-01` also splits the EV into trades before and from that date.
+- **Reward:risk.** Each trade records the stop and target in force from its entry fill — `set_stop_loss` /
+  `set_profit_target`, or the strategy's own stop and limit exit orders (the tightest stop and nearest target win;
+  later moves don't count). `trades.csv` ends with `risk_usd`, `reward_usd`, `planned_rr` (target distance ÷ stop
+  distance: a 20 pt stop with a 40 pt target is 2.00) and `r_multiple` (net profit ÷ risk, costs included). They are
+  empty for a trade without a stop. The report shows R and RR per trade and their averages in the summary.
 - **Trade images.** `--no-trade-charts` skips them (the MNQ run: 9 s instead of 23 s). `guban chart <run folder>
   [--trade N ...]` draws them later, or again, from the run's `trades.csv`: it reloads the bars with the settings in
   `metrics.json` / `wfo.json` and refuses when the data changed since the run (other than new sessions at the end).

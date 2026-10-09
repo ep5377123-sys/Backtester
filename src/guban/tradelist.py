@@ -11,7 +11,9 @@ One row per trade, MC's 17 columns first, with MC's value conventions (checked a
 MC's own file wraps every line in quotes; ours does not (guban.parity reads both).
 
 The engine's columns follow MC's, so nothing is lost: entry_time and exit_time (ISO, with UTC offset),
-exit_price, exit_name, gross_pnl, commission, slippage, entry_bar, exit_bar, ambiguous.
+exit_price, exit_name, gross_pnl, commission, slippage, entry_bar, exit_bar, ambiguous, and (Phase 17) risk_usd,
+reward_usd, planned_rr, r_multiple (empty where the trade had no stop / target; files written before Phase 17 read
+without them, as empty).
 """
 
 from __future__ import annotations
@@ -27,7 +29,9 @@ MC_TRADE_COLUMNS = [
     "profit_usd", "profit_pct", "cum_profit_usd", "cum_profit_pct",
     "runup_usd", "runup_pct", "drawdown_usd", "drawdown_pct", "direction",
 ]  # fmt: skip
-ENGINE_COLUMNS = ["entry_time", "exit_time", "exit_price", "exit_name", "gross_pnl", "commission", "slippage", "entry_bar", "exit_bar", "ambiguous"]
+ENGINE_COLUMNS = ["entry_time", "exit_time", "exit_price", "exit_name", "gross_pnl", "commission", "slippage", "entry_bar", "exit_bar", "ambiguous",
+                  "risk_usd", "reward_usd", "planned_rr", "r_multiple"]  # fmt: skip
+RISK_COLUMNS = ENGINE_COLUMNS[-4:]  # Phase 17: optional when reading
 EXCEL_EPOCH = pd.Timestamp("1899-12-30")
 
 # MC-layout column -> engine trade column (guban.engine.backtest.TRADE_COLUMNS)
@@ -71,7 +75,7 @@ def to_mc_layout(trades: pd.DataFrame, point_value: float, capital: float = 1_00
         "direction": np.where(long_, "LONG", "SHORT"),
     })  # fmt: skip
     for col in ENGINE_COLUMNS:
-        out[col] = _usd(t[col]) if col in ("gross_pnl", "commission", "slippage") else t[col]
+        out[col] = _usd(t[col]) if col in ("gross_pnl", "commission", "slippage", *RISK_COLUMNS) else t[col]
     return out
 
 
@@ -82,6 +86,9 @@ def from_mc_layout(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"MC-layout trade list without the engine columns {sorted(missing)}; use parity.load_mc_trades for MC exports")
     out = df.rename(columns=TO_ENGINE)
     out["direction"] = out["direction"].str.lower()
+    for col in RISK_COLUMNS:  # written before Phase 17
+        if col not in out.columns:
+            out[col] = np.nan
     return out
 
 

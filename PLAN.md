@@ -274,6 +274,10 @@ class VaultBreak(Strategy):
       Done when: no plotly in src/ or pyproject.toml; every report's charts are matplotlib images; `guban run` writes one
       PNG per trade in `<run>/trades/` and the viewer switches them; the Monte Carlo reports resample, reorder and day
       side by side plus EV with a 95% CI, R, horizons and sample paths; resample/reorder unchanged; full `pytest` green.
+- [x] Phase 17: per-trade reward:risk (R, planned RR) and a 70/30 rolling walk-forward over 5 years (see "Phase 17 plan" below)
+      Done when: every trade has risk_usd / reward_usd / planned_rr / r_multiple from the stop and target in force at
+      entry; the Monte Carlo R uses them; MNQ parity trades/net unchanged; the 14/6/6 rolling wfo from 2021-10 is run and
+      reported; full `pytest` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1135,3 +1139,36 @@ not address dependence between trades; the whole-day block bootstrap is new.
   an earlier run's images (they would show the wrong trades). MNQ parity run: 22.9 s with images (target ≤ 60 s),
   8.6 s without (target ~10 s); `guban chart` for all 1,094 trades 13.9 s; EV 41.66/trade (CI 14.02–69.49), +0.093 R
   at 89.25 risk per contract. Docs: USE.md, README.md, CLAUDE.md. Full suite 366 passed (79 s).
+
+## Phase 17 plan: per-trade reward:risk, 70/30 rolling walk-forward (approved 2026-10-08)
+Interview: the user defined RR = take-profit distance ÷ stop distance (20 pt stop, 40 pt target = 2 RR) and 1R = the
+amount risked to the stop; Q1 walk-forward = rolling, 70% in-sample / 30% out-of-sample per window over 5 years →
+`--is 14 --oos 6 --step 6` (user); Q2 plan approved.
+- **Recon:** trades had no stop/target columns (backtest.py TRADE_COLUMNS); `set_stop_loss`/`set_profit_target` are
+  per-position USD on the broker; IVB protects with its own stop/limit exit orders placed in the same on_bar as its
+  at="close" entry (ivb.py 88–100); the Monte Carlo R defaulted to the average losing trade per contract.
+- **Decisions:** the broker snapshots the protection in force from the entry fill on — the tick-rounded
+  `set_stop_loss`/`set_profit_target` prices, and the position's stop/limit exit orders (live or pending) — and keeps
+  the tightest stop and nearest target of the first moment one exists (checked at the entry fill and at each later
+  bar's start until found). risk_usd / reward_usd = price distance × point value × contracts (scaled for partial
+  exits); planned_rr = reward ÷ risk; r_multiple = net_pnl ÷ risk (costs included). A stop on the wrong side of entry,
+  or none at all, leaves them empty. The Monte Carlo R uses per-trade risk ("per-trade stop"); `--mc-risk` overrides;
+  the average loser stays the last fallback. Old trades.csv files load without the columns.
+- **Assumptions:** A1 R uses the initial stop, not later moves; A3 IVB-style protection timing as above; A5 R includes
+  costs (a full stop-out is slightly below −1R); A6 wfo = Vault Break MNQ parity flags + the USE.md grid, metric net
+  profit, min 30 trades; A7 5 years = `--start 2021-10-01` → 2026-10-07 (7 full windows + 1 partial),
+  `--data-from 2021-01-03` for warm-up; A8 the wfo runs after the RR work; A9 ~8–10 min.
+- **Phases:** 1 engine snapshot + tests; 2 trade columns, old files readable; 3 Monte Carlo + report use R; 4 real
+  MNQ/IVB runs, browser check of the missing-image message, docs; 5 the walk-forward; 6 commit.
+- **Phase 17 results (2026-10-08); complete.** Steps 1–3: `Broker._protect` snapshots the initial stop / target
+  (backtest.py docstring); trade columns `risk_usd`, `reward_usd`, `planned_rr`, `r_multiple` at the end of trades.csv
+  (`tradelist.RISK_COLUMNS`; old files load with them empty); metrics `avg_r_multiple`, `avg_planned_rr`,
+  `trades_with_stop`; the Monte Carlo R uses per-trade risk (`risks=`), `--mc-risk` overrides, average loser last.
+  Step 4: MNQ parity run unchanged (1,094 trades, net 45,579.80); every trade risks $500 for $500 (RR 1.00), average R
+  +0.083. IVB (MNQ 1m eth, default inputs, 1,065 trades): RR 1.00 on every trade, average R +0.067. Headless Edge shows
+  the missing-image message with the `guban chart` command. Step 5, the 70/30 walk-forward (`--is 14 --oos 6 --step 6
+  --start 2021-10-01`, Vault Break MNQ parity flags, USE.md grid, net profit, min 30 trades; 1,518 s on 6 workers):
+  8 windows (the last partial, 2026-06-01 → 2026-10-07), 896 OOS trades, net 24,603.00, PF 1.13, 51.3% winners,
+  average R +0.055, WFE 50% (IS 12,806/yr, OOS 6,387/yr); one losing OOS window (#4, 2024-06 → 2024-11, −4,916.50);
+  noise_mult 0.4–0.7 in every window, vwap_exit_bars 1 in 7 of 8. Largest OOS loss −964.70 (≈ −1.9R) against a
+  $500 stop: a fill past the stop. Output: `reports/vault_break_mnq_wfo_70_30/`. Full suite 377 passed (93 s).

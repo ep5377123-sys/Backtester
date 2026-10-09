@@ -13,8 +13,10 @@ method included (a day's internal dip counts). A trade list has no intraday path
 cannot be simulated.
 
 Also, from the same trades (the user's notebook "Strategy EV & Monte Carlo Analysis"):
-- ev: expected value per trade in USD and in R (net / (contracts x risk per contract)) with a bootstrap CI and
-  P(EV <= 0), for all trades, long, short and, given --mc-oos-from, in/out of sample.
+- ev: expected value per trade in USD and in R with a bootstrap CI and P(EV <= 0), for all trades, long, short and,
+  given --mc-oos-from, in/out of sample. R = net / the trade's own risk to its initial stop (Phase 17, `risks`);
+  --mc-risk instead: net / (contracts x that risk per contract); neither: the average losing trade per contract.
+  Trades without a stop are left out of the R figures only (their R draws are skipped, the USD draws unchanged).
 - horizons: net profit and max drawdown depth percentiles after the first 10/20/40/100 trades (resample) or trading
   days (day) of each run.
 - sample paths: the first SAMPLE_PATHS runs' equity curves of each method.
@@ -30,6 +32,7 @@ from __future__ import annotations
 import math
 import numbers
 import time
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -156,12 +159,13 @@ class MonteCarloResult:
 
 def run_monte_carlo(
     net, sims: int = 10_000, seed: int = 42, dd_limit: float | None = None, *, days=None, contracts=None, sides=None,
-    risk: float | None = None, times=None, oos_from=None, ci: float = CI,
+    risk: float | None = None, times=None, oos_from=None, ci: float = CI, risks=None,
 ) -> MonteCarloResult:  # fmt: skip
     """Resample, reorder and (given `days`) day-resample `net` (per-trade net P&L, in trade order) `sims` times each,
     and bootstrap its EV. Per trade, all optional: `days` = trading-day label (exit session), `contracts`, `sides`
-    ("long"/"short"), `times` (exit time, for the --mc-oos-from split). `risk` = USD per contract for R (default: the
-    average losing trade per contract; without contracts, R needs `risk` and counts 1 contract per trade)."""
+    ("long"/"short"), `times` (exit time, for the --mc-oos-from split), `risks` (USD at risk to the initial stop, NaN
+    without one). `risk` = USD per contract for R, overriding `risks` (fallback: the average losing trade per
+    contract; without contracts, R needs `risk` or `risks` and counts 1 contract per trade)."""
     check_settings(sims, seed, dd_limit, risk, oos_from)
     if sims == 0:
         raise ValueError("--mc-sims 0 means off; nothing to simulate")
@@ -173,7 +177,7 @@ def run_monte_carlo(
     if not np.isfinite(net).all():
         raise ValueError("trade net P&L has NaN or infinite values")
     n = len(net)
-    for name, v in (("days", days), ("contracts", contracts), ("sides", sides), ("times", times)):
+    for name, v in (("days", days), ("contracts", contracts), ("sides", sides), ("times", times), ("risks", risks)):
         if v is not None and len(v) != n:
             raise ValueError(f"{name} has {len(v)} values for {n} trades")
     t0 = time.perf_counter()
@@ -194,7 +198,7 @@ def run_monte_carlo(
             xd = _sample_points(n_days)
             day_path = np.r_[0.0, np.cumsum(stats["sum"])]
             methods["day"] = _simulate(lambda rng, b: _day_draw(rng.integers(0, n_days, (b, n_days)), stats), seed + 2, sims, batch, xd, day_path[xd], HORIZONS)  # fmt: skip
-    ev = _ev(net, contracts, sides, risk, times, oos_from, sims, seed + 3, ci)
+    ev = _ev(net, contracts, sides, risk, times, oos_from, sims, seed + 3, ci, risks)
     return MonteCarloResult(
         sims=sims, seed=seed, dd_limit=None if dd_limit is None else float(dd_limit), trades=n,
         net=float(net.sum()), max_dd=float(max_dd[0]), x=x, path=path[0, x], methods=methods,
@@ -270,20 +274,38 @@ def _day_draw(d: np.ndarray, stats: dict) -> tuple[np.ndarray, np.ndarray]:
     return cum, under
 
 
-def _ev(net, contracts, sides, risk, times, oos_from, sims: int, seed: int, ci: float) -> dict:
+def _ev(net, contracts, sides, risk, times, oos_from, sims: int, seed: int, ci: float, risks=None) -> dict:
     """Bootstrap EV per trade (USD and R) with a `ci` interval and P(EV <= 0) per trade group."""
     n = len(net)
     if contracts is not None:
         contracts = np.asarray(contracts, dtype=float)
         if not (np.isfinite(contracts).all() and (contracts > 0).all()):
             raise ValueError("contracts must be > 0 for every trade")
+    per_trade = None
+    if risks is not None:
+        per_trade = np.asarray(risks, dtype=float)
+        if (per_trade <= 0).any():
+            raise ValueError("risks must be > 0 USD (NaN for a trade without a stop)")
+        if not np.isfinite(per_trade).any():
+            per_trade = None
+    r_trades = n
     if risk is not None:
         risk_pc, source = float(risk), "--mc-risk"
+    elif per_trade is not None:
+        known = np.isfinite(per_trade)
+        r_trades = int(known.sum())
+        risk_pc = float(np.mean(per_trade[known] / (contracts[known] if contracts is not None else 1.0)))
+        source = "per-trade stop" + ("" if r_trades == n else f" ({n - r_trades:,} of {n:,} trades without a stop are not in R)")
     elif contracts is not None and (net < 0).any():
         risk_pc, source = float(np.mean(-net[net < 0] / contracts[net < 0])), "average losing trade per contract"
     else:
         risk_pc, source = None, "no contracts given" if contracts is None else "no losing trades"
-    r = None if risk_pc is None else net / ((contracts if contracts is not None else 1.0) * risk_pc)
+    if risk_pc is None:
+        r = None
+    elif per_trade is not None and risk is None:
+        r = net / per_trade  # NaN without a stop
+    else:
+        r = net / ((contracts if contracts is not None else 1.0) * risk_pc)
     masks = {"all": np.ones(n, dtype=bool)}
     if sides is not None:
         s = np.char.lower(np.asarray(sides).astype(str))
@@ -309,21 +331,29 @@ def _ev(net, contracts, sides, risk, times, oos_from, sims: int, seed: int, ci: 
             continue
         vals = net[mask]
         rv = None if r is None else r[mask]
+        gaps = rv is not None and bool(np.isnan(rv).any())
+        if gaps and np.isfinite(rv).sum() < MIN_TRADES:
+            rv = None
         boot, rboot = np.empty(sims), np.empty(sims)
         batch = max(1, BATCH_CELLS // k)
         for s in range(0, sims, batch):
             idx = rng.integers(0, k, (min(batch, sims - s), k))
             boot[s:s + len(idx)] = vals[idx].mean(axis=1)
             if rv is not None:
-                rboot[s:s + len(idx)] = rv[idx].mean(axis=1)
+                if gaps:  # trades without a stop drop out of R; a draw of only such trades has no R mean
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", RuntimeWarning)
+                        rboot[s:s + len(idx)] = np.nanmean(rv[idx], axis=1)
+                else:
+                    rboot[s:s + len(idx)] = rv[idx].mean(axis=1)
         groups[name] = {
             "trades": k,
             "win_rate": float(np.mean(vals > 0)),
             "usd": _interval(vals.mean(), boot, lo_q, hi_q),
-            "r": None if rv is None else _interval(rv.mean(), rboot, lo_q, hi_q),
+            "r": None if rv is None else _interval(float(np.nanmean(rv)), rboot[np.isfinite(rboot)], lo_q, hi_q),
             "p_ev_le_0": float(np.mean(boot <= 0)),
         }
-    out = {"ci": ci, "risk_per_contract": risk_pc, "risk_source": source, "oos_from": None if oos_from is None else str(oos_from), "groups": groups}
+    out = {"ci": ci, "risk_per_contract": risk_pc, "risk_source": source, "r_trades": r_trades if risk_pc is not None else 0, "oos_from": None if oos_from is None else str(oos_from), "groups": groups}
     if skipped:
         out["skipped"] = skipped
     return out

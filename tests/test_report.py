@@ -88,6 +88,17 @@ def test_trades_csv_reads_back_for_compare(result, tmp_path):
     assert mc["entry_time"].tolist() == tr["entry_time"].tolist() and mc["qty"].tolist() == tr["qty"].tolist()
 
 
+def test_trades_csv_ends_with_the_risk_columns_and_old_files_read_without_them(result, tmp_path):
+    from guban.tradelist import RISK_COLUMNS
+
+    _, res = result
+    df = pd.read_csv(res.write_trades_csv(tmp_path / "trades.csv"))
+    assert list(df.columns[-4:]) == RISK_COLUMNS == ["risk_usd", "reward_usd", "planned_rr", "r_multiple"]
+    df.drop(columns=RISK_COLUMNS).to_csv(tmp_path / "old.csv", index=False)  # a trades.csv from before Phase 17
+    old = load_our_trades(tmp_path / "old.csv")
+    assert len(old) == len(res.trades) and old[RISK_COLUMNS].isna().all(axis=None)
+
+
 PNG = b"\x89PNG\r\n\x1a\n"
 
 
