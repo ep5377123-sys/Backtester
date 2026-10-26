@@ -850,6 +850,48 @@ def chart_cmd(
         _open(first)
 
 
+@app.command("gui")
+@_friendly
+def gui_cmd(
+    smoke: bool = typer.Option(False, "--smoke", help="Drive the tabs in a hidden window, save a screenshot per step to reports/_gui_smoke/, exit 0 if every step passed"),
+) -> None:
+    """Open Guban Studio, the desktop GUI (Electron app in gui/; installs Electron on first launch)."""
+    import json
+    import shutil
+    import subprocess
+
+    gui = Path(__file__).resolve().parents[2] / "gui"
+    if not (gui / "package.json").is_file():
+        raise OSError(f"{gui} has no package.json: Guban Studio runs from the repo's gui/ folder")
+    node, npm = shutil.which("node"), shutil.which("npm")
+    if node is None or npm is None:
+        raise OSError("node/npm not found: install Node.js (https://nodejs.org), then run guban gui again")
+    electron = gui / "node_modules" / "electron"
+    if not (electron / "package.json").is_file():
+        typer.echo("Installing Electron into gui/node_modules (first launch)...")
+        if subprocess.run([npm, "install"], cwd=gui).returncode:
+            raise RuntimeError(f"npm install failed in {gui}: fix the error above, then run guban gui again")
+    if not (electron / "dist").is_dir():
+        typer.echo("Downloading the Electron binary (first launch)...")
+    # require('electron') is the executable's path; it downloads the binary when it is missing (Electron >= 45)
+    found = subprocess.run([node, "-e", "process.stdout.write('\\n' + require('electron'))"], cwd=gui, capture_output=True, text=True)
+    exe = Path(found.stdout.strip().splitlines()[-1]) if found.returncode == 0 and found.stdout.strip() else None
+    if exe is None or not exe.is_file():
+        raise RuntimeError(f"Electron is not installed correctly in {electron}: delete that folder and run guban gui again\n{found.stderr.strip()}")
+    env = {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}  # set in VS Code terminals: Electron would start as plain Node
+    result = REPORTS / "_gui_smoke" / "result.json"
+    if smoke:
+        result.unlink(missing_ok=True)
+    code = subprocess.run([str(exe), str(gui), *(["--smoke"] if smoke else [])], env=env).returncode
+    if smoke:
+        if not result.is_file():
+            raise RuntimeError(f"the smoke run wrote no {result} (exit code {code})")
+        for r in json.loads(result.read_text(encoding="utf-8"))["results"]:
+            typer.echo(f"{'ok  ' if r['ok'] else 'FAIL'} {r['step']:<22} {r['ms']:>6,} ms  {json.dumps(r['detail'], ensure_ascii=False)[:160]}")
+        typer.echo(f"Screenshots: {result.parent}")
+    raise typer.Exit(code)
+
+
 # ---------------------------------------------------------------------------
 # guban store: the shared market-data store (Phase 14). build and verify share these options.
 

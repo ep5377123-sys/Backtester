@@ -93,6 +93,36 @@ def test_var_series_carries_value_forward():
     assert out == [(0.0, None), (2, 0.0), (2, 2), (4, 2), (4, 4)]
 
 
+def test_plots_record_series_values_at_every_bar_and_change_nothing():
+    class Plotted(Strategy):
+        plots = ("fast", "slow_named")
+
+        def on_start(self):
+            self.fast = self.series(0.0)
+            self._slow = self.series(0.0, name="slow_named")
+
+        def on_bar(self):
+            self.fast.value = self.close[0]
+            if self.current_bar % 2 == 0:
+                self._slow.value = self.close[0] * 2
+            if self.current_bar == 2:
+                self.buy()
+
+    bars = make_bars([1, 2, 3, 4, 5], closes=[1, 2, 3, 4, 5])
+    strat = Plotted()
+    res = run_backtest(strat, bars, NQ)
+    assert strat.plot_series() == {"fast": [1, 2, 3, 4, 5], "slow_named": [0.0, 4, 4, 8, 8]}
+    assert res.equity.equals(run_backtest(Script(plan={1: [("buy", {})]}), bars, NQ).equity)  # same orders, same run
+
+    class Missing(Plotted):
+        plots = ("nope",)
+
+    strat = Missing()
+    run_backtest(strat, bars, NQ)
+    with pytest.raises(ValueError, match="plots names 'nope'"):
+        strat.plot_series()
+
+
 def test_series_outside_on_start_is_an_error():
     class Early(Strategy):
         def __init__(self):

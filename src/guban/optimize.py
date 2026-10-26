@@ -17,6 +17,7 @@ keep grid order. Runs below the filter stay in the table unranked.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import itertools
 import math
@@ -350,6 +351,7 @@ def optimize(
     workers: int | None = None,
     confirm: bool = False,
     progress: Callable[[int, int], None] | None = None,
+    window: tuple[int, int] | None = None,
 ) -> OptimizeResult:
     """Backtest every combination of `grid` and rank the runs by `metric`.
 
@@ -359,19 +361,63 @@ def optimize(
     (sent to each worker once). fixed: input overrides held constant across the grid.
     workers: process count (default: CPU cores, capped at the number of combinations); 1 runs in this process.
     confirm: required when the grid has more than MAX_COMBINATIONS combinations.
+    window: score each run on the trading window of bars [lo, hi) only, as its own run (flat at lo, closed at hi:
+    guban.metrics.window_metrics, the walk-forward windows' rule); bars before lo are warm-up.
     """
     job, frames, combos = _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm,
                                  min_trades, workers)  # fmt: skip
+    if window is not None:
+        lo, hi = window
+        n = len(bars) if bars is not None else None
+        if not 0 <= lo < hi or (n is not None and hi > n):
+            raise ValueError(f"window must be bar positions 0 <= lo < hi <= {n if n is not None else 'the bar count'}, got {window!r}")
+        job = dataclasses.replace(job, windows=((int(lo), int(hi)),))
     workers = pool_size(workers, len(combos))
     t0 = time.perf_counter()
     with _pool(job, frames, workers) as run:
         rows = run(_run_one, combos, progress)
+    if window is not None:
+        rows = [r[0] for r in rows]
     seconds = time.perf_counter() - t0
 
     results = pd.concat([pd.DataFrame(combos), pd.DataFrame(rows)], axis=1)
     results.insert(0, "combo", np.arange(1, len(results) + 1))
     results["rank"] = rank_results(results, metric, min_trades)
     return OptimizeResult(grid, results, metric, min_trades, workers, seconds, job.fixed)
+
+
+def window_runs(
+    strategy: type[Strategy] | str | Path,
+    items: list[tuple[dict, int, int]],
+    spec: ContractSpec,
+    costs: Costs = Costs(),
+    *,
+    data: DataSpec | None = None,
+    bars: pd.DataFrame | None = None,
+    sub_bars: pd.DataFrame | None = None,
+    fill_mode: str | None = None,
+    fixed: dict | None = None,
+    class_name: str | None = None,
+    workers: int | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> list[BacktestResult]:
+    """For each (inputs, lo, hi): the trading window [lo, hi) of a run with those inputs (BacktestResult.window), on a
+    process pool, in item order. Data, fixed inputs and workers as optimize()."""
+    file, cls = _strategy_file(strategy, class_name)
+    fixed = dict(fixed or {})
+    for what, names in [("fixed", fixed)] + [("window run", params) for params, _, _ in items]:
+        unknown = set(names) - set(cls.inputs)
+        if unknown:
+            raise ValueError(f"{cls.__name__}: unknown {what} inputs {sorted(unknown)}; known: {sorted(cls.inputs)}")
+        for name, v in names.items():
+            _check_value(what, name, v, cls.inputs[name])
+    if not items:
+        return []
+    if (data is None) == (bars is None):
+        raise ValueError("give either data= or bars=")
+    job = _Job(file, cls.__name__, spec, costs, fill_mode or (data.fill_mode if data is not None else None), fixed, data)
+    with _pool(job, None if data is not None else (bars, sub_bars), pool_size(workers, len(items))) as run:
+        return run(_run_window, list(items), progress)
 
 
 def pool_size(workers: int | None, jobs: int) -> int:
@@ -402,16 +448,19 @@ def _check_counts(min_trades, workers) -> None:
         raise ValueError(f"workers must be a whole number >= 1 (or omitted for all CPU cores), got {workers!r}")
 
 
+def _strategy_file(strategy, class_name) -> tuple[str, type[Strategy]]:
+    """(file the workers import, class) for a Strategy subclass or a strategy file path."""
+    if isinstance(strategy, (str, Path)):
+        return str(strategy), load_strategy_class(strategy, class_name)
+    if strategy.__qualname__ != strategy.__name__:
+        raise ValueError(f"{strategy.__qualname__}: the optimizer re-imports strategies from their file, so define it at a file's top level")
+    return inspect.getfile(strategy), strategy
+
+
 def _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm, min_trades=0, workers=None):
     """Check a grid run's arguments; return (job, frames for the workers or None, combinations)."""
     _check_counts(min_trades, workers)
-    if isinstance(strategy, (str, Path)):
-        file, cls = str(strategy), load_strategy_class(strategy, class_name)
-    else:
-        cls = strategy
-        if cls.__qualname__ != cls.__name__:
-            raise ValueError(f"{cls.__qualname__}: the optimizer re-imports strategies from their file, so define it at a file's top level")
-        file = inspect.getfile(cls)
+    file, cls = _strategy_file(strategy, class_name)
     fixed = dict(fixed or {})
     for what, names in (("grid", grid), ("fixed", fixed)):
         unknown = set(names) - set(cls.inputs)

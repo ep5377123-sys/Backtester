@@ -299,3 +299,31 @@ def test_direct_api_grids_and_counts_are_checked(kwargs, match):
 def test_decimal_values_never_leak():
     g = parse_grid(["stop_usd=1:2:0.5"], Momentum.inputs)
     assert not any(isinstance(v, Decimal) for v in g["stop_usd"])
+
+
+# --- trading window (Guban Studio's in-sample optimization, Phase 19) ------------------------------------------------
+
+
+def test_window_scores_each_combo_as_a_run_on_that_window_only():
+    from guban.metrics import window_metrics
+    from guban.optimize import window_runs
+
+    bars, sub = market(days=4)
+    lo, hi = 78, 234  # day 2 and day 3 of the 5-minute bars
+    grid = {"lookback": [2, 5], "stop_usd": [150.0, 400.0]}
+    opt = optimize(Momentum, grid, NQ, COSTS, bars=bars, sub_bars=sub, workers=2, window=(lo, hi))
+    whole = optimize(Momentum, grid, NQ, COSTS, bars=bars, sub_bars=sub, workers=1)
+    assert not opt.results["net_profit"].equals(whole.results["net_profit"])
+    for i, params in enumerate(combinations(grid)):
+        res = run_backtest(Momentum(**params), bars.iloc[:hi], NQ, COSTS, sub_bars=sub, trade_from=lo, window_ends={hi})
+        want = flatten_metrics(window_metrics(res, bars, lo, hi))
+        for key, _, _, _ in RESULT_METRICS:
+            got = opt.results.at[i, key]
+            assert (math.isnan(got) and math.isnan(want[key])) or got == want[key], (params, key)
+    # window_runs: the same windows as BacktestResults, in item order
+    items = [(combinations(grid)[0], lo, hi), (combinations(grid)[3], hi, len(bars))]
+    runs = window_runs(Momentum, items, NQ, COSTS, bars=bars, sub_bars=sub, workers=2)
+    assert runs[0].net_profit == opt.results.at[0, "net_profit"]
+    assert len(runs[1].equity) == len(bars) - hi and (runs[1].trades["entry_bar"] >= hi).all()
+    with pytest.raises(ValueError, match="window"):
+        optimize(Momentum, grid, NQ, COSTS, bars=bars, sub_bars=sub, workers=1, window=(10, 5))

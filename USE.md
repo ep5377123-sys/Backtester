@@ -138,6 +138,16 @@ uv run guban propfirm --trades reports/vault_break_nq/trades.csv --rules apex_50
 - Reproduce the notebook: `uv run guban propfirm --trades "D:\Multi Charts\Performance Reports\CSV Data\Vault Break MNQ.csv" --rules apex_50k_eod` → 35.8% pass rate.
 - Writes `reports/<trades>_<rules>/propfirm.json`, `sweep.csv`, `degradation.csv`, `daily.csv`, `propfirm.html`.
 
+## 8. gui — Guban Studio, the desktop app
+```
+uv run guban gui            # open the window (first launch: npm install of Electron into gui/node_modules)
+uv run guban gui --smoke    # drive every tab hidden, screenshots + result.json in reports/_gui_smoke/, exit 0/1
+```
+- Tabs: Data → Strategy → Backtest → Optimization (README "Guban Studio"). The Full dataset equals `guban run`; Save
+  results writes the same run folder.
+- From a VS Code terminal it still works: `guban gui` drops the `ELECTRON_RUN_AS_NODE` VS Code sets.
+- The desktop shortcut "Guban Studio" starts `gui\node_modules\electron\dist\electron.exe gui` in the repo folder.
+
 ## Reporting results to the user
 Read the command's stdout summary (trades, net profit, PF, max drawdown). For more figures, read the run's `metrics.json`; it is a file this session created, so re-reading it is allowed.
 Link the HTML report (`reports/<run>/report.html`) and offer `--open`.

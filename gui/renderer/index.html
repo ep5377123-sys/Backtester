@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Guban Studio</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="tabs" id="tabs">
+    <button data-tab="data" class="active">Data</button>
+    <button data-tab="strategy">Strategy</button>
+    <button data-tab="backtest">Backtest</button>
+    <button data-tab="optimization">Optimization</button>
+  </nav>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main>
+    <section id="tab-data" class="tab active">
+      <div class="grid2">
+        <div>
+          <div class="panel">
+            <div class="row"><button id="data-load" class="wide primary">Load</button><button id="data-import" title="Rebuild data/&lt;SYM&gt;/1m.parquet from D:\Market Data">Update from store</button></div>
+            <div class="form">
+              <label for="data-symbol">Symbol</label><select id="data-symbol"></select>
+              <label for="data-tf">Timeframe</label><input id="data-tf" list="data-tf-list"><datalist id="data-tf-list"></datalist>
+              <label for="data-session">Session</label><select id="data-session"></select>
+              <label for="data-tz">Time zone</label><input id="data-tz" list="data-tz-list"><datalist id="data-tz-list"></datalist>
+              <label for="data-start">Start date</label><input id="data-start" type="date">
+              <label for="data-end">End date</label><input id="data-end" type="date">
+              <label for="data-roll">Store roll</label><select id="data-roll"><option value="volume">volume (store roll calendar)</option><option value="expiry">expiry (MC continuous contract)</option></select>
+            </div>
+            <div class="note" id="data-avail"></div>
+            <div class="current">Current data: <span id="data-label">none loaded</span></div>
+          </div>
+          <div class="panel">
+            <h2>In sample / out of sample</h2>
+            <div class="form">
+              <label for="data-fraction">OOS dataset size</label><div class="row tight"><input id="data-fraction" type="number" min="0.05" max="0.95" step="0.05"><button id="data-split">Split</button></div>
+              <label>In sample</label><div class="row tight"><input id="data-is-start" type="date"><span class="muted">→</span><input id="data-is-end" type="date"></div>
+              <label>Out of sample</label><div class="row tight"><input id="data-oos-start" type="date"><span class="muted">→</span><input id="data-oos-end" type="date"><button id="data-swap" title="Swap the in-sample and out-of-sample dates">Swap</button></div>
+              <label for="data-dataset">Current dataset</label><select id="data-dataset"></select>
+            </div>
+            <div class="inline-error hidden" id="data-windows-error"></div>
+            <table class="kv" id="data-windows"></table>
+          </div>
+        </div>
+        <div class="panel"><h2>Close price</h2><img id="data-chart" class="chart" alt="Close price chart"><div class="empty" id="data-chart-empty">Load data to see the chart.</div></div>
+      </div>
+      <div class="grid2">
+        <div class="panel">
+          <h2>Bars</h2>
+          <div class="row"><button id="data-prev">◀</button><span id="data-rows" class="muted">no data</span><button id="data-next">▶</button><span class="spacer"></span><label for="data-goto" class="muted">Go to</label><input id="data-goto" type="date"></div>
+          <div class="table-wrap"><table class="grid" id="data-table"></table></div>
+        </div>
+        <div class="panel">
+          <h2>Data quality report</h2>
+          <table class="kv quality" id="data-quality"></table>
+          <div class="empty" id="data-quality-empty">Load data to see the report.</div>
+        </div>
+      </div>
+    </section>
+    <section id="tab-strategy" class="tab">
+      <div class="split">
+        <div>
+          <div class="panel">
+            <div class="row"><button id="st-load" class="wide">Load</button><button id="st-reload" class="wide">Reload</button><button id="st-apply" class="wide primary">Apply</button></div>
+            <div class="form">
+              <label for="st-file">Strategy file</label><select id="st-file"></select>
+              <label for="st-class">Class</label><input id="st-class" placeholder="only when the file defines several">
+            </div>
+            <div class="current">Current strategy: <span id="st-label" class="mono-ink">none loaded</span></div>
+            <div class="note" id="st-doc"></div>
+          </div>
+          <div class="panel"><h2>Inputs</h2><div class="form" id="st-inputs"><div class="muted">Load a strategy to edit its inputs.</div></div></div>
+          <div class="panel"><h2>Counts</h2><table class="kv" id="st-counts"></table><div class="note" id="st-info">Apply the strategy to the Data tab's current dataset.</div></div>
+        </div>
+        <div>
+          <div class="panel">
+            <div class="row">
+              <label for="st-start" class="muted">Start index</label><input id="st-start" type="number" min="0" step="100" value="0">
+              <label for="st-bars" class="muted">Bars to plot</label><input id="st-bars" type="number" min="20" max="5000" step="100" value="500">
+              <button id="st-prev" title="Previous bars">◀</button><button id="st-next" title="Next bars">▶</button>
+              <span id="st-range" class="muted"></span>
+            </div>
+            <img id="st-chart" class="chart" alt="Price chart with entries and exits"><div class="empty">Apply a strategy to see its trades on the chart.</div>
+          </div>
+          <div class="panel"><h2>Trades <span class="muted" id="st-trade-count"></span></h2><div class="table-wrap"><table class="grid clickable" id="st-trades"></table></div><div class="note">Click a trade to show it on the chart.</div></div>
+        </div>
+      </div>
+    </section>
+    <section id="tab-backtest" class="tab">
+      <div class="split">
+        <div>
+          <div class="panel">
+            <div class="row"><button id="bt-run" class="wide primary">Run</button><button id="bt-save" class="wide">Save results</button><button id="bt-open" class="wide" disabled>Open report</button></div>
+            <div class="form">
+              <label for="bt-capital">Start capital ($)</label><input id="bt-capital" type="number" min="1" step="1000">
+              <label for="bt-commission">Commission ($ RT)</label><input id="bt-commission" type="number" min="0" step="0.01">
+              <label for="bt-slippage">Slippage ($ RT)</label><input id="bt-slippage" type="number" min="0" step="0.01">
+              <label for="bt-fill">Fill mode</label><select id="bt-fill"><option value="magnifier">magnifier (1-minute bars)</option><option value="ohlc">ohlc (bar path rule)</option></select>
+              <label for="bt-sims">Monte Carlo runs</label><input id="bt-sims" type="number" min="0" step="1000">
+              <label for="bt-seed">Monte Carlo seed</label><input id="bt-seed" type="number" step="1">
+              <label for="bt-ddlimit">DD limit ($)</label><input id="bt-ddlimit" type="number" min="0" step="100" placeholder="optional, e.g. 2500">
+              <label for="bt-risk">Risk / contract ($)</label><input id="bt-risk" type="number" min="0" step="10" placeholder="default: each trade's stop">
+              <label for="bt-oos">EV split from</label><input id="bt-oos" type="date" title="Also split EV into in/out of sample: trades exiting from this date are out of sample">
+              <label for="bt-images">Trade images on save</label><input id="bt-images" type="checkbox">
+            </div>
+            <div class="note" id="bt-info">Runs the strategy applied on the Strategy tab (same inputs, same dataset) with these settings.</div>
+          </div>
+          <div class="panel report" id="bt-perf"><h2>Performance</h2><div class="muted">Run the backtest to see its metrics.</div></div>
+        </div>
+        <div>
+          <div class="panel"><h2>Net profit by month</h2><img id="bt-monthly" class="chart" alt="Net profit by month"><div class="empty">Run the backtest to see the charts.</div></div>
+          <div class="panel"><h2>Equity</h2><img id="bt-equity" class="chart" alt="Equity curve"></div>
+          <div class="panel"><h2>Drawdown</h2><img id="bt-drawdown" class="chart" alt="Drawdown"></div>
+          <div class="grid2">
+            <div class="panel"><h2>Daily net P&amp;L</h2><img id="bt-daily" class="chart" alt="Daily net P&amp;L histogram"></div>
+            <div class="panel"><h2>Daily drawdown</h2><img id="bt-dailydd" class="chart" alt="Daily drawdown histogram"></div>
+          </div>
+        </div>
+      </div>
+      <div class="report" id="bt-sections"></div>
+    </section>
+    <section id="tab-optimization" class="tab">
+      <div class="row">
+        <button id="op-run" class="wide primary">Run</button><button id="op-stop" class="wide" disabled>Stop</button><button id="op-save" class="wide" disabled>Save</button>
+      </div>
+      <div class="row hidden" id="op-progress-row"><progress id="op-progress" max="1" value="0"></progress><span id="op-progress-text" class="muted"></span></div>
+      <div class="split">
+        <div>
+          <div class="panel">
+            <h2>Settings</h2>
+            <div class="form">
+              <label for="op-metric">Rank by</label><select id="op-metric"></select>
+              <label for="op-mintrades">Min trades (IS)</label><input id="op-mintrades" type="number" min="0" step="1">
+              <label for="op-topn">Top N to retest</label><input id="op-topn" type="number" min="1" max="1000" step="10">
+              <label for="op-workers">Worker processes</label><input id="op-workers" type="number" min="1" step="1">
+            </div>
+            <table class="kv" id="op-windows"></table>
+            <div class="note">In-sample and out-of-sample dates come from the Data tab; costs and fill mode from the Backtest tab; inputs not in the grid stay at the Strategy tab's values.</div>
+          </div>
+          <div class="panel">
+            <h2>Grid <span class="muted" id="op-count"></span></h2>
+            <div id="op-grid"><div class="muted">Load a strategy on the Strategy tab.</div></div>
+            <div class="inline-error hidden" id="op-grid-error"></div>
+            <div class="note">Values: start:stop:step (e.g. 0.4:1.0:0.1), a list (1,2,3) or one value.</div>
+          </div>
+          <div class="panel"><h2>In sample vs out of sample</h2><img id="op-scatter" class="chart" alt="In-sample vs out-of-sample net profit"></div>
+        </div>
+        <div>
+          <div class="panel"><h2>Equity: top combinations</h2><img id="op-equity" class="chart" alt="Equity curves in and out of sample"><div class="empty">Run the optimization to see the in-sample winners out of sample.</div></div>
+          <div class="panel"><h2>Sharpe and drawdown</h2><img id="op-hists" class="chart" alt="Sharpe and max drawdown histograms"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Top combinations <span class="muted" id="op-summary"></span></h2>
+        <div class="row"><button id="op-use" disabled>Use selected inputs on the Strategy tab</button><span class="muted" id="op-selected"></span></div>
+        <div class="table-wrap"><table class="grid clickable" id="op-table"></table></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="status"><span id="worker-status">Starting Python worker…</span><span id="last-action"></span></footer>
+
+  <script src="app.js"></script>
+  <script src="data.js"></script>
+  <script src="strategy.js"></script>
+  <script src="backtest.js"></script>
+  <script src="optimize.js"></script>
+  <script src="smoke.js"></script>
+</body>
+</html>

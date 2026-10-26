@@ -19,6 +19,8 @@
   so market_position shows it from the next bar on.
 - set_stop_loss / set_profit_target (MC SetStopLoss / SetProfitTarget, per position, in USD) stay in force
   until changed or cleared with None, and apply to every position from its entry fill onward.
+- `plots` names self.series() variables (by attribute or by name=) that Guban Studio draws on its price chart;
+  plot_series() returns their per-bar values after a run. It changes nothing in the backtest.
 - Plain instance attributes play the role of intrabarpersist variables; self.series() gives a variable
   with [n] lookback.
 - An instance runs one backtest: create a new one for each run (a second run_backtest with the same
@@ -53,6 +55,7 @@ class StrategyError(RuntimeError):
 class Strategy:
     inputs: ClassVar[dict[str, Any]] = {}
     extra_columns: ClassVar[tuple[str, ...]] = ()
+    plots: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, **overrides: Any) -> None:
         unknown = set(overrides) - set(self.inputs)
@@ -69,6 +72,20 @@ class Strategy:
 
     def on_bar(self) -> None:
         raise NotImplementedError
+
+    def plot_series(self) -> dict[str, list]:
+        """After a run: each name in `plots` -> its value at every bar. A name is an attribute holding a
+        self.series() variable, or the name= given to self.series()."""
+        by_name = {v.name: v for v in self._vars}
+        out = {}
+        for name in self.plots:
+            v = getattr(self, name, None)
+            v = v if isinstance(v, VarSeries) else by_name.get(name)
+            if v is None:
+                raise ValueError(f"{type(self).__name__}.plots names {name!r}, but no self.series() variable has that "
+                                 f"attribute or name= (create it in on_start)")  # fmt: skip
+            out[name] = list(v._values)
+        return out
 
     # --- wiring (called by the backtest) ------------------------------------------------------------
     def _bind(self, clock: Clock, columns: dict[str, list], broker: Broker) -> None:

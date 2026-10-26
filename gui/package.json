@@ -1,0 +1,14 @@
+{
+  "name": "guban-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Guban Studio: desktop GUI for the guban backtester",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0"
+  }
+}

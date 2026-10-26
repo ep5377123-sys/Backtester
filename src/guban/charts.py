@@ -11,6 +11,7 @@ images of the price viewer are files next to the report (save_png, guban.report)
 from __future__ import annotations
 
 import base64
+import contextlib
 import html
 import io
 from pathlib import Path
@@ -52,6 +53,42 @@ _RC = {
     "legend.fontsize": 8,
     "axes.unicode_minus": True,
 }
+
+
+DARK = {
+    "page": "#0b0f17", "surface": "#111723", "ink": "#dde2ea", "ink2": "#aab2c0", "muted": "#8b93a3",
+    "grid": "#222a3a", "axis": "#3a4458", "s1": "#4c9df0", "up": "#1fc7a5", "down": "#ef5b5b",
+    "good": "#2fbf71", "bad": "#ef5b5b", "s2": "#e8a33d", "s3": "#a77bf3", "s4": "#2fa59a",
+}  # fmt: skip
+LIGHT = dict(COLORS)
+_THEME = ["light"]
+
+
+def set_theme(name: str) -> str:
+    """Switch this process's chart colours: "light" (the reports) or "dark" (Guban Studio's worker); returns the
+    previous theme. COLORS, SERIES and the style change in place, so modules that imported them follow."""
+    colors = {"light": LIGHT, "dark": DARK}.get(name)
+    if colors is None:
+        raise ValueError(f"chart theme must be 'light' or 'dark', got {name!r}")
+    COLORS.update(colors)
+    SERIES[:] = [COLORS["s1"], COLORS["s2"], COLORS["s3"], COLORS["s4"], COLORS["bad"], COLORS["muted"]]
+    _RC.update({
+        "text.color": COLORS["ink2"], "axes.facecolor": COLORS["surface"], "axes.edgecolor": COLORS["axis"],
+        "axes.labelcolor": COLORS["ink2"], "axes.titlecolor": COLORS["ink"], "grid.color": COLORS["grid"],
+        "xtick.color": COLORS["ink2"], "ytick.color": COLORS["ink2"], "figure.facecolor": COLORS["surface"],
+    })  # fmt: skip
+    previous, _THEME[0] = _THEME[0], name
+    return previous
+
+
+@contextlib.contextmanager
+def theme(name: str):
+    """Draw in `name` for the block (e.g. a light report.html written from the dark GUI worker)."""
+    previous = set_theme(name)
+    try:
+        yield
+    finally:
+        set_theme(previous)
 
 
 def figure(width: float = 9.0, height: float = 3.2, rows: int = 1, cols: int = 1, **kw):

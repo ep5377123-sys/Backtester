@@ -281,6 +281,9 @@ class VaultBreak(Strategy):
 - [x] Phase 18: Bubble ORB — big-trade bubbles from ticks as a bar column, `Strategy.extra_columns`, `strategies/orb_bubbles.py` (done 2026-10-23, see "Phase 18 results")
       Done when: `big_buy_body` is built from store ticks (tick_ok sessions only) and cached; run/optimize/wfo add declared
       extra columns; every Bubble ORB trade's entry bar meets every rule; full `pytest` green.
+- [x] Phase 19: Guban Studio — Electron desktop GUI with Data, Strategy, Backtest, Optimization tabs (done 2026-10-26, see "Phase 19 plan" and its results)
+      Done when: `uv run guban gui` opens the app; `guban gui --smoke` drives all four tabs on NQ and exits 0; the GUI's
+      Backtest numbers equal `guban run`'s on the same window; full `pytest` green (incl. test_ledger, test_report).
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1206,3 +1209,58 @@ top wick and holds a big buy bubble inside its body; stop 1 tick under that cand
   −26,522.50 (45.9 R); longs PF 1.00, shorts PF 1.02; 2024 +9,144, 2025 +5,888, 2026 −13,515. Evaluation 0/4 both ways.
 - **Bubbles off** (`min_bubble=-1`, long-only): 392 trades, PF 1.01, net 1,360.50 vs 3,576.75 with > 40 lots; 256
   trades are the same bar either way, so the filter changes ~30% of entries and the difference is within noise.
+
+## Phase 19 plan: Guban Studio, an Electron desktop GUI (approved 2026-10-26)
+Interview (dry-run, 6 questions): Q1 desktop shell = **Electron** on the user's PC (user); Q2 v1 = **Data, Strategy,
+Backtest, Optimization** tabs modeled on the user's SharpeEdge screenshots, other tabs (Trade, Cluster, Sensitivity,
+Walk Forward, Monte Carlo, Portfolio) parked until asked (user); Q3 charts = **matplotlib images like the reports**, no
+JS chart library (user); Q4 IS/OOS = **own start/end dates plus a fraction shortcut** (user); Q5 Strategy tab = trade
+table + candle image with entry/exit markers, indicator lines only via an opt-in `plots` attribute (user); Q6 approved.
+
+- **Shape:** `gui/` (Electron: main.js, preload.js, renderer/ plain HTML/CSS/JS, dark theme) + `src/guban/gui/`
+  (worker.py JSON-lines loop over stdio, handlers, views). Electron spawns `uv run python -m guban.gui.worker` in the
+  repo root; requests `{"id","method","params"}` → `{"id","ok","result"|"error"}`, progress as `{"event":...}` lines;
+  images are PNG data URIs (`charts.to_data_uri`). The worker keeps bars / strategy result / backtest result in
+  memory. Optimization runs in a second worker process so Stop can kill it. Renderer: contextIsolation, no node
+  integration, preload exposes `guban.call()` / `guban.onEvent()`. Launch: `uv run guban gui` (`--smoke` = drive the
+  tabs headless, save screenshots to `reports/_gui_smoke/`, exit 0/1).
+- **Windows:** bars load from the data start to the dataset's end; IS/OOS/Full runs use `run_backtest(trade_from=,
+  flatten_at_end=True)`, so warm-up always starts at the first bar and an OOS period before the IS period works.
+- **Requirements:** R1 launch + worker-crash banner/Restart. R2 Data: symbol (contracts.toml), tf (15m), session,
+  tz (America/New_York), start/end → "Current data" label, paged bar table, close-price image, quality report
+  (quality.csv flags, data_gaps, NaN/dup/order/OHLC checks); imports from the store if 1m.parquet is missing. R3 IS and
+  OOS date ranges inside [start, end], no overlap; "OOS size" f fills OOS = last f of the span; Swap; dataset selector
+  In sample / Out of sample / Full. R4 Strategy: list strategies/*.py, typed input fields, Reload, Apply (default
+  costs) → entry/exit counts, trade table, candle image (Start index, Bars to plot = 500) with ▲/▼ entries, ✕ exits,
+  `plots` lines; row click jumps the chart. R5 `plots = ("name", ...)` records `self.series(name=...)` per bar.
+  R6 Backtest: capital, commission, slippage (blank = contract default), fill mode, MC sims/seed/DD limit/risk → metrics
+  + evaluation table, equity, drawdown, monthly bars, daily-return and daily-drawdown histograms (mean/median/std/skew),
+  resample/reorder/day Monte Carlo, EV; Save writes the same reports/<run>/ as `guban run`. R7 Optimization: grid per
+  input, metric, min trades (30), top N (100), workers → optimize on IS, rerun top N on OOS, tables + IS-blue/OOS-purple
+  equity image + Sharpe/max-DD histograms; >5,000 combos confirm; Stop ≤ 5 s keeps state; Save → <run>_opt/ + oos.csv.
+  R8 busy/empty/error states (errors as `@_friendly` prints them).
+- **Assumptions:** A1 stdio carries multi-MB PNGs fast enough; A2 current stable Electron runs on Win 11 + Node 24;
+  A3 report.py charts can be lifted into functions without changing report.html; A4 recording `plots` series is cheap;
+  A5 `optimize()` can take a trading window like wfo; A6 "bootstrap + permutation" = existing resample + reorder;
+  A7 Data defaults 15m / eth / America/New_York; A8 Strategy Apply uses default costs, Backtest Run reruns with its own.
+- **Phases:** 1 walking skeleton (window ↔ worker ↔ PNG, `guban gui`, smoke); 2 Data tab; 3 Strategy tab + `plots`;
+  4 Backtest tab; 5 Optimization tab; 6 states, polish, desktop shortcut, docs, commit.
+
+- **Phase 19 results (2026-10-26); complete.** Electron 45.0.0 (package-lock.json) on Node v24.15.0; `uv run guban gui`
+  (+ `--smoke`), desktop shortcut "Guban Studio" (electron.exe gui, no console). Code: `gui/` (main.js two workers
+  "main" + "opt", preload.js, renderer app/data/strategy/backtest/optimize/smoke .js), `src/guban/gui/` (worker.py,
+  handlers.py State, tab_data / tab_strategy / tab_backtest / tab_optimize). Library additions: `Strategy.plots` +
+  `plot_series()`, `optimize(window=)`, `optimize.window_runs()`, `charts.set_theme()` / `theme()` (dark worker, light
+  report files). A3 held without a refactor (report.py's charts were already per-function).
+  - A1: a 2.96 MB PNG crosses stdio in 53–68 ms. A2: Electron 45 downloads its binary on first `require('electron')`;
+    VS Code terminals set `ELECTRON_RUN_AS_NODE=1` (Electron would start as Node), so `guban gui` drops it.
+  - Parity: NQ 15m eth 2019-01-01 → 2026-10-07 Vault Break, Full dataset = `guban run` exactly (1,323 trades, net
+    125,905.00); Backtest-tab Save metrics.json equals the CLI's in every `all` / `account` figure, the Monte Carlo
+    summary and the evaluation. In-sample window (2019-01-01 → 2024-06-03) 820 trades, net 98,475.00, the same in the
+    Strategy tab, the Backtest tab and the optimizer's in-sample score for the default inputs.
+  - Timings (NQ 15m eth, 182k bars): load 0.6 s; Apply 3–4 s; Backtest run 5 s (2,000 MC runs) / 8 s (10,000);
+    6-combination grid + top-4 retest 28 s on 6 processes; Stop ends the opt worker in 0.4 s, main worker keeps its data.
+  - Smoke: 20 steps (bridge, Data load / overlap error / swap / go-to, Strategy load / apply / trade click / bad input,
+    Backtest run / sections / save, Optimization grid / stop / run / use inputs / save, worker crash + Restart) pass,
+    also through the shortcut's command. Full suite 417 passed (111 s).
+  - Parked (user): Trade, Cluster, Sensitivity, Walk Forward, Monte Carlo, Portfolio tabs; a Windows installer.

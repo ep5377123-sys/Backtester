@@ -10,6 +10,7 @@ The Vault Break port matches MC on 99.3% of trades with −0.23% net-profit diff
 - [Install](#install)
 - [The data you need](#the-data-you-need)
 - [Walkthrough: import → run → compare → optimize → wfo → propfirm](#walkthrough)
+- [Guban Studio: the desktop GUI](#guban-studio-the-desktop-gui)
 - [Writing a strategy](#writing-a-strategy)
 - [Outputs, run folders and exit codes](#outputs-run-folders-and-exit-codes)
 - [Configuration](#configuration)
@@ -207,6 +208,35 @@ uv run guban propfirm --trades reports/vault_break_mnq/trades.csv --rules apex_5
   are added **on top of** the trade file's already-net profit, as in the notebook. Pass `--commission 0 --slippage 0`
   to avoid charging costs twice. The report lists the notebook's quirks under Notes.
 
+## Guban Studio: the desktop GUI
+
+`uv run guban gui` opens Guban Studio, an Electron window over the same engine (needs [Node.js](https://nodejs.org); the
+first launch installs Electron into `gui/node_modules`). A Python worker does all the work; every chart is a matplotlib
+image in a dark version of the reports' style.
+
+- **Data:** symbol, timeframe, session, time zone and dates → Load (imports the symbol from the store first if needed;
+  *Update from store* re-imports it). In-sample and out-of-sample windows are their own date ranges; *OOS dataset size*
+  fills them as the last fraction of the range, *Swap* puts the out-of-sample window first. *Current dataset* (In sample
+  / Out of sample / Full) is what the Strategy and Backtest tabs run on. Shows a paged bar table, the close price with
+  the windows shaded, and a data-quality report (gaps, rolls, OHLC checks, the store's tick / thin-session flags).
+- **Strategy:** pick a file from `strategies/`, Load / Reload (re-imports it after you edit it), edit the inputs, Apply.
+  Shows entry / exit counts, every trade, and a candlestick chart (Start index, Bars to plot; click a trade to jump to
+  it) with entries ▲▼, exits ✕ and the strategy's `plots` lines. Apply uses the contract's default costs and 1-minute
+  magnifier fills.
+- **Backtest:** reruns the applied strategy with this tab's capital, costs, fill mode and Monte Carlo settings and shows
+  what `guban run` reports: metrics, evaluation, equity, drawdown, the resample / reorder / whole-day Monte Carlo with
+  EV and horizons, net by month, plus daily P&L and daily drawdown histograms. *Save results* writes the same run folder
+  as `guban run` (`trades.csv`, `metrics.json`, `report.html`; `_is` / `_oos` suffix for a window).
+- **Optimization:** tick inputs and give their values (`0.4:1.0:0.1`, `1,2,3`); the grid runs on the in-sample window
+  only (each combination scored as its own run on that window), then the top N are rerun out of sample: equity curves
+  (in sample blue, out of sample purple), Sharpe and drawdown histograms, in- vs out-of-sample net, and a table. *Stop*
+  ends the run at once; *Use selected inputs* copies a row's inputs to the Strategy tab. *Save* writes
+  `reports/<strategy>_<sym>_<tf>_<session>_opt_is_oos/` (`results.csv`, `oos.csv`, `optimize.json`).
+
+Windows match the engine's trading windows: warm-up from the first loaded bar, flat at the window's start, a position
+still open at its end closed there ("Window End"). The Full dataset is exactly `guban run`. `uv run guban gui --smoke`
+drives every tab in a hidden window, saves a screenshot per step to `reports/_gui_smoke/` and exits 0 when all pass.
+
 ## Writing a strategy
 
 A strategy is a Python class in its own file. It mirrors PowerLanguage semantics.
@@ -270,6 +300,8 @@ uv run guban run strategies/opening_range.py --symbol NQ --tf 5m --session rth -
 - **Rules for `optimize` / `wfo`:** define the class at the top level of its file, because worker processes re-import
   it. Never look at future bars. `--set` and `--grid` values take the type of the input's default (`true`/`false`
   for a bool, a finite number for a number, text for a string).
+- **Plots (Guban Studio):** `plots = ("ema_fast", ...)` names `self.series()` variables (by attribute, or by the
+  `name=` given to `self.series`) that the Strategy tab draws on its price chart. It changes nothing in the backtest.
 - **Errors:** if the strategy's `__init__`, `on_start` or `on_bar` raises, the run stops, nothing is written, and
   guban prints where it failed (for `on_bar`: the bar, its timestamp and the position) and the failing line of your file.
 

@@ -52,6 +52,13 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - MC costs: `Costs(commission, slippage)` USD per contract per round trip; slippage is charged half per market/stop fill, none on limit fills (MC behavior).
 - CLI conventions (`guban/cli.py`, Phase 10): `run`/`optimize`/`wfo` share module-level option objects (`SYMBOL`, `TZ`, `FILL_MODE`, ... — add new shared flags there, not per command; `tests/test_cli.py` checks they stay identical). `--out` is always a folder; default folders come from `run_dir()`. Commands are wrapped in `@_friendly`: expected failures (KeyError/ValueError/OSError/RuntimeError incl. `StrategyError`) print `Error: ...` (+ the strategy's own frames, also from worker processes) and exit 2; `compare` FAIL exits 1; `GUBAN_DEBUG=1` re-raises. Library code should raise those types with a message that names the fix. User docs: README.md.
 
+- Guban Studio (Phase 19): `guban gui` opens the Electron app in `gui/` (main.js, preload.js, renderer/*.js, plain JS);
+  all work happens in a Python worker, `guban.gui.worker` (JSON lines on stdio; handlers in `guban/gui/tab_*.py`, state
+  in `handlers.State`), plus a second "opt" worker for optimizations that Stop kills. Charts are matplotlib PNGs
+  (`charts.set_theme("dark")` in the worker; `charts.theme("light")` when it writes report files). Windows = the
+  engine's trading windows (`run_backtest(..., trade_from=lo, window_ends=(hi,)).window(lo, hi)`; `optimize(window=)`,
+  `optimize.window_runs`). `Strategy.plots` names series the Strategy tab draws. Verify GUI changes with
+  `uv run guban gui --smoke` (screenshots in `reports/_gui_smoke/`) and `tests/test_gui_worker.py`.
 - Statistical studies (Phase 13) run outside the engine and may look ahead: reusable core in `guban/research/` (`days`: contract
   + RTH window per trading day from the store; `profile`: POC/value area from trades or 1-min bars; `stats`: base vs conditional
   rate, exact one-sided binomial, per-year gaps, `verdict`; `report`: study HTML); each study is a script in `research/`
