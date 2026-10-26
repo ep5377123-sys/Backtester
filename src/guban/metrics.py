@@ -14,6 +14,8 @@ Drawdowns (always <= 0):
   |intraday max drawdown| (MC's definition).
 Sharpe (daily): mean / standard deviation (ddof 1) of the daily change in equity at each session's last bar,
 times sqrt(252), with no risk-free rate. Every session in the data counts, traded or not.
+Sortino (daily): the same mean over the downside deviation (root mean square of the losing days, target 0, every
+session counted), times sqrt(252).
 """
 
 from __future__ import annotations
@@ -56,6 +58,7 @@ ACCOUNT_STATS = [
     ("max_drawdown_close_to_close_time", "  reached at", "time"),
     ("return_on_account", "Return on account", "pct"),
     ("sharpe_daily", "Sharpe ratio (daily, annualized)", "ratio"),
+    ("sortino_daily", "Sortino ratio (daily, annualized)", "ratio"),
     ("trading_days", "Trading days", "int"),
     ("open_position_pnl", "Open position P/L", "usd"),
 ]
@@ -136,6 +139,11 @@ def daily_equity(equity: pd.Series, session_dates=None) -> pd.Series:
     return equity.groupby(session_keys(equity.index, session_dates)).last()
 
 
+def downside_deviation(pnl: np.ndarray) -> float:
+    """Root mean square of the losses (gains count as 0) over every period: the Sortino denominator, target 0."""
+    return float(np.sqrt(np.mean(np.minimum(pnl, 0.0) ** 2))) if len(pnl) else 0.0
+
+
 def compute_metrics(
     trades: pd.DataFrame,
     equity: pd.Series,
@@ -160,6 +168,7 @@ def compute_metrics(
     daily = daily_equity(equity, session_dates)
     pnl = daily.diff().fillna(daily.iloc[0]).to_numpy(float) if len(daily) else np.array([])
     sd = float(pnl.std(ddof=1)) if len(pnl) > 1 else 0.0
+    down = downside_deviation(pnl)
     net = out["all"]["net_profit"]
     out["account"] = {
         "max_drawdown_intraday": max_dd,
@@ -168,6 +177,7 @@ def compute_metrics(
         "max_drawdown_close_to_close_time": trades["exit_time"].iat[k - 1] if ctc[k] < 0 else None,
         "return_on_account": net / -max_dd if max_dd < 0 else None,
         "sharpe_daily": float(pnl.mean() / sd * math.sqrt(252)) if sd > 0 else None,
+        "sortino_daily": float(pnl.mean() / down * math.sqrt(252)) if down > 0 else None,
         "trading_days": int(len(daily)),
         "open_position_pnl": float(open_position_pnl),
     }

@@ -278,6 +278,9 @@ class VaultBreak(Strategy):
       Done when: every trade has risk_usd / reward_usd / planned_rr / r_multiple from the stop and target in force at
       entry; the Monte Carlo R uses them; MNQ parity trades/net unchanged; the 14/6/6 rolling wfo from 2021-10 is run and
       reported; full `pytest` green.
+- [x] Phase 18: Bubble ORB — big-trade bubbles from ticks as a bar column, `Strategy.extra_columns`, `strategies/orb_bubbles.py` (done 2026-10-23, see "Phase 18 results")
+      Done when: `big_buy_body` is built from store ticks (tick_ok sessions only) and cached; run/optimize/wfo add declared
+      extra columns; every Bubble ORB trade's entry bar meets every rule; full `pytest` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1172,3 +1175,34 @@ amount risked to the stop; Q1 walk-forward = rolling, 70% in-sample / 30% out-of
   average R +0.055, WFE 50% (IS 12,806/yr, OOS 6,387/yr); one losing OOS window (#4, 2024-06 → 2024-11, −4,916.50);
   noise_mult 0.4–0.7 in every window, vwap_exit_bars 1 in 7 of 8. Largest OOS loss −964.70 (≈ −1.9R) against a
   $500 stop: a fill past the stop. Output: `reports/vault_break_mnq_wfo_70_30/`. Full suite 377 passed (93 s).
+
+## Phase 18 results (2026-10-23)
+
+Plan approved 2026-10-23 (dry-run interview, 6 questions): 15-minute ORB (09:30–09:45 ET), longs only, entry at the
+close of the first 1-minute candle (09:46–11:00) that closes above the ORB high, is green, has a body bigger than its
+top wick and holds a big buy bubble inside its body; stop 1 tick under that candle's low, 1:1 target, time exit 15:55,
+1 trade per day.
+
+- **Bubbles** (`guban/data/bigtrades.py`, user rules): a bubble = buy-aggressor tick records (`side` +1) sharing one
+  millisecond, merged (size summed, price size-weighted); "big" = more than 40 NQ contracts (input `min_bubble`). Each
+  bubble belongs to the 1-minute bar labeled floor(t) + 1 min. `big_buy_body` per bar = largest buy bubble with
+  min(open, close) <= price <= max(open, close); 0 without one; NaN when the bar's contract session is not `tick_ok`.
+  Cache `data/NQ/big_buys.parquet` (bubbles >= 10 lots, fingerprint per tick file): first build 392 s for
+  2024-02 → 2026-10, then ~12 s; only new sessions are read later.
+- **Engine:** `Strategy.extra_columns` (bound as float series, `run_backtest` raises when one is missing);
+  `guban.data.features.add_columns` builds them, `DataSpec.extra_columns` carries them into run/optimize/wfo workers.
+  `Strategy.tick_size` added (MC MinMove / PriceScale).
+- **Coverage:** 661 of 694 trading dates (2024-02-01 → 2026-10-07) have usable ticks; 33 skipped.
+- **Run** (`--tf 1m --session eth --tz America/New_York --data-from 2024-02-01 --commission 2.25 --slippage 5`):
+  367 trades, net 3,576.75, PF 1.04, max DD −17,908 (32.2 R; 1 R = $512 average stop), 51% wins, EV +0.003 R
+  (95% CI −0.10 to +0.14 R), P(net <= 0) 37.9%. Every trade ends at its stop (180) or target (187). By year: 2024
+  PF 1.02, 2025 0.90, 2026 1.19. Evaluation 0/4 as run, 1/4 at equal risk: no edge at these settings.
+- **Ledger check:** all 367 entry bars re-checked against the rules (ORB high, green, body > top wick, bubble > 40,
+  stop = low − 1 tick, 09:46–11:00): 0 failures; at most 1 trade per day; longs only.
+- **Shorts + 60 lots (user, 2026-10-23):** sell bubbles (`side` −1) added as `big_sell_body` (cache v2,
+  `data/NQ/big_trades.parquet`, rebuild 765 s); the short mirrors the long (close below the ORB low, red, body >
+  bottom wick, sell bubble in the body, stop 1 tick over the high, 1:1); one trade per day across both sides; defaults
+  now `allow_shorts=True`, `min_bubble=60`. Run: 581 trades (302 long / 279 short), net 1,515.25, PF 1.01, max DD
+  −26,522.50 (45.9 R); longs PF 1.00, shorts PF 1.02; 2024 +9,144, 2025 +5,888, 2026 −13,515. Evaluation 0/4 both ways.
+- **Bubbles off** (`min_bubble=-1`, long-only): 392 trades, PF 1.01, net 1,360.50 vs 3,576.75 with > 40 lots; 256
+  trades are the same bar either way, so the filter changes ~30% of entries and the difference is within noise.

@@ -279,6 +279,16 @@ def test_run_has_a_trade_monte_carlo_by_default(workdir):
     assert mc["ev"]["groups"]["all"]["trades"] == mc["trades"]
 
 
+def test_run_has_an_evaluation(workdir):
+    res, m, page = _run_json(workdir)
+    ev = m["evaluation"]
+    assert [c["key"] for c in ev["criteria"]] == ["sharpe", "profit_factor", "max_dd_r", "sortino"]
+    assert ev["as_run"]["sharpe"] == m["account"]["sharpe_daily"] and ev["as_run"]["sortino"] == m["account"]["sortino_daily"]
+    assert sum(g["trades"] for g in ev["by_year"]) == m["all"]["total_trades"]
+    assert "  evaluation: as run " in res.output
+    assert "<section id='evaluation'>" in page
+
+
 def test_run_passes_the_ev_flags_to_the_monte_carlo(workdir):
     res, m, _ = _run_json(workdir, "--mc-risk", "50", "--mc-oos-from", "2024-01-02 11:00")
     ev = m["monte_carlo"]["ev"]

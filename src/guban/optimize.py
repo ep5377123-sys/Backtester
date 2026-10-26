@@ -168,6 +168,7 @@ class DataSpec:
     fill_mode: str = "magnifier"
     data_dir: str = "data"
     data_from: str | None = None  # drop bars before this date (chart time zone): the warm-up starts there
+    extra_columns: tuple[str, ...] = ()  # Strategy.extra_columns, added to the strategy bars (guban.data.features)
 
     def load(self) -> tuple[pd.DataFrame, pd.DataFrame | None]:
         from guban.data.resample import load_bars, splice_history
@@ -185,6 +186,10 @@ class DataSpec:
                 raise ValueError(f"--data-from {self.data_from} is after the last bar ({bars.index[-1] if len(bars) else 'no bars'})")
             bars = bars[bars.index >= start]
             sub = sub[sub.index >= start] if sub is not None else None
+        if self.extra_columns:
+            from guban.data.features import add_columns
+
+            bars = add_columns(bars, tuple(self.extra_columns), self.symbol, self.tf, d)
         return bars, sub
 
 

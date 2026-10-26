@@ -615,6 +615,13 @@ def run_backtest(
         "contract": bars["contract"].astype(str).tolist() if "contract" in bars.columns else [None] * n,
         "session_close": _session_close(bars, idx),
     }
+    for name in strategy.extra_columns:
+        if name in columns:
+            raise ValueError(f"{type(strategy).__name__}.extra_columns: {name!r} is a built-in bar series; drop it from extra_columns")
+        if name not in bars.columns:
+            raise ValueError(f"{type(strategy).__name__} reads bar column {name!r} (extra_columns), but the bars have none; "
+                             f"add it with guban.data.features.add_columns (guban run/optimize/wfo do)")  # fmt: skip
+        columns[name] = pd.to_numeric(bars[name]).to_numpy(float).tolist()
 
     def ohlc_path(i: int) -> Path_:
         return [(opens[i], highs[i], lows[i], closes[i])]

@@ -9,6 +9,9 @@
   session is scheduled to close, a pd.Timestamp in chart time: earlier on the exchange's early-close days from
   config/calendar.toml, which are published in advance; None when the bars have no session_close column).
   All support [n] lookback.
+- `extra_columns` names further bar columns the strategy reads (e.g. "big_buy_body"), each bound as a series of
+  floats. `guban run`/`optimize`/`wfo` add them to the bars (guban.data.features); run_backtest raises when a
+  declared column is missing from the bars.
 - buy / sell / sell_short / buy_to_cover place orders for the NEXT bar: at="market" (the next bar's open),
   or at="stop" / at="limit" with a price (filled intrabar; see guban.engine.backtest). An order lives for
   one bar only; re-issue it on every bar you want it active. at="close" is MC's `this bar on close`: it fills
@@ -49,6 +52,7 @@ class StrategyError(RuntimeError):
 
 class Strategy:
     inputs: ClassVar[dict[str, Any]] = {}
+    extra_columns: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, **overrides: Any) -> None:
         unknown = set(overrides) - set(self.inputs)
@@ -155,6 +159,11 @@ class Strategy:
     def big_point_value(self) -> float:
         """USD per point per contract of the traded contract (MC BigPointValue)."""
         return self._broker.spec.point_value
+
+    @property
+    def tick_size(self) -> float:
+        """Minimum price move of the traded contract (MC MinMove / PriceScale)."""
+        return self._broker.spec.tick_size
 
     @property
     def current_bar(self) -> int:

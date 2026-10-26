@@ -39,6 +39,7 @@ def write_report(
     monte_carlo=None,
     trade_charts: bool = True,
     workers: int | None = None,
+    evaluation: dict | None = None,
 ) -> Path:
     """Write report.html for a BacktestResult run on `bars` (the frame passed to run_backtest), and with
     `trade_charts` one image per trade in trades/ next to it (on `workers` processes, guban.trade_charts).
@@ -48,6 +49,7 @@ def write_report(
     sections: extra HTML sections placed after the header. bands: [{"x0", "x1", "xm": "YYYY-MM-DD", "label"}]
     periods marked on the equity and drawdown charts (every other one shaded; x1 exclusive).
     monte_carlo: a guban.montecarlo.MonteCarloResult (a section after the drawdown chart), {"skipped": reason}, or None.
+    evaluation: guban.evaluation.evaluate's result (a section after the summary tiles), or None.
     """
     from guban.trade_charts import FOLDER, write_trade_charts
 
@@ -77,6 +79,7 @@ def write_report(
         _header(meta),
         *(sections or []),
         _tiles(metrics),
+        _evaluation_html(evaluation),
         f"<section><h2>Equity</h2><p class='cap'>Closed net profit plus open profit at each session's last bar, USD.{band_cap}</p>"
         + (img_tag(eq_png, "Equity curve", id="equity") if eq_png else "<p class='muted'>No equity data.</p>") + "</section>",
         "<section><h2>Drawdown</h2><p class='cap'>Worst intraday drawdown each session, from the running equity peak (tracked along the intrabar path), USD.</p>"
@@ -165,7 +168,7 @@ def _equity_pngs(daily: pd.Series, daily_dd: pd.Series, bands: list[dict]) -> tu
 def _mc_band_png(m, unit: str) -> str:
     from matplotlib.collections import LineCollection
 
-    fig, ax = figure(4.4, 2.8)  # shown ~1/3 of the page wide: a small figure keeps its text readable
+    fig, ax = figure(9.0, 3.6)  # one method per row: the band chart spans the page
     x, b = m.x, m.bands
     ax.fill_between(x, b[0], b[4], color=COLORS["s1"], alpha=0.14, lw=0, label="5th–95th")
     ax.fill_between(x, b[1], b[3], color=COLORS["s1"], alpha=0.28, lw=0, label="25th–75th")
@@ -182,7 +185,7 @@ def _mc_band_png(m, unit: str) -> str:
 
 @styled
 def _hist_png(values: np.ndarray, color: str, backtest: float, limit: float | None = None) -> str:
-    fig, ax = figure(4.4, 1.9)
+    fig, ax = figure(4.6, 2.6)  # two per row under the band chart
     ax.hist(values, bins=MC_BINS, color=color, alpha=0.85)
     tx = ax.get_xaxis_transform()
     ax.axvline(backtest, color=COLORS["ink"], ls="--", lw=1.2)
@@ -270,6 +273,62 @@ def _pct_head(percentiles) -> list[str]:
     return [f"{'Median' if p == 50 else f'{p}th'}" for p in percentiles]
 
 
+def _evaluation_html(ev) -> str:
+    """The Evaluation section (guban.evaluation): the user's criteria as run and at equal risk, and the breakdowns."""
+    if not ev:
+        return ""
+    ratio = lambda v: fmt_value(v, "ratio")  # noqa: E731
+    rfmt = lambda v: "n/a" if v is None else f"{v:,.1f} R".replace("-", "−")  # noqa: E731
+    eq = ev["equal_risk"]
+
+    def cell(v: dict | None, key: str) -> str:
+        if v is None:
+            return "<span class='muted'>n/a</span>"
+        val = rfmt(v[key]) if key == "max_dd_r" else ratio(v[key])
+        ok = v["pass"][key]
+        badge = "" if ok is None else f" <span class='{'ok' if ok else 'no'}'>{'pass' if ok else 'fail'}</span>"
+        return val + badge
+
+    rows = [[html.escape(c["label"]), f"{'&gt;' if c['op'] == '>' else '≤'} {c['threshold']:g}" + (" R" if c["key"] == "max_dd_r" else ""),
+             cell(ev["as_run"], c["key"]), cell(eq, c["key"])] for c in ev["criteria"]]  # fmt: skip
+    rows.append(["<b>Criteria met</b>", "", f"<b>{ev['as_run']['passed']} of {ev['as_run']['of']}</b>",
+                 f"<b>{eq['passed']} of {eq['of']}</b>" if eq else ""])  # fmt: skip
+    a = ev["as_run"]
+    r_cap = (f"1 R = {fmt_value(ev['r_usd'], 'usd')} ({html.escape(ev['r_source'])}); as-run drawdown = close-to-close "
+             f"{fmt_value(a['max_dd_usd'], 'usd')} (intraday {fmt_value(a['max_dd_intraday_usd'], 'usd')})." if ev["r_usd"] else
+             f"No R for the as-run drawdown: {html.escape(ev['r_source'])}.")  # fmt: skip
+    parts = [
+        "<section id='evaluation'><h2>Evaluation</h2>",
+        "<p class='cap'>As run = this backtest's own figures. Equal risk = every trade rescaled to risk exactly 1 R (its R multiple), "
+        f"the curve with a fixed risk per trade, e.g. sized in micros ({ev['trades_with_stop']:,} trades with a stop). {r_cap}</p>",
+        _table(["Criterion", "Target", "As run", "Equal risk"], rows, cls="mc-table eval"),
+    ]
+    mc = eq.get("monte_carlo") if eq else None
+    if mc:
+        d, n = mc["max_dd_r"], mc["net_r"]
+        parts.append(
+            f"<p class='cap'>Equal-risk Monte Carlo ({mc['sims']:,} resampled runs of the R multiples, seed {mc['seed']}): max drawdown "
+            f"median {rfmt(d['p50'])}, 95th percentile {rfmt(d['p95'])}, 99th {rfmt(d['p99'])}; "
+            f"P(drawdown &gt; {ev['criteria'][2]['threshold']:g} R) {fmt_value(mc['p_dd_over_limit'], 'pct')}. Net {rfmt(n['p5'])} / "
+            f"{rfmt(n['p50'])} / {rfmt(n['p95'])} (5th / median / 95th); P(net ≤ 0) {fmt_value(mc['p_net_le_0'], 'pct')}. "
+            f"Backtest: net {rfmt(eq['net_r'])}, drawdown {rfmt(eq['max_dd_r'])}.</p>"
+        )  # fmt: skip
+    def breakdown(title: str, column: str, groups: list[dict], cap: str = "") -> str:
+        if not groups:
+            return ""
+        body = [[html.escape(g["group"]), f"{g['trades']:,}", fmt_value(g["net"], "usd"), ratio(g["profit_factor"]), fmt_value(g["win_rate"], "pct"),
+                 "n/a" if g["avg_r"] is None else f"{g['avg_r']:+.3f}".replace("-", "−"), rfmt(g["sum_r"]), rfmt(g["max_dd_r"])] for g in groups]  # fmt: skip
+        head = [column, "Trades", "Net", "Profit factor", "Win rate", "Avg R", "Sum R", "Max DD (R)"]
+        return f"<h3 class='mc-h'>{title}</h3>" + (f"<p class='cap'>{cap}</p>" if cap else "") + _table(head, body)
+
+    w = ev.get("stop_width_usd") or []
+    width_cap = (f"Thirds of the trades by USD risk to the initial stop per contract: narrow {fmt_value(w[0], 'usd')}–{fmt_value(w[1], 'usd')}, "
+                 f"mid –{fmt_value(w[2], 'usd')}, wide –{fmt_value(w[3], 'usd')}." if len(w) == 4 else "")  # fmt: skip
+    parts += [breakdown("By stop width", "Stop width", ev["by_stop_width"], width_cap), breakdown("By exit year", "Year", ev["by_year"]),
+              breakdown("By exit signal", "Exit", ev["by_exit"]), "</section>"]  # fmt: skip
+    return "".join(parts)
+
+
 def _monte_carlo_html(mc) -> str:
     if mc is None:
         return ""
@@ -299,17 +358,17 @@ def _monte_carlo_html(mc) -> str:
     cols = []
     for name in names:
         m = mc.methods[name]
-        net_chart = ("<p class='cap mc-label'>Net profit per run (dashed: backtest)</p>"
+        net_chart = ("<div><p class='cap mc-label'>Net profit per run (dashed: backtest)</p>"
                      + img_tag(_hist_png(m.net, COLORS["s1"], mc.net), f"{MC_TITLES[name]}: net profit per run", id=f"mc-net-{name}")
-                     if name != "reorder" else "")  # fmt: skip
+                     + "</div>" if name != "reorder" else "")  # fmt: skip
         cols.append(
             f"<div class='mc-col'><h3>{MC_TITLES[name]}</h3><p class='cap'>{caps[name]}</p>{stats(name)}"
             f"<p class='cap mc-label'>Cumulative net profit by {'trading day' if UNITS[name] == 'day' else 'trade'}: 5th–95th and 25th–75th "
             "percentile bands, median, the first runs (thin), backtest</p>"
             + img_tag(_mc_band_png(m, UNITS[name]), f"{MC_TITLES[name]}: cumulative net profit bands", id=f"mc-band-{name}")
-            + "<p class='cap mc-label'>Max drawdown per run (dashed: backtest)</p>"
+            + "<div class='mc-hists'><div><p class='cap mc-label'>Max drawdown per run (dashed: backtest)</p>"
             + img_tag(_hist_png(m.max_dd, COLORS["bad"], mc.max_dd, mc.dd_limit), f"{MC_TITLES[name]}: max drawdown per run", id=f"mc-dd-{name}")
-            + f"{net_chart}</div>"
+            + f"</div>{net_chart}</div></div>"
         )
     skipped = "".join(f"<p class='muted'>{MC_TITLES.get(k, k)} method skipped: {html.escape(v)}.</p>" for k, v in mc.skipped.items())
 
@@ -479,11 +538,16 @@ button { cursor:pointer; } button:hover { border-color:var(--ink2); } input[type
 .tinfo { color:var(--ink2); font-size:13px; }
 .notes { margin:0; padding-left:18px; color:var(--ink2); }
 h3 { font-size:14px; margin:0 0 2px; } h3.mc-h { margin:16px 0 4px; }
-.mc-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:24px; margin:12px 0; }
+.mc-grid { display:grid; grid-template-columns:1fr; gap:32px; margin:12px 0; }
+.mc-col + .mc-col { border-top:1px solid var(--grid); padding-top:24px; }
+.mc-hists { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
 .mc-stats { display:flex; flex-wrap:wrap; gap:8px 24px; margin:8px 0 12px; }
 .mc-stats .k { font-size:12px; color:var(--ink2); } .mc-stats .v { font-size:18px; font-weight:600; }
 .mc-label { margin:8px 0 0; }
 table.mc-table { margin:12px 0 4px; }
+.ok, .no { font-size:11px; font-weight:600; border-radius:999px; padding:0 7px; margin-left:4px; }
+.ok { color:var(--good); border:1px solid var(--good); } .no { color:var(--bad); border:1px solid var(--bad); }
+table.eval td:nth-child(2) { color:var(--ink2); }
 """
 
 _JS = r"""

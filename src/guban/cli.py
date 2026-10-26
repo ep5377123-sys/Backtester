@@ -344,6 +344,7 @@ def run_cmd(
 
     from guban.config import get_contract
     from guban.engine import Costs, StrategyError, run_backtest
+    from guban.evaluation import evaluate, summary_line
     from guban.metrics import ROLL_NOTE, backtest_metrics, jsonable, roll_summary, session_exposure
     from guban.montecarlo import MIN_TRADES, check_settings, run_monte_carlo
     from guban.report import fmt_value, write_report
@@ -358,7 +359,11 @@ def run_cmd(
         raise StrategyError(f"{cls.__name__}({', '.join(f'{k}={v!r}' for k, v in overrides.items())}) could not be created: {e!r}") from e
     spec = get_contract(contract or symbol)
     commission, slippage, costs_from = _costs(spec, commission, slippage)
-    bars, sub = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from).load()
+    bars, sub = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from, tuple(cls.extra_columns)).load()
+    if "big_buy_body" in cls.extra_columns:
+        from guban.data.bigtrades import describe
+
+        typer.echo(describe(bars, bars["big_buy_body"]))
     t1 = time.perf_counter()
     res = run_backtest(strategy, bars, spec, Costs(commission=commission, slippage=slippage), sub_bars=sub, fill_mode=fill_mode)
     t2 = time.perf_counter()
@@ -376,6 +381,7 @@ def run_cmd(
                                  **_mc_trade_info(tr, bars))  # fmt: skip
         else:
             mc = {"skipped": f"needs at least {MIN_TRADES} trades; this run has {len(tr)}"}
+    evaluation = evaluate(tr, metrics, _mc_trade_info(tr, bars)["days"], mc_sims, mc_seed, mc_risk) if len(tr) else None
 
     title = f"{cls.__name__} · {spec.symbol} {tf}"
     notes = []
@@ -412,8 +418,10 @@ def run_cmd(
     meta_json["contract_rolls"] = rolls
     meta_json["session_exposure"] = exposure
     mc_json = {} if mc is None else {"monte_carlo": mc if isinstance(mc, dict) else mc.summary()}
-    (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **metrics, **mc_json}), indent=2, default=str) + "\n", encoding="utf-8")
-    report_path = write_report(res, bars, out / "report.html", metrics, meta, monte_carlo=mc, trade_charts=trade_charts) if report else None
+    ev_json = {} if evaluation is None else {"evaluation": evaluation}
+    (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **metrics, **mc_json, **ev_json}), indent=2, default=str) + "\n", encoding="utf-8")
+    report_path = (write_report(res, bars, out / "report.html", metrics, meta, monte_carlo=mc, trade_charts=trade_charts, evaluation=evaluation)
+                   if report else None)  # fmt: skip
     t3 = time.perf_counter()
     mc_seconds = mc.seconds if mc is not None and not isinstance(mc, dict) else 0.0
 
@@ -463,6 +471,8 @@ def run_cmd(
                 e = mc.ev["groups"].get(g)
                 if e:
                     typer.echo(f"    {g.replace('_', ' ')}: {e['trades']:,} trades, EV {u(e['usd']['mean'])}, P(EV <= 0) {e['p_ev_le_0']:.1%}")
+    if evaluation:
+        typer.echo(f"  evaluation: {summary_line(evaluation)}")
     mc_time = f" + monte carlo {mc_seconds:.1f} s" if mc_seconds else ""
     typer.echo(f"  time: load {t1 - t0:.1f} s + backtest {t2 - t1:.1f} s{mc_time} + report {t3 - t2 - mc_seconds:.1f} s = {t3 - t0:.1f} s")
     images = f", {out / 'trades'}{os.sep}trade_*.png" if report_path and trade_charts and len(tr) else ""
@@ -602,7 +612,7 @@ def optimize_cmd(
     out = out or run_dir(strategy_file, symbol, contract, tf, session, "_opt")
 
     t0 = time.perf_counter()
-    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from)
+    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from, tuple(cls.extra_columns))
     bars, _ = data.load()  # also builds any missing bar caches before the workers read them
     typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz}): "
                f"{n:,} combinations, {len(bars):,} bars")  # fmt: skip
@@ -700,7 +710,7 @@ def wfo_cmd(
     spec = get_contract(contract or symbol)
     commission, slippage, costs_from = _costs(spec, commission, slippage)
     out = out or run_dir(strategy_file, symbol, contract, tf, session, "_wfo")
-    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from)
+    data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from, tuple(cls.extra_columns))
     typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz}): "
                f"{n:,} combinations, each run once per window start")  # fmt: skip
     t0 = time.perf_counter()
