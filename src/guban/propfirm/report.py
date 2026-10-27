@@ -33,6 +33,18 @@ def write_propfirm_report(res: PropFirmResult, path: str | Path, meta: dict) -> 
         f"<style>{_CSS}{_EXTRA_CSS}</style>",
         "</head><body><main>",
         _header(meta),
+        propfirm_body(res),
+        _notes(meta),
+        "</main>",
+        "</body></html>",
+    ]
+    path.write_text("\n".join(parts), encoding="utf-8")
+    return path
+
+
+def propfirm_body(res: PropFirmResult) -> str:
+    """The page between its header and its notes: outcome tiles, paths, distributions, degradation, sweep, statistics."""
+    return "\n".join([
         _tiles(res),
         _paths_html(res),
         "<div class='pair'>",
@@ -42,12 +54,7 @@ def write_propfirm_report(res: PropFirmResult, path: str | Path, meta: dict) -> 
         _degradation_html(res),
         _sweep_html(res),
         _stats_html(res),
-        _notes(meta),
-        "</main>",
-        "</body></html>",
-    ]
-    path.write_text("\n".join(parts), encoding="utf-8")
-    return path
+    ])  # fmt: skip
 
 
 def _size_label(size: float, contracts: float | None) -> str:

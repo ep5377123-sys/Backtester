@@ -2,7 +2,7 @@
 // The renderer reaches the worker only through preload.js (guban.call / onEvent); see src/guban/gui/worker.py for
 // the JSON-lines protocol. --smoke: run the renderer's smoke steps hidden, save a screenshot per step to
 // reports/_gui_smoke/, write result.json there and exit 0 (all passed) or 1.
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -157,6 +157,10 @@ app.whenReady().then(() => {
   ipcMain.handle('guban:call', (_e, method, params, name) => pick(name).call(method, params));
   ipcMain.handle('guban:restart', (_e, name) => { pick(name).kill(); pick(name).start(); return true; });
   ipcMain.handle('guban:stop', (_e, name) => { pick(name).kill(); return true; });
+  ipcMain.handle('guban:pick-file', async (_e, filters) => {
+    const r = await dialog.showOpenDialog(win, { defaultPath: ROOT, properties: ['openFile'], filters: filters || [] });
+    return r.canceled ? null : r.filePaths[0];
+  });
   createWindow();
 });
 

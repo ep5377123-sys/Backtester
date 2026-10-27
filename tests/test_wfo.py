@@ -15,7 +15,7 @@ from guban.engine import Costs, Strategy, run_backtest
 from guban.engine.backtest import WINDOW_END
 from guban.metrics import backtest_metrics, session_keys, window_metrics
 from guban.optimize import combinations
-from guban.wfo import make_windows, walk_forward
+from guban.wfo import fold_start, make_windows, walk_forward
 from guban.wfo_report import write_wfo_report
 
 NQ = ContractSpec(symbol="NQ", name="E-mini Nasdaq-100", point_value=20.0, tick_size=0.25)
@@ -111,6 +111,31 @@ def test_anchored_step_and_start_options():
     with pytest.raises(ValueError, match="at least 1 month"):
         make_windows(T("2023-01-01"), T("2024-12-31"), oos_months=0)
 
+
+
+def test_folds_cap_the_windows_and_fold_start_ends_them_at_the_data_end():
+    last = T("2026-10-07")  # NQ's last session: 4 folds of 12 + 12 months = the 60 months before it
+    start = fold_start(last, 12, 12, 12, 4)
+    assert start == T("2021-10-08")
+    ws = make_windows(T("2019-01-02"), last, 12, 12, 12, start=start, folds=4)
+    assert len(ws) == 4 and not any(w.partial for w in ws)
+    assert [(w.is_start, w.oos_start, w.oos_end) for w in ws] == [
+        (T(f"{y}-10-08"), T(f"{y + 1}-10-08"), T(f"{y + 2}-10-08")) for y in (2021, 2022, 2023, 2024)
+    ]
+    assert ws[-1].oos_end == last + pd.Timedelta(days=1)
+    first_four = make_windows(T("2019-01-02"), last, 12, 12, 12, folds=4)  # no start: from the first whole month
+    assert (first_four[0].is_start, first_four[-1].oos_end) == (T("2019-02-01"), T("2024-02-01"))
+    assert make_windows(T("2019-01-02"), last, 12, 12, 12)[:4] == first_four  # folds only cuts the list
+    anchored = make_windows(T("2019-01-02"), last, 12, 12, 12, anchored=True, start=start, folds=4)
+    assert all(w.is_start == start for w in anchored) and anchored[-1].oos_end == ws[-1].oos_end
+    with pytest.raises(ValueError, match=r"not enough data: 4 folds of 12 \+ 12 months .* need 60 months"):
+        make_windows(T("2019-01-02"), last, 12, 12, 12, start=start + pd.Timedelta(days=1), folds=4)  # last fold partial
+    with pytest.raises(ValueError, match="not enough data: 4 folds"):
+        make_windows(T("2023-01-02"), last, 12, 12, 12, folds=4)  # only three whole folds fit
+    with pytest.raises(ValueError, match="before the first session"):
+        make_windows(T("2022-01-03"), last, 12, 12, 12, start=start, folds=4)
+    with pytest.raises(ValueError, match="folds must be at least 1"):
+        make_windows(T("2019-01-02"), last, folds=0)
 
 # --- causality ------------------------------------------------------------------------------------
 
@@ -208,6 +233,18 @@ def test_windows_without_an_eligible_run_sit_out():
     assert wf.summary["combo"].isna().all() and wf.summary["eligible"].eq(0).all()
     assert wf.trades.empty and (wf.equity == 0).all() and wf.wfe is None
     assert wf.metrics["all"]["total_trades"] == 0
+
+
+def test_walk_forward_folds_keeps_the_first_windows_of_the_full_run():
+    bars, _ = market(days=150)
+    kw = dict(bars=bars, is_months=1, oos_months=1, min_trades=1, workers=1)
+    full = walk_forward(DayMomentum, {"lookback": [2, 4]}, NQ, COSTS, **kw)
+    two = walk_forward(DayMomentum, {"lookback": [2, 4]}, NQ, COSTS, folds=2, **kw)
+    assert len(full.windows) > 2 and two.windows == full.windows[:2]
+    assert two.summary["combo"].tolist() == full.summary["combo"].tolist()[:2]
+    oos_end = full.windows[1].oos_end
+    pd.testing.assert_frame_equal(two.trades.reset_index(drop=True), full.trades[full.trades["exit_time"].dt.tz_localize(None).dt.normalize() < oos_end]
+                                  .reset_index(drop=True), check_dtype=False)  # fmt: skip
 
 
 def test_positions_never_cross_a_window_boundary():

@@ -685,6 +685,7 @@ def wfo_cmd(
     step_months: int = typer.Option(None, "--step", help="Months between windows (default: --oos)", rich_help_panel=WF),
     anchored: bool = typer.Option(False, "--anchored/--rolling", help="Anchored: every in-sample window starts at --start and grows", rich_help_panel=WF),
     start: str = typer.Option(None, "--start", help="First in-sample day, YYYY-MM-DD session date (default: first whole month of data)", rich_help_panel=WF),
+    folds: int = typer.Option(None, "--folds", help="Exactly this many windows, all whole (default: as many as the data holds)", rich_help_panel=WF),
     metric: str = typer.Option("net_profit", "--metric", help="Pick each in-sample winner by: net_profit, profit_factor, return_on_account, sharpe_daily, ...", rich_help_panel=SEARCH),
     min_trades: int = MIN_TRADES,
     workers: int = WORKERS,
@@ -695,15 +696,11 @@ def wfo_cmd(
     open_report: bool = _open_option("wfo.html"),
 ) -> None:
     """Walk-forward: optimize each in-sample window, trade the winner out of sample; write the stitched result."""
-    import json
-
     from guban.config import get_contract
     from guban.engine import Costs
-    from guban.metrics import ROLL_NOTE, jsonable, roll_summary, session_exposure
-    from guban.optimize import METRICS, TooManyCombinations
+    from guban.optimize import TooManyCombinations
     from guban.report import fmt_value
     from guban.wfo import walk_forward
-    from guban.wfo_report import write_wfo_report
 
     cls = _load_strategy_class(strategy_file, class_name)
     grid, fixed, n = _parse_search(grid_specs, inputs, cls.inputs, metric, yes)
@@ -717,17 +714,61 @@ def wfo_cmd(
     try:
         wf = walk_forward(strategy_file, grid, spec, Costs(commission=commission, slippage=slippage), data=data, fixed=fixed,
                           class_name=cls.__name__, is_months=is_months, oos_months=oos_months, step_months=step_months,
-                          anchored=anchored, start=start, metric=metric, min_trades=min_trades, workers=workers, confirm=yes,
+                          anchored=anchored, start=start, folds=folds, metric=metric, min_trades=min_trades, workers=workers, confirm=yes,
                           progress=_progress(t0, n))  # fmt: skip
     except TooManyCombinations as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(2) from e
 
+    trades_path, csv_paths, html_path = write_wfo_folder(
+        wf, out, cls=cls, strategy_file=strategy_file, symbol=symbol, spec=spec, tf=tf, session=session, tz=tz, fill_mode=fill_mode,
+        history_from=history_from, commission=commission, slippage=slippage, costs_from=costs_from, data_from=data_from, fixed=fixed,
+        capital=capital, combinations=n, folds=folds, trade_charts=trade_charts, workers=workers)  # fmt: skip
+    s, p = wf.summary, wf.pooled
+
+    names = list(grid)
+    for _, r in s.iterrows():
+        head = f"  W{r['window']:<2} IS {r['is_from']:%Y-%m-%d}→{r['is_to']:%Y-%m-%d}  OOS {r['oos_from']:%Y-%m-%d}→{r['oos_to']:%Y-%m-%d}"
+        if pd.isna(r["combo"]):
+            typer.echo(f"{head}  sat out (no run with >= {min_trades:,} in-sample trades)")
+            continue
+        ins = ", ".join(f"{k}={r[k]}" for k in names)
+        wfe = "n/a" if pd.isna(r["wfe"]) else f"{r['wfe']:.0%}"
+        typer.echo(f"{head}  {ins}  IS/yr {fmt_value(r['is_net_per_year'], 'usd')}  OOS {fmt_value(r['oos_net_profit'], 'usd')} "
+                   f"({int(r['oos_trades'])} trades)  WFE {wfe}")  # fmt: skip
+    a, acc = wf.metrics["all"], wf.metrics["account"]
+    typer.echo(f"  out of sample: {a['total_trades']:,} trades  net {fmt_value(a['net_profit'], 'usd')}  "
+               f"max drawdown {fmt_value(acc['max_drawdown_intraday'], 'usd')}  net/yr {fmt_value(p['oos_net_per_year'], 'usd')}  "
+               f"(in sample {fmt_value(p['is_net_per_year'], 'usd')}/yr)")  # fmt: skip
+    typer.echo(f"  walk-forward efficiency: {'n/a' if p['wfe'] is None else format(p['wfe'], '.0%')}"
+               + (f"  boundary trades: {wf.boundary_trades}" if wf.boundary_trades else ""))  # fmt: skip
+    typer.echo(f"  {n:,} combinations + {int(s['combo'].notna().sum())} out-of-sample window re-runs in {wf.seconds:,.1f} s on {wf.workers} workers")
+    typer.echo(f"Wrote {trades_path}, {csv_paths[0]}, {csv_paths[1]}, {out / 'wfo.json'}, {html_path}")
+    if open_report:
+        _open(html_path)
+
+
+def write_wfo_folder(wf, out: Path, *, cls, strategy_file: Path, symbol: str, spec, tf: str, session: str, tz: str, fill_mode: str,
+                     history_from: str | None, commission: float, slippage: float, costs_from: str, data_from: str | None,
+                     fixed: dict, capital: float, combinations: int, folds: int | None, trade_charts: bool, workers: int | None,
+                     written_by: str | None = None) -> tuple[Path, list[Path], Path]:
+    """`guban wfo`'s folder for a walk-forward result: trades.csv (stitched out of sample), windows.csv, results.csv,
+    wfo.json, wfo.html. Guban Studio's Walk Forward tab saves with it too (written_by="Guban Studio")."""
+    import json
+
+    from guban.metrics import ROLL_NOTE, jsonable, roll_summary, session_exposure
+    from guban.optimize import METRICS
+    from guban.wfo_report import write_wfo_report
+
     bars, s, p = wf.bars, wf.summary, wf.pooled
+    grid, metric, min_trades, anchored = wf.grid, wf.metric, wf.min_trades, wf.anchored
+    is_months, oos_months, n = wf.is_months, wf.oos_months, combinations
     trades_path = wf.oos_result().write_trades_csv(out / "trades.csv", capital)
     csv_paths = wf.write_csvs(out)
     label = METRICS[metric][0]
     layout = f"{'anchored' if anchored else 'rolling'}, {is_months} m in-sample / {oos_months} m out-of-sample, step {wf.step_months} m"
+    if folds:
+        layout += f", {folds} folds"
     notes = []
     if history_from:
         notes.append(f"{history_from} bars stand in for {symbol} before {symbol}'s first bar.")
@@ -765,8 +806,9 @@ def wfo_cmd(
                 "commission": commission, "slippage": slippage, "costs": costs_from, "data_from": data_from, "fixed": fixed, "capital": capital,
                 "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)},
         "grid": grid, "metric": metric, "min_trades": min_trades, "combinations": n,
-        "layout": {"anchored": anchored, "is_months": is_months, "oos_months": oos_months, "step_months": wf.step_months, "start": s["is_from"].iat[0]},
-        "workers": wf.workers, "seconds": round(wf.seconds, 2),
+        "layout": {"anchored": anchored, "is_months": is_months, "oos_months": oos_months, "step_months": wf.step_months, "start": s["is_from"].iat[0],
+                   **({"folds": folds} if folds else {})},
+        "workers": wf.workers, "seconds": round(wf.seconds, 2), **({"written_by": written_by} if written_by else {}),
         "walk_forward_efficiency": p["wfe"], "is_net_per_year": p["is_net_per_year"], "oos_net_per_year": p["oos_net_per_year"],
         "boundary_trades": wf.boundary_trades,
         "contract_rolls": rolls,
@@ -775,27 +817,7 @@ def wfo_cmd(
         "oos": wf.metrics,
     }  # fmt: skip
     (out / "wfo.json").write_text(json.dumps(jsonable(summary), indent=2, default=str) + "\n", encoding="utf-8")
-
-    names = list(grid)
-    for _, r in s.iterrows():
-        head = f"  W{r['window']:<2} IS {r['is_from']:%Y-%m-%d}→{r['is_to']:%Y-%m-%d}  OOS {r['oos_from']:%Y-%m-%d}→{r['oos_to']:%Y-%m-%d}"
-        if pd.isna(r["combo"]):
-            typer.echo(f"{head}  sat out (no run with >= {min_trades:,} in-sample trades)")
-            continue
-        ins = ", ".join(f"{k}={r[k]}" for k in names)
-        wfe = "n/a" if pd.isna(r["wfe"]) else f"{r['wfe']:.0%}"
-        typer.echo(f"{head}  {ins}  IS/yr {fmt_value(r['is_net_per_year'], 'usd')}  OOS {fmt_value(r['oos_net_profit'], 'usd')} "
-                   f"({int(r['oos_trades'])} trades)  WFE {wfe}")  # fmt: skip
-    a, acc = wf.metrics["all"], wf.metrics["account"]
-    typer.echo(f"  out of sample: {a['total_trades']:,} trades  net {fmt_value(a['net_profit'], 'usd')}  "
-               f"max drawdown {fmt_value(acc['max_drawdown_intraday'], 'usd')}  net/yr {fmt_value(p['oos_net_per_year'], 'usd')}  "
-               f"(in sample {fmt_value(p['is_net_per_year'], 'usd')}/yr)")  # fmt: skip
-    typer.echo(f"  walk-forward efficiency: {'n/a' if p['wfe'] is None else format(p['wfe'], '.0%')}"
-               + (f"  boundary trades: {wf.boundary_trades}" if wf.boundary_trades else ""))  # fmt: skip
-    typer.echo(f"  {n:,} combinations + {int(s['combo'].notna().sum())} out-of-sample window re-runs in {wf.seconds:,.1f} s on {wf.workers} workers")
-    typer.echo(f"Wrote {trades_path}, {csv_paths[0]}, {csv_paths[1]}, {out / 'wfo.json'}, {html_path}")
-    if open_report:
-        _open(html_path)
+    return trades_path, csv_paths, html_path
 
 
 def _run_bars(run: Path, info: dict, data_dir: Path) -> pd.DataFrame:
@@ -998,6 +1020,42 @@ def store_verify_cmd(
         raise typer.Exit(1)
 
 
+def write_propfirm_folder(res, trades: Path, out: Path, edited: str | None = None) -> Path:
+    """`guban propfirm`'s folder for a result: daily.csv, degradation.csv, sweep.csv, propfirm.json, propfirm.html.
+    Guban Studio's Monte Carlo tab saves with it too (edited: a note when its form changed the rules file's values)."""
+    import json
+
+    from guban.metrics import jsonable
+    from guban.propfirm.report import write_propfirm_report
+
+    setup, r, t = res.setup, res.setup.rules, res.stats
+    out.mkdir(parents=True, exist_ok=True)
+    res.daily.to_csv(out / "daily.csv", index=False, date_format="%Y-%m-%d")
+    res.scenario_table().to_csv(out / "degradation.csv", index=False)
+    res.sweep_table().to_csv(out / "sweep.csv", index=False)
+    (out / "propfirm.json").write_text(json.dumps(jsonable({"trades_file": str(trades), **res.to_json()}), indent=2, default=str) + "\n", encoding="utf-8")
+    c = t["contracts"]
+    meta = {
+        "title": f"Prop-firm Monte Carlo · {r.name}",
+        "subtitle": f"{trades.name} · {t['first']:%Y-%m-%d} → {t['last']:%Y-%m-%d} · {t['trades']:,} trades",
+        "details": {
+            "Rules": f"{setup.key}.toml" + (f" ({edited})" if edited else ""),
+            "Profit target": f"${r.profit_target:,.0f}",
+            "Max drawdown": f"${r.max_drawdown:,.0f} ({'end-of-day trailing' if r.eod_trailing else 'trailing'})",
+            "Deadline": f"{r.max_trading_days} trading days" + (f", at least {r.min_trading_days}" if r.min_trading_days else ""),
+            "Daily loss limit": f"${r.daily_loss_limit:,.0f}" if r.daily_loss_limit > 0 else "none",
+            "Account size (not simulated)": f"${r.account_size:,.0f}",
+            "Size": f"{setup.size:g}× the file" + (f" ({setup.size * c:g} contract{'' if setup.size * c == 1 else 's'})" if c is not None else ""),
+            "Added costs (per contract, per trade)": f"commission ${setup.commission:g}, slippage ${setup.slippage:g}",
+            "Simulations": f"{setup.sims:,} main, {setup.sweep_sims:,} per scenario and sweep size, seed {setup.seed}",
+            "Run time": f"{res.seconds:,.1f} s",
+        },
+        "notes": res.notes,
+    }
+    html_path = write_propfirm_report(res, out / "propfirm.html", meta)
+    return html_path
+
+
 def _floats(text: str | None, flag: str) -> tuple[float, ...] | None:
     if text is None:
         return None
@@ -1024,11 +1082,7 @@ def propfirm_cmd(
     open_report: bool = _open_option("propfirm.html"),
 ) -> None:
     """Prop-firm evaluation Monte Carlo on a trade list: pass rate, degradation scenarios and a size sweep."""
-    import json
-
-    from guban.metrics import jsonable
     from guban.propfirm import FAIL_DD, FAIL_TIME, load_setup, load_trades, run_propfirm
-    from guban.propfirm.report import write_propfirm_report
 
     try:
         setup = load_setup(rules)
@@ -1043,32 +1097,8 @@ def propfirm_cmd(
         raise typer.BadParameter(str(e)) from e
     stem = trades.parent.name if trades.stem == "trades" else trades.stem
     out = out or REPORTS / f"{_slug(stem)}_{setup.key}"
-    out.mkdir(parents=True, exist_ok=True)
-
+    html_path = write_propfirm_folder(res, trades, out)
     r, t, m, s = setup.rules, res.stats, res.main.summary(), res.summary()
-    res.daily.to_csv(out / "daily.csv", index=False, date_format="%Y-%m-%d")
-    res.scenario_table().to_csv(out / "degradation.csv", index=False)
-    res.sweep_table().to_csv(out / "sweep.csv", index=False)
-    (out / "propfirm.json").write_text(json.dumps(jsonable({"trades_file": str(trades), **res.to_json()}), indent=2, default=str) + "\n", encoding="utf-8")
-    c = t["contracts"]
-    meta = {
-        "title": f"Prop-firm Monte Carlo · {r.name}",
-        "subtitle": f"{trades.name} · {t['first']:%Y-%m-%d} → {t['last']:%Y-%m-%d} · {t['trades']:,} trades",
-        "details": {
-            "Rules": f"{setup.key}.toml",
-            "Profit target": f"${r.profit_target:,.0f}",
-            "Max drawdown": f"${r.max_drawdown:,.0f} ({'end-of-day trailing' if r.eod_trailing else 'trailing'})",
-            "Deadline": f"{r.max_trading_days} trading days" + (f", at least {r.min_trading_days}" if r.min_trading_days else ""),
-            "Daily loss limit": f"${r.daily_loss_limit:,.0f}" if r.daily_loss_limit > 0 else "none",
-            "Account size (not simulated)": f"${r.account_size:,.0f}",
-            "Size": f"{setup.size:g}× the file" + (f" ({setup.size * c:g} contract{'' if setup.size * c == 1 else 's'})" if c is not None else ""),
-            "Added costs (per contract, per trade)": f"commission ${setup.commission:g}, slippage ${setup.slippage:g}",
-            "Simulations": f"{setup.sims:,} main, {setup.sweep_sims:,} per scenario and sweep size, seed {setup.seed}",
-            "Run time": f"{res.seconds:,.1f} s",
-        },
-        "notes": res.notes,
-    }
-    html_path = write_propfirm_report(res, out / "propfirm.html", meta)
 
     lo, hi = m["pass_rate_ci"]
     typer.echo(f"{r.name} on {trades.name}: {t['trades']:,} trades, {len(res.daily):,} weekdays ({int(res.daily['is_trade_day'].sum()):,} with trades)")

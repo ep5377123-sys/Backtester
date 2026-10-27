@@ -12,6 +12,8 @@
     <button data-tab="strategy">Strategy</button>
     <button data-tab="backtest">Backtest</button>
     <button data-tab="optimization">Optimization</button>
+    <button data-tab="walkforward">Walk Forward</button>
+    <button data-tab="montecarlo">Monte Carlo</button>
   </nav>
 
   <div id="banner" class="banner hidden"></div>
@@ -100,14 +102,9 @@
               <label for="bt-commission">Commission ($ RT)</label><input id="bt-commission" type="number" min="0" step="0.01">
               <label for="bt-slippage">Slippage ($ RT)</label><input id="bt-slippage" type="number" min="0" step="0.01">
               <label for="bt-fill">Fill mode</label><select id="bt-fill"><option value="magnifier">magnifier (1-minute bars)</option><option value="ohlc">ohlc (bar path rule)</option></select>
-              <label for="bt-sims">Monte Carlo runs</label><input id="bt-sims" type="number" min="0" step="1000">
-              <label for="bt-seed">Monte Carlo seed</label><input id="bt-seed" type="number" step="1">
-              <label for="bt-ddlimit">DD limit ($)</label><input id="bt-ddlimit" type="number" min="0" step="100" placeholder="optional, e.g. 2500">
-              <label for="bt-risk">Risk / contract ($)</label><input id="bt-risk" type="number" min="0" step="10" placeholder="default: each trade's stop">
-              <label for="bt-oos">EV split from</label><input id="bt-oos" type="date" title="Also split EV into in/out of sample: trades exiting from this date are out of sample">
               <label for="bt-images">Trade images on save</label><input id="bt-images" type="checkbox">
             </div>
-            <div class="note" id="bt-info">Runs the strategy applied on the Strategy tab (same inputs, same dataset) with these settings.</div>
+            <div class="note" id="bt-info">Runs the strategy applied on the Strategy tab (same inputs, same dataset) with these settings. The trade Monte Carlo is on the Monte Carlo tab; its settings feed the evaluation here and Save.</div>
           </div>
           <div class="panel report" id="bt-perf"><h2>Performance</h2><div class="muted">Run the backtest to see its metrics.</div></div>
         </div>
@@ -160,6 +157,97 @@
         <div class="table-wrap"><table class="grid clickable" id="op-table"></table></div>
       </div>
     </section>
+    <section id="tab-walkforward" class="tab">
+      <div class="row">
+        <button id="wf-run" class="wide primary">Run</button><button id="wf-stop" class="wide" disabled>Stop</button><button id="wf-save" class="wide" disabled>Save</button><button id="wf-open" class="wide" disabled>Open report</button>
+      </div>
+      <div class="row hidden" id="wf-progress-row"><progress id="wf-progress" max="1" value="0"></progress><span id="wf-progress-text" class="muted"></span></div>
+      <div class="split">
+        <div>
+          <div class="panel">
+            <h2>Folds</h2>
+            <div class="form">
+              <label for="wf-is">In sample (months)</label><input id="wf-is" type="number" min="1" step="1">
+              <label for="wf-oos">Out of sample (months)</label><input id="wf-oos" type="number" min="1" step="1">
+              <label for="wf-step">Step (months)</label><input id="wf-step" type="number" min="1" step="1">
+              <label for="wf-folds">Folds</label><input id="wf-folds" type="number" min="1" step="1">
+              <label for="wf-mode">Windows</label><select id="wf-mode"><option value="rolling">rolling (each in sample the same length)</option><option value="anchored">anchored (in sample grows from the start)</option></select>
+              <label for="wf-start">First in-sample day</label><input id="wf-start" type="date" title="Blank: the folds end at the Data tab's end date">
+            </div>
+            <div class="inline-error hidden" id="wf-windows-error"></div>
+            <table class="grid" id="wf-windows"></table>
+            <div class="note">Blank first day: the last fold ends at the Data tab's end date. Every fold is whole; the data must hold all of them.</div>
+          </div>
+          <div class="panel">
+            <h2>Settings</h2>
+            <div class="form">
+              <label for="wf-metric">Pick each fold's inputs by</label><select id="wf-metric"></select>
+              <label for="wf-mintrades">Min trades (IS)</label><input id="wf-mintrades" type="number" min="0" step="1">
+              <label for="wf-workers">Worker processes</label><input id="wf-workers" type="number" min="1" step="1">
+              <label for="wf-images">Trade images on save</label><input id="wf-images" type="checkbox">
+            </div>
+            <div class="note">Costs and fill mode come from the Backtest tab; inputs not in the grid stay at the Strategy tab's values.</div>
+          </div>
+          <div class="panel">
+            <h2>Grid <span class="muted" id="wf-count"></span></h2>
+            <div id="wf-grid"><div class="muted">Load a strategy on the Strategy tab.</div></div>
+            <div class="inline-error hidden" id="wf-grid-error"></div>
+            <div class="note">Values: start:stop:step (e.g. 0.4:1.0:0.1), a list (1,2,3) or one value. Every combination runs on every in-sample fold.</div>
+          </div>
+        </div>
+        <div>
+          <div class="panel report" id="wf-perf"><h2>Out of sample, stitched</h2><div class="muted">Run the walk-forward to see its out-of-sample result.</div></div>
+          <div class="panel"><h2>Out-of-sample equity</h2><img id="wf-equity" class="chart" alt="Stitched out-of-sample equity"><div class="empty">Run the walk-forward to see the stitched out-of-sample equity.</div></div>
+          <div class="panel"><h2>Drawdown</h2><img id="wf-drawdown" class="chart" alt="Out-of-sample drawdown"></div>
+          <div class="panel"><h2>Folds</h2><img id="wf-folds-chart" class="chart" alt="Net profit per year and chosen inputs per fold"></div>
+        </div>
+      </div>
+      <div class="report" id="wf-section"></div>
+      <div class="panel"><div class="row tight"><button id="wf-use" disabled>Use the last fold's inputs on the Strategy tab</button><span class="muted" id="wf-last"></span></div></div>
+    </section>
+    <section id="tab-montecarlo" class="tab">
+      <div class="panel">
+        <h2>Trade source</h2>
+        <div class="row">
+          <label for="mc-source" class="muted">Source</label><select id="mc-source"></select>
+          <input id="mc-file" class="path" placeholder="trades.csv or MC export (.csv / .xlsx)"><button id="mc-browse">Browse…</button>
+          <span class="spacer"></span><span class="muted">Current: </span><span id="mc-source-label" class="mono-ink">none</span><span id="mc-stale" class="stale hidden">stale: the source ran again</span>
+        </div>
+        <div class="note">Both simulations below use this trade list: the Backtest tab's last run, the Walk Forward tab's stitched out-of-sample trades, or a file.</div>
+      </div>
+      <nav class="subtabs" id="mc-subtabs"><button data-sub="trade" class="active">Trade Monte Carlo</button><button data-sub="propfirm">Prop-firm evaluation</button></nav>
+      <div class="sub active" id="mc-sub-trade">
+        <div class="split">
+          <div class="panel">
+            <div class="row"><button id="mc-run" class="wide primary">Run</button></div>
+            <div class="form">
+              <label for="mc-sims">Monte Carlo runs</label><input id="mc-sims" type="number" min="1" step="1000">
+              <label for="mc-seed">Seed</label><input id="mc-seed" type="number" step="1">
+              <label for="mc-ddlimit">DD limit ($)</label><input id="mc-ddlimit" type="number" min="0" step="100" placeholder="optional, e.g. 2500">
+              <label for="mc-risk">Risk / contract ($)</label><input id="mc-risk" type="number" min="0" step="10" placeholder="default: each trade's stop">
+              <label for="mc-oos">EV split from</label><input id="mc-oos" type="date" title="Also split EV into in/out of sample: trades exiting from this date are out of sample">
+            </div>
+            <div class="note" id="mc-info">Resample, reorder and whole-day Monte Carlo of the source's trades, with EV and horizons, as in `guban run`'s report. The Backtest tab's evaluation and Save use these settings too.</div>
+          </div>
+          <div class="report" id="mc-trade-out"><section><h2>Monte Carlo</h2><div class="muted">Run a backtest or a walk-forward, or pick a trades file, then click Run.</div></section></div>
+        </div>
+      </div>
+      <div class="sub" id="mc-sub-propfirm">
+        <div class="split">
+          <div>
+            <div class="panel">
+              <div class="row"><button id="pf-run" class="wide primary">Run</button><button id="pf-save" class="wide" disabled>Save</button><button id="pf-open" class="wide" disabled>Open report</button></div>
+              <div class="form"><label for="pf-rules">Rules file</label><div class="row tight"><select id="pf-rules"></select><button id="pf-reset" title="Back to the rules file's values">Reset</button></div></div>
+              <ul class="notes-list" id="pf-notes"></ul>
+              <div class="note" id="pf-info">`guban propfirm` on the source's trades: pass rate, equity paths, degradation scenarios, size sweep.</div>
+            </div>
+            <div class="panel"><h2>Rules, costs, simulation</h2><div class="form" id="pf-fields"><div class="muted">Loading the rules…</div></div>
+              <div class="note">Edits (marked) apply to the runs here and are recorded in a saved propfirm.json; the rules file is not changed.</div></div>
+          </div>
+          <div class="report" id="pf-out"><section><h2>Prop-firm evaluation</h2><div class="muted">Run a backtest or a walk-forward, or pick a trades file, then click Run.</div></section></div>
+        </div>
+      </div>
+    </section>
   </main>
 
   <footer class="status"><span id="worker-status">Starting Python worker…</span><span id="last-action"></span></footer>
@@ -169,6 +257,8 @@
   <script src="strategy.js"></script>
   <script src="backtest.js"></script>
   <script src="optimize.js"></script>
+  <script src="walkforward.js"></script>
+  <script src="montecarlo.js"></script>
   <script src="smoke.js"></script>
 </body>
 </html>

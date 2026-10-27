@@ -6,71 +6,8 @@
 (() => {
   const { api, el, fillTable, fillSelect, busy, settings } = studio;
   const f = (id) => $(`#op-${id}`);
-  const S = { options: null, result: null, running: false, stopping: false, selected: null, count: null };
-  const gridKey = () => `grid:${(studio.strategy.state.loaded || {}).file}`;
-
-  function gridSpecs() {
-    const out = {};
-    for (const row of f('grid').querySelectorAll('[data-name]')) {
-      const [on, values] = [row.querySelector('input[type=checkbox]'), row.querySelector('input.values')];
-      if (on.checked) out[row.dataset.name] = values.value.trim();
-    }
-    return out;
-  }
-
-  function saveGrid() {
-    const saved = {};
-    for (const row of f('grid').querySelectorAll('[data-name]')) {
-      saved[row.dataset.name] = { on: row.querySelector('input[type=checkbox]').checked, values: row.querySelector('input.values').value };
-    }
-    settings.set(gridKey(), saved);
-  }
-
-  function renderGrid(info) {
-    if (!info) {
-      f('grid').replaceChildren(el('div', { className: 'muted' }, 'Load a strategy on the Strategy tab.'));
-      return;
-    }
-    const saved = settings.get(gridKey());
-    const editor = el('div', { className: 'grid-editor' });
-    for (const inp of info.inputs) {
-      const s = saved[inp.name] || {};
-      const on = el('input', { type: 'checkbox', checked: !!s.on, title: `optimize ${inp.name}` });
-      const values = el('input', { className: 'values', value: s.values ?? (inp.kind === 'bool' ? 'true,false' : inp.value), disabled: !s.on, placeholder: inp.value });
-      const row = el('div', { style: 'display: contents' }, [on, el('span', { className: 'gname', title: `${inp.kind}, default ${inp.value}` }, inp.name), values]);
-      row.dataset.name = inp.name;
-      on.onchange = () => { values.disabled = !on.checked; saveGrid(); count(); };
-      values.oninput = () => { saveGrid(); countSoon(); };
-      editor.append(row);
-    }
-    f('grid').replaceChildren(editor);
-    count();
-  }
-
-  let countTimer = null;
-  const countSoon = () => { clearTimeout(countTimer); countTimer = setTimeout(count, 300); };
-  async function count() {
-    const grid = gridSpecs();
-    S.count = null;
-    if (!Object.keys(grid).length) {
-      f('count').textContent = '';
-      f('grid-error').textContent = 'Tick at least one input to optimize.';
-      f('grid-error').classList.remove('hidden');
-      return null;
-    }
-    try {
-      const r = await api('optimize.count', { grid });
-      S.count = r.count;
-      f('count').textContent = `(${r.count.toLocaleString('en-US')} combination${r.count === 1 ? '' : 's'})`;
-      f('grid-error').classList.add('hidden');
-      return r;
-    } catch (err) {
-      f('count').textContent = '';
-      f('grid-error').textContent = err.message;
-      f('grid-error').classList.remove('hidden');
-      return null;
-    }
-  }
+  const S = { options: null, result: null, running: false, stopping: false, selected: null };
+  const grid = studio.gridEditor('grid', { container: f('grid'), error: f('grid-error'), count: f('count') });
 
   function renderWindows() {
     const w = studio.data.state.loaded ? studio.data.params().windows : null;
@@ -89,7 +26,7 @@
     if (studio.windowsOk === false) throw new Error('Fix the in-sample / out-of-sample dates on the Data tab first');
     const strat = studio.strategy.state.loaded;
     if (!strat) throw new Error('Load a strategy on the Strategy tab first');
-    const c = await count();
+    const c = await grid.count();
     if (!c) throw new Error(f('grid-error').textContent || 'Check the grid');
     if (c.count > S.options.max_combinations && !confirmBig) {
       if (!window.confirm(`${c.count.toLocaleString('en-US')} combinations is more than ${S.options.max_combinations.toLocaleString('en-US')}. Run them all?`)) return null;
@@ -99,12 +36,13 @@
       data: studio.data.params(),
       strategy: { file: strat.file, class: strat.class },
       inputs: studio.strategy.inputValues(),
-      grid: gridSpecs(),
+      grid: grid.specs(),
       metric: f('metric').value, min_trades: f('mintrades').value, top_n: f('topn').value, workers: f('workers').value,
       commission: $('#bt-commission').value, slippage: $('#bt-slippage').value, fill_mode: $('#bt-fill').value,
       confirm: confirmBig,
     };
     settings.set('optimize', { metric: p.metric, min_trades: p.min_trades, top_n: p.top_n, workers: p.workers });
+    studio.optJob.take('optimization');
     setRunning(true);
     S.stopping = false;
     try {
@@ -113,6 +51,7 @@
       return r;
     } finally {
       setRunning(false);
+      studio.optJob.release('optimization');
     }
   }
 
@@ -181,12 +120,13 @@
     if (msg.message) f('progress-text').textContent = msg.message;
   });
   studio.on('opt-worker-exit', (info) => {
-    if (S.stopping) return;
+    if (S.stopping || studio.optJob.holder !== 'optimization') return;
     studio.showError({ message: `the optimization process ended unexpectedly (exit code ${info.code})`, frames: [], traceback: info.stderr.join('\n') }, 'Optimization');
   });
-  studio.on('strategy-loaded', (info) => { S.result = null; f('save').disabled = true; renderGrid(info); });
+  studio.on('strategy-loaded', (info) => { S.result = null; f('save').disabled = true; grid.render(info); });
   studio.on('data-changed', renderWindows);
-  studio.on('worker-restarted', () => renderGrid(null));
+  studio.on('worker-restarted', () => grid.render(null));
+  studio.on('opt-job', (holder) => { f('run').disabled = !!holder && holder !== 'optimization'; });
   studio.ready.push(init);
-  studio.optimize = { run, stop, save, select, useSelected, count, state: S };
+  studio.optimize = { run, stop, save, select, useSelected, count: grid.count, state: S };
 })();

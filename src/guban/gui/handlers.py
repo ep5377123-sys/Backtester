@@ -35,6 +35,8 @@ class State:
     applied: Any = None  # tab_strategy.Applied: the last Apply's run
     backtest: Any = None  # tab_backtest.Backtested: the Backtest tab's last run
     optimization: Any = None  # tab_optimize: the last optimize.run (in the "opt" worker process)
+    walkforward: Any = None  # tab_walkforward: the last wf.run (the result itself in the "opt" worker; here its summary)
+    monte_carlo: Any = None  # tab_montecarlo: the last Monte Carlo runs of the Monte Carlo tab
 
     def on_data_changed(self) -> None:
         """New bars, windows or dataset: results built on the old ones are gone."""
@@ -85,4 +87,4 @@ def debug_chart(state: State, params: dict, emit) -> dict:
     return {"image": uri, "bytes": len(uri), "draw_ms": round((time.perf_counter() - t0) * 1000, 1)}
 
 
-from guban.gui import tab_backtest, tab_data, tab_optimize, tab_strategy  # noqa: E402, F401  (register the tabs' methods)
+from guban.gui import tab_backtest, tab_data, tab_montecarlo, tab_optimize, tab_strategy, tab_walkforward  # noqa: E402, F401  (register the tabs' methods)

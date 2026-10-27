@@ -103,9 +103,97 @@ const settings = {
   },
 };
 
+// A grid editor over a strategy's inputs: a tick box and a values field per input, remembered per strategy file under
+// `${prefix}:${file}`; count() asks the worker how many combinations the ticked values make. Used by the Optimization
+// and Walk Forward tabs. ui: { container, error, count } elements.
+function gridEditor(prefix, ui, fallbackPrefix) {
+  const file = () => (studio.strategy.state.loaded || {}).file;
+  const key = (pre) => `${pre}:${file()}`;
+  const ed = { count: null };
+
+  ed.specs = () => {
+    const out = {};
+    for (const row of ui.container.querySelectorAll('[data-name]')) {
+      const [on, values] = [row.querySelector('input[type=checkbox]'), row.querySelector('input.values')];
+      if (on.checked) out[row.dataset.name] = values.value.trim();
+    }
+    return out;
+  };
+
+  function save() {
+    const saved = {};
+    for (const row of ui.container.querySelectorAll('[data-name]')) {
+      saved[row.dataset.name] = { on: row.querySelector('input[type=checkbox]').checked, values: row.querySelector('input.values').value };
+    }
+    settings.set(key(prefix), saved);
+  }
+
+  function showError(message) {
+    ui.count.textContent = '';
+    ui.error.textContent = message;
+    ui.error.classList.remove('hidden');
+  }
+
+  ed.count = async () => {
+    const grid = ed.specs();
+    ed.n = null;
+    if (!Object.keys(grid).length) { showError('Tick at least one input to optimize.'); return null; }
+    try {
+      const r = await api('optimize.count', { grid });
+      ed.n = r.count;
+      ui.count.textContent = `(${r.count.toLocaleString('en-US')} combination${r.count === 1 ? '' : 's'})`;
+      ui.error.classList.add('hidden');
+      return r;
+    } catch (err) {
+      showError(err.message);
+      return null;
+    }
+  };
+
+  let timer = null;
+  const countSoon = () => { clearTimeout(timer); timer = setTimeout(ed.count, 300); };
+
+  ed.render = (info) => {
+    if (!info) {
+      ui.container.replaceChildren(el('div', { className: 'muted' }, 'Load a strategy on the Strategy tab.'));
+      return;
+    }
+    let saved = settings.get(key(prefix));
+    if (!Object.keys(saved).length && fallbackPrefix) saved = settings.get(key(fallbackPrefix));
+    const editor = el('div', { className: 'grid-editor' });
+    for (const inp of info.inputs) {
+      const s = saved[inp.name] || {};
+      const on = el('input', { type: 'checkbox', checked: !!s.on, title: `optimize ${inp.name}` });
+      const values = el('input', { className: 'values', value: s.values ?? (inp.kind === 'bool' ? 'true,false' : inp.value), disabled: !s.on, placeholder: inp.value });
+      const row = el('div', { style: 'display: contents' }, [on, el('span', { className: 'gname', title: `${inp.kind}, default ${inp.value}` }, inp.name), values]);
+      row.dataset.name = inp.name;
+      on.onchange = () => { values.disabled = !on.checked; save(); ed.count(); };
+      values.oninput = () => { save(); countSoon(); };
+      editor.append(row);
+    }
+    ui.container.replaceChildren(editor);
+    ed.count();
+  };
+  return ed;
+}
+
+// The "opt" worker runs one job at a time (an optimization or a walk-forward): the running tab holds it.
+const optJob = {
+  holder: null,
+  take(name) {
+    if (this.holder && this.holder !== name) throw new Error(`The ${this.holder} is running in the background process: wait for it or Stop it first`);
+    this.holder = name;
+    studio.fire('opt-job', name);
+  },
+  release(name) {
+    if (this.holder === name) this.holder = null;
+    studio.fire('opt-job', this.holder);
+  },
+};
+
 const listeners = {};
 const studio = {
-  api, el, fillTable, fillSelect, busy, showTab, showError, settings,
+  api, el, fillTable, fillSelect, busy, showTab, showError, settings, gridEditor, optJob,
   on(name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
   fire(name, payload) { for (const fn of listeners[name] || []) fn(payload); },
   ready: [], // tab init functions, run in order once the worker answers

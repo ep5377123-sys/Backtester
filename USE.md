@@ -122,7 +122,10 @@ uv run guban optimize strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 v
 ```
 uv run guban wfo strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 vwap_exit_bars=1:4" --symbol MNQ --data-from 2021-01-03 --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5
 ```
-- Window flags: `--is 12 --oos 3 --step 3` (months), `--rolling` (default) or `--anchored`, `--start YYYY-MM-DD`.
+- Window flags: `--is 12 --oos 3 --step 3` (months), `--rolling` (default) or `--anchored`, `--start YYYY-MM-DD`,
+  `--folds N` (exactly N whole windows; error if the data is too short).
+- 4 folds of 1 year in / 1 year out over the last 60 months (the GUI's default, user 2026-10-26): `--is 12 --oos 12
+  --step 12 --folds 4 --start <last session + 1 day − 60 months>`.
 - 70/30 rolling over 5 years (Phase 17), with the MC-parity inputs: `uv run guban wfo strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 vwap_exit_bars=1:4" --symbol MNQ --data-from 2021-01-03 --tf 5m --session eth --tz America/Chicago --commission 0.40 --slippage 0.04 --set take_profit_usd=500 --set stop_loss_usd=500 --set num_contracts=5 --set earliest_entry=945 --set latest_entry=1500 --set flatten_early_close=false --is 14 --oos 6 --step 6 --start 2021-10-01 --out reports/vault_break_mnq_wfo_70_30` → 8 windows (last partial), 896 OOS trades, net 24,603.00, PF 1.13, average R +0.055, WFE 50%; ~25 min on 6 workers.
 - Expected: 19 windows, 1,067 OOS trades, net 43,531.10, WFE 77%; 998 s on 6 workers (measured alongside the test suite). Run it with `run_in_background` or a long timeout.
 - Writes `reports/<...>_wfo/trades.csv` (stitched OOS), `windows.csv`, `results.csv`, `wfo.json`, `wfo.html`, and `trades/trade_<no>.png` per OOS trade (`--no-trade-charts` skips them).
@@ -143,8 +146,9 @@ uv run guban propfirm --trades reports/vault_break_nq/trades.csv --rules apex_50
 uv run guban gui            # open the window (first launch: npm install of Electron into gui/node_modules)
 uv run guban gui --smoke    # drive every tab hidden, screenshots + result.json in reports/_gui_smoke/, exit 0/1
 ```
-- Tabs: Data → Strategy → Backtest → Optimization (README "Guban Studio"). The Full dataset equals `guban run`; Save
-  results writes the same run folder.
+- Tabs: Data → Strategy → Backtest → Optimization → Walk Forward → Monte Carlo (README "Guban Studio"). The Full
+  dataset equals `guban run`; Save results writes the same run folder. Walk Forward's Save = `guban wfo ... --folds N
+  --start <its first in-sample day>`; the Monte Carlo tab's prop-firm Save = `guban propfirm --trades <source>`.
 - From a VS Code terminal it still works: `guban gui` drops the `ELECTRON_RUN_AS_NODE` VS Code sets.
 - The desktop shortcut "Guban Studio" starts `gui\node_modules\electron\dist\electron.exe gui` in the repo folder.
 

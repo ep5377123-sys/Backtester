@@ -1,13 +1,14 @@
-// Backtest tab: rerun the applied strategy with this tab's capital / costs / fill mode / Monte Carlo settings and show
-// what `guban run` reports (report.html's sections, styled dark) plus monthly bars and daily histograms.
-// Save results writes the run folder `guban run` writes. Worker side: guban/gui/tab_backtest.py.
+// Backtest tab: rerun the applied strategy with this tab's capital / costs / fill mode and show what `guban run`
+// reports (report.html's sections, styled dark) plus monthly bars and daily histograms. The trade Monte Carlo lives on
+// the Monte Carlo tab; its settings go with Run (the evaluation) and Save, which writes the run folder `guban run`
+// writes. Worker side: guban/gui/tab_backtest.py.
 'use strict';
 
 (() => {
   const { api, el, busy, settings } = studio;
   const f = (id) => $(`#bt-${id}`);
   const S = { result: null, report: null, defaults: null };
-  const FIELDS = { capital: 'capital', commission: 'commission', slippage: 'slippage', fill: 'fill_mode', sims: 'mc_sims', seed: 'mc_seed', ddlimit: 'mc_dd_limit', risk: 'mc_risk', oos: 'mc_oos_from' };
+  const FIELDS = { capital: 'capital', commission: 'commission', slippage: 'slippage', fill: 'fill_mode' };
 
   const params = () => Object.fromEntries(Object.entries(FIELDS).map(([id, key]) => [key, f(id).value]));
 
@@ -30,9 +31,6 @@
     const saved = settings.get('backtest');
     f('capital').value = saved.capital ?? d.capital;
     f('fill').value = saved.fill_mode || d.fill_mode;
-    f('sims').value = saved.mc_sims ?? d.mc_sims;
-    f('seed').value = saved.mc_seed ?? d.mc_seed;
-    for (const k of ['ddlimit', 'risk', 'oos']) f(k).value = saved[FIELDS[k]] ?? '';
     // costs are per contract: the loaded symbol's defaults unless this symbol had its own
     const costs = (saved.costs || {})[d.contract] || {};
     f('commission').value = costs.commission ?? d.commission;
@@ -42,13 +40,14 @@
   function saveSettings(p) {
     const saved = settings.get('backtest');
     const costs = { ...(saved.costs || {}), [S.defaults.contract]: { commission: p.commission, slippage: p.slippage } };
-    settings.set('backtest', { ...p, costs });
+    const own = Object.fromEntries(Object.values(FIELDS).map((k) => [k, p[k]]));
+    settings.set('backtest', { trade_images: saved.trade_images, ...own, costs });
   }
 
   async function run() {
     if (!studio.strategy.state.applied) throw new Error('Apply a strategy on the Strategy tab first');
     if (!S.defaults) await fillDefaults();
-    const p = params();
+    const p = { ...params(), ...studio.montecarlo.tradeSettings() };
     const r = await busy([f('run'), f('save')], 'Backtest', () => api('backtest.run', p));
     saveSettings(p);
     S.result = r;
@@ -63,10 +62,10 @@
     const h = r.html;
     f('perf').replaceChildren(el('h2', {}, 'Performance'), ...fragment(h.tiles), ...fragment(h.summary));
     const notes = r.notes.length ? [el('section', {}, [el('h2', {}, 'Notes'), el('ul', { className: 'notes-list' }, r.notes.map((n) => el('li', {}, n)))])] : [];
-    f('sections').replaceChildren(...fragment(h.evaluation), ...fragment(h.monte_carlo), ...fragment(h.monthly), ...notes);
+    f('sections').replaceChildren(...fragment(h.evaluation), ...fragment(h.monthly), ...notes);
     const s = r.seconds;
     f('info').replaceChildren(...[r.title, r.window, r.costs,
-      `${r.trades.toLocaleString('en-US')} trades · backtest ${s.backtest} s · Monte Carlo ${s.monte_carlo} s · charts ${s.charts} s`].map((t) => el('div', {}, t)));
+      `${r.trades.toLocaleString('en-US')} trades · backtest ${s.backtest} s · evaluation ${s.evaluation} s · charts ${s.charts} s`].map((t) => el('div', {}, t)));
     studio.fire('backtested', r);
     return r;
   }

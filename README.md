@@ -183,7 +183,8 @@ uv run guban wfo strategies/vault_break.py --grid "noise_mult=0.4:1.0:0.1 vwap_e
 ```
 
 - Optimizes each in-sample window and trades the winner in the next out-of-sample window. `--is 12 --oos 3 --step 3`
-  (months) are the defaults; `--anchored` makes every in-sample window start at `--start` and grow.
+  (months) are the defaults; `--anchored` makes every in-sample window start at `--start` and grow. `--folds N` makes
+  exactly N windows, all whole (an error when the data after `--start` is too short), instead of as many as fit.
 - Every window is traded on its own: indicators warm up on the earlier data, the window starts flat, and a position
   still open at its end is closed at its last bar's close (exit "Window End"). So no price after a window reaches its
   score, and the stitched equity always equals the sum of the stitched trades.
@@ -223,15 +224,27 @@ image in a dark version of the reports' style.
   Shows entry / exit counts, every trade, and a candlestick chart (Start index, Bars to plot; click a trade to jump to
   it) with entries ▲▼, exits ✕ and the strategy's `plots` lines. Apply uses the contract's default costs and 1-minute
   magnifier fills.
-- **Backtest:** reruns the applied strategy with this tab's capital, costs, fill mode and Monte Carlo settings and shows
-  what `guban run` reports: metrics, evaluation, equity, drawdown, the resample / reorder / whole-day Monte Carlo with
-  EV and horizons, net by month, plus daily P&L and daily drawdown histograms. *Save results* writes the same run folder
-  as `guban run` (`trades.csv`, `metrics.json`, `report.html`; `_is` / `_oos` suffix for a window).
+- **Backtest:** reruns the applied strategy with this tab's capital, costs and fill mode and shows what `guban run`
+  reports: metrics, evaluation, equity, drawdown, net by month, plus daily P&L and daily drawdown histograms. *Save
+  results* writes the same run folder as `guban run` (`trades.csv`, `metrics.json`, `report.html`; `_is` / `_oos` suffix
+  for a window), with the trade Monte Carlo run on the Monte Carlo tab's settings (they also feed the evaluation).
 - **Optimization:** tick inputs and give their values (`0.4:1.0:0.1`, `1,2,3`); the grid runs on the in-sample window
   only (each combination scored as its own run on that window), then the top N are rerun out of sample: equity curves
   (in sample blue, out of sample purple), Sharpe and drawdown histograms, in- vs out-of-sample net, and a table. *Stop*
   ends the run at once; *Use selected inputs* copies a row's inputs to the Strategy tab. *Save* writes
   `reports/<strategy>_<sym>_<tf>_<session>_opt_is_oos/` (`results.csv`, `oos.csv`, `optimize.json`).
+- **Walk Forward:** `guban wfo` on the loaded data with the Optimization tab's kind of grid. Default folds: rolling,
+  12 months in sample → 12 months out of sample, stepped 12 months, 4 folds, placed so the last fold ends at the Data
+  tab's end (a *First in-sample day* overrides); the fold table updates as you type and says when the data is too
+  short. Shows the stitched out-of-sample tiles, equity and drawdown with the folds shaded, per-fold net per year and
+  chosen inputs, and the walk-forward table. *Stop* ends it; *Use the last fold's inputs* copies them to the Strategy
+  tab; *Save* writes the folder `guban wfo` writes for the same settings. It and the Optimization tab share one
+  background process, so one of them runs at a time.
+- **Monte Carlo:** one trade source (the Backtest tab's run, the walk-forward's out-of-sample trades, or a trades.csv /
+  MC export) and two separate simulations of it. *Trade Monte Carlo*: the resample / reorder / whole-day Monte Carlo
+  with EV and horizons from `guban run`'s report. *Prop-firm evaluation*: `guban propfirm` with a rules file from
+  `config/propfirm/` whose values you can edit on the tab (edits are marked, recorded in a saved `propfirm.json`, and
+  never written to the file); *Save* writes `guban propfirm`'s folder. A source that runs again marks the results stale.
 
 Windows match the engine's trading windows: warm-up from the first loaded bar, flat at the window's start, a position
 still open at its end closed there ("Window End"). The Full dataset is exactly `guban run`. `uv run guban gui --smoke`

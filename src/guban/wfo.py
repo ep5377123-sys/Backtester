@@ -4,7 +4,9 @@ Windows are built on session dates, in whole months, end exclusive. Rolling: in-
 [start + k*step, start + k*step + is); anchored: [start, start + k*step + is). Its out-of-sample window follows
 it directly: [in-sample end, in-sample end + oos), cut off at the end of the data (then marked partial). Windows
 continue while an out-of-sample window has at least one day of data. step >= oos, so no out-of-sample day is in
-two windows, and no out-of-sample window overlaps its own in-sample window.
+two windows, and no out-of-sample window overlaps its own in-sample window. `folds` caps the number of windows: exactly
+that many, all whole (never a partial last window), else "not enough data"; fold_start() places them so the last one
+ends at the end of the data.
 
 Each in-sample window picks the input combination ranked first by the metric, among runs with at least
 `min_trades` trades in that window (guban.optimize.rank_results; ties keep grid order). Those inputs trade the
@@ -75,14 +77,18 @@ def make_windows(
     step_months: int | None = None,
     anchored: bool = False,
     start: str | pd.Timestamp | None = None,
+    folds: int | None = None,
 ) -> list[Window]:
     """In-sample / out-of-sample windows for data whose sessions run from `first` to `last` (session dates).
 
     start: the first in-sample day (default: the first day of the first whole month of data). step defaults to oos.
+    folds: exactly this many windows, none partial (default: as many as the data holds, the last one maybe partial).
     """
     step = oos_months if step_months is None else step_months
     if min(is_months, oos_months, step) < 1:
         raise ValueError("window lengths and the step must be at least 1 month")
+    if folds is not None and folds < 1:
+        raise ValueError(f"folds must be at least 1, got {folds}")
     if step < oos_months:
         raise ValueError(f"a step of {step} months is shorter than the {oos_months}-month out-of-sample window, so windows would share out-of-sample days")
     first, last = pd.Timestamp(first).normalize(), pd.Timestamp(last).normalize()
@@ -93,7 +99,7 @@ def make_windows(
         raise ValueError(f"start {start:%Y-%m-%d} is before the first session in the data ({first:%Y-%m-%d})")
     end = last + pd.Timedelta(days=1)
     windows = []
-    while True:
+    while folds is None or len(windows) < folds:
         k = len(windows)
         is_start = start if anchored else start + pd.DateOffset(months=k * step)
         is_end = start + pd.DateOffset(months=k * step + is_months)
@@ -106,7 +112,20 @@ def make_windows(
             f"not enough data: sessions {first:%Y-%m-%d} to {last:%Y-%m-%d} leave no out-of-sample days after "
             f"{is_months} in-sample months from {start:%Y-%m-%d}"
         )
+    if folds is not None and (len(windows) < folds or windows[-1].partial):
+        need = is_months + step * (folds - 1) + oos_months
+        raise ValueError(
+            f"not enough data: {folds} folds of {is_months} + {oos_months} months (step {step}) need {need} months from "
+            f"{start:%Y-%m-%d}, to {start + pd.DateOffset(months=need):%Y-%m-%d}; the last session is {last:%Y-%m-%d}"
+        )
     return windows
+
+
+def fold_start(last: str | pd.Timestamp, is_months: int, oos_months: int, step_months: int | None, folds: int) -> pd.Timestamp:
+    """The first in-sample day that makes `folds` windows end exactly at the day after the session `last` (rolling or
+    anchored: either way the last out-of-sample window ends is + step * (folds - 1) + oos months after the start)."""
+    step = oos_months if step_months is None else step_months
+    return pd.Timestamp(last).normalize() + pd.Timedelta(days=1) - pd.DateOffset(months=is_months + step * (folds - 1) + oos_months)
 
 
 @dataclass
@@ -192,6 +211,7 @@ def walk_forward(
     step_months: int | None = None,
     anchored: bool = False,
     start: str | pd.Timestamp | None = None,
+    folds: int | None = None,
     metric: str = "net_profit",
     min_trades: int = 0,
     workers: int | None = None,
@@ -210,7 +230,7 @@ def walk_forward(
     sess = session_keys(frame.index, frame["session_date"] if "session_date" in frame.columns else None)
     if not sess.is_monotonic_increasing:
         raise ValueError("bars' session dates must not decrease")
-    windows = make_windows(sess[0], sess[-1], is_months, oos_months, step_months, anchored, start)
+    windows = make_windows(sess[0], sess[-1], is_months, oos_months, step_months, anchored, start, folds)
     is_r = [(int(sess.searchsorted(w.is_start)), int(sess.searchsorted(w.is_end))) for w in windows]
     oos_r = [(int(sess.searchsorted(w.oos_start)), int(sess.searchsorted(w.oos_end))) for w in windows]
     job = dataclasses.replace(job, windows=tuple(is_r + oos_r))

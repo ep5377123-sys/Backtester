@@ -226,7 +226,8 @@ def test_backtest_run_matches_the_cli_metrics_and_draws_everything():
     assert b.metrics == window_metrics(raw, d.bars.iloc[:hi], lo, hi)
     assert b.metrics == backtest_metrics(b.a.result, d.bars.iloc[lo:hi])
     assert all(r["charts"][k] for k in ("monthly", "equity", "drawdown", "daily_pnl", "daily_dd"))
-    assert "id='monte-carlo'" in r["html"]["monte_carlo"] and "id='evaluation'" in r["html"]["evaluation"]
+    assert "monte_carlo" not in r["html"] and "id='evaluation'" in r["html"]["evaluation"]  # Monte Carlo: its own tab
+    assert b.mc_settings == {"sims": 200, "seed": 42, "dd_limit": None, "risk": None, "oos_from": None}
     with pytest.raises(ValueError, match="commission must be at least 0"):
         METHODS["backtest.run"](state, {"commission": "-1"}, emit)
 
@@ -259,3 +260,155 @@ def test_optimize_count_parses_the_grid_like_the_cli():
         METHODS["optimize.count"](state, {"grid": {"every": "0.5,1"}}, emit)  # an int input rejects 0.5
     opts = METHODS["optimize.options"](state, {}, emit)
     assert {"key": "net_profit", "label": "Net profit"} in opts["metrics"] and opts["max_combinations"] == 5000
+
+
+# --- Monte Carlo tab (guban.gui.tab_montecarlo) ------------------------------------------------------------------
+
+
+def test_monte_carlo_tab_equals_the_backtest_save_and_reads_trade_files(tmp_path):
+    from guban.gui.handlers import METHODS
+
+    emit = lambda *a, **k: None  # noqa: E731
+    state, d = _studio("full")
+    with pytest.raises(ValueError, match="No backtest to simulate"):
+        METHODS["mc.trade_run"](state, {"source": "backtest", "mc_sims": "300"}, emit)
+    METHODS["strategy.apply"](state, {"inputs": {}, "fill_mode": "ohlc"}, emit)
+    settings = {"mc_sims": "300", "mc_seed": "7", "mc_dd_limit": "50", "mc_oos_from": "2024-01-25"}
+    METHODS["backtest.run"](state, {"fill_mode": "ohlc", **settings}, emit)
+    METHODS["backtest.save"](state, {"out": str(tmp_path / "run")}, emit)
+    saved = json.loads((tmp_path / "run" / "metrics.json").read_text(encoding="utf-8"))
+    r = METHODS["mc.trade_run"](state, {"source": "backtest", **settings}, emit)
+    tab = json.loads(json.dumps(r["summary"], default=str))
+    assert tab == json.loads(json.dumps(saved["monte_carlo"], default=str))  # R7: the saved run's Monte Carlo, exactly
+    assert "id='monte-carlo'" in r["html"] and r["source"].startswith("Backtest: Flip")
+    f = METHODS["mc.trade_run"](state, {"source": "file", "file": str(tmp_path / "run" / "trades.csv"), **settings}, emit)
+    assert f["summary"]["trades"] == tab["trades"]  # same trades; the days come from exit dates here, not sessions
+    assert f["summary"]["resample"] == tab["resample"] and f["summary"]["reorder"] == tab["reorder"]  # neither uses days
+    with pytest.raises(FileNotFoundError, match="trades file"):
+        METHODS["mc.trade_run"](state, {"source": "file", "file": str(tmp_path / "nope.csv"), **settings}, emit)
+    with pytest.raises(ValueError, match="No walk-forward"):
+        METHODS["mc.trade_run"](state, {"source": "walkforward", **settings}, emit)
+    srcs = {x["key"]: x["available"] for x in METHODS["mc.sources"](state, {}, emit)["sources"]}
+    assert srcs == {"backtest": True, "walkforward": False, "file": True}
+
+
+# --- Walk Forward tab (guban.gui.tab_walkforward) ----------------------------------------------------------------
+
+WF_STRATEGY = '''from guban.engine import Strategy
+
+
+class Swing(Strategy):
+    """Long after `up` rising closes, out after `hold` bars."""
+
+    inputs = dict(up=2, hold=3)
+
+    def on_bar(self):
+        if self.market_position == 0 and self.current_bar > self.p.up and all(self.close[k] > self.close[k + 1] for k in range(self.p.up)):
+            self.buy("L", 1)
+        elif self.market_position != 0 and self.bars_since_entry >= self.p.hold:
+            self.sell("X")
+'''
+
+
+def _wf_store(tmp_path):
+    """Five months of RTH 1-minute NQ bars: a random walk, so the inputs' rankings differ from month to month."""
+    import numpy as np
+    import pandas as pd
+
+    from guban.data.parquet import write_parquet
+
+    days = pd.bdate_range("2024-01-02", "2024-05-31")
+    idx = pd.DatetimeIndex([d + pd.Timedelta(hours=9, minutes=31 + k) for d in days for k in range(390)]).tz_localize("America/New_York")
+    c = 17000 + np.cumsum(np.random.default_rng(5).normal(0, 2.0, len(idx))).round(2)
+    df = pd.DataFrame({"open": c, "high": c + 1.5, "low": c - 1.5, "close": c, "volume": 1, "bid_vol": 0, "ask_vol": 1, "contract": "202406"},
+                      index=idx)  # fmt: skip
+    write_parquet(df, tmp_path / "data" / "NQ" / "1m.parquet")
+    (tmp_path / "swing.py").write_text(WF_STRATEGY)
+
+
+def test_walk_forward_tab_equals_guban_wfo(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from guban.cli import app
+    from guban.gui import tab_data
+    from guban.gui.handlers import METHODS, State
+
+    emit = lambda *a, **k: None  # noqa: E731
+    monkeypatch.chdir(tmp_path)
+    _wf_store(tmp_path)
+    monkeypatch.setattr(tab_data, "DATA_DIR", tmp_path / "data")
+    form = {"symbol": "NQ", "tf": "30m", "session": "rth", "tz": "America/New_York", "start": "2024-01-02", "end": "2024-05-31"}
+    main, opt = State(), State()
+    main.data = tab_data.load_data(form, emit)
+    lay = {"is_months": "1", "oos_months": "1", "step_months": "1", "folds": "3"}
+    pre = METHODS["wf.windows"](main, lay, emit)
+    assert pre["folds"] == 3 and pre["start"] == "2024-02-01"  # end-aligned: the last fold ends with the data (May 31)
+    assert pre["rows"][-1] == ["W3", "2024-04-01 → 2024-04-30", "2024-05-01 → 2024-05-31"]
+    with pytest.raises(ValueError, match="not enough data: 5 folds"):
+        METHODS["wf.windows"](main, {**lay, "folds": "5"}, emit)
+    with pytest.raises(ValueError, match="not enough data"):
+        METHODS["wf.windows"](main, {**lay, "start": "2024-02-02"}, emit)  # the last fold would run past the data
+
+    grid = {"up": "1,2,3", "hold": "2,6"}
+    r = METHODS["wf.run"](opt, {"data": form, "strategy": {"file": "swing.py"}, "grid": grid, **lay, "min_trades": "1", "workers": "1",
+                                "fill_mode": "ohlc"}, emit)  # fmt: skip
+    assert r["start"] == "2024-02-01" and len(r["windows"]) == 3 and r["trades"] > 0
+    assert all(r["charts"][k] for k in ("equity", "drawdown", "folds")) and "Walk-forward" in r["html"]["section"]
+    assert set(r["last_inputs"]) == {"up", "hold"}
+    gui = METHODS["wf.save"](opt, {"out": "gui"}, emit)
+    assert len(gui["files"]) == 5
+
+    res = CliRunner().invoke(app, ["wfo", "swing.py", "--grid", "up=1,2,3", "--grid", "hold=2,6", "--symbol", "NQ", "--tf", "30m", "--session", "rth",
+                                   "--tz", "America/New_York", "--data-dir", "data", "--data-from", "2024-01-02", "--fill-mode", "ohlc",
+                                   "--is", "1", "--oos", "1", "--step", "1", "--folds", "3", "--start", "2024-02-01", "--min-trades", "1",
+                                   "--workers", "1", "--no-trade-charts", "--out", "cli"])  # fmt: skip
+    assert res.exit_code == 0, res.output
+    for name in ("trades.csv", "windows.csv", "results.csv"):
+        assert (tmp_path / "gui" / name).read_bytes() == (tmp_path / "cli" / name).read_bytes(), name  # R5
+    a, b = (json.loads((tmp_path / d / "wfo.json").read_text(encoding="utf-8")) for d in ("gui", "cli"))
+    assert a.pop("written_by") == "Guban Studio"
+    for j in (a, b):
+        j.pop("seconds"), j.pop("workers")
+    assert a == b
+
+    METHODS["wf.register"](main, {"strategy": r["strategy"], "tz": r["tz"]}, emit)
+    m = METHODS["mc.trade_run"](main, {"source": "walkforward", "mc_sims": "200"}, emit)
+    assert m["summary"]["trades"] == r["trades"] and m["source"].startswith("Walk-forward: Swing")
+
+
+def test_propfirm_tab_equals_guban_propfirm(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from guban.cli import app
+    from guban.gui.handlers import METHODS
+
+    emit = lambda *a, **k: None  # noqa: E731
+    state, d = _studio("full")
+    rules = METHODS["mc.propfirm_rules"](state, {}, emit)
+    assert rules["selected"] == "apex_50k_eod" and rules["notes"]
+    fields = {x["key"]: x["value"] for x in rules["fields"]}
+    assert fields["profit_target"] == "1250" and fields["eod_trailing"] == "true" and fields["sweep"].startswith("0.3, 0.5")
+    METHODS["strategy.apply"](state, {"inputs": {}, "fill_mode": "ohlc"}, emit)
+    METHODS["backtest.run"](state, {"fill_mode": "ohlc", "mc_sims": "0"}, emit)
+    METHODS["backtest.save"](state, {"out": str(tmp_path / "run")}, emit)
+    small = {**fields, "sims": "2000", "sweep_sims": "500", "sweep": "0.5, 1"}
+    monkeypatch.chdir(tmp_path)  # the tab writes the source's trades.csv under reports/_gui_tmp
+    r = METHODS["mc.propfirm_run"](state, {"source": "backtest", "rules": "apex_50k_eod", "fields": small}, emit)
+    assert r["edited"] == ["sims", "sweep_sims", "sweep"] and "Pass rate" in r["html"] and 0 <= r["pass_rate"] <= 1
+    gui = METHODS["mc.propfirm_save"](state, {"out": str(tmp_path / "gui")}, emit)
+    assert len(gui["files"]) == 5
+    res = CliRunner().invoke(app, ["propfirm", "--trades", str(tmp_path / "run" / "trades.csv"), "--rules", "apex_50k_eod", "--sims", "2000",
+                                   "--sweep-sims", "500", "--sweep", "0.5,1", "--out", str(tmp_path / "cli")])  # fmt: skip
+    assert res.exit_code == 0, res.output
+    a, b = (json.loads((tmp_path / x / "propfirm.json").read_text(encoding="utf-8")) for x in ("gui", "cli"))
+    for j in (a, b):
+        j.pop("trades_file"), j.pop("seconds")
+    assert a == b  # R8: the same numbers as `guban propfirm` on the Backtest Save's trades.csv
+    for name in ("sweep.csv", "degradation.csv", "daily.csv"):
+        assert (tmp_path / "gui" / name).read_bytes() == (tmp_path / "cli" / name).read_bytes(), name
+    assert "edited in Guban Studio: sims, sweep_sims, sweep" in (tmp_path / "gui" / "propfirm.html").read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Max trading days must be a whole number"):
+        METHODS["mc.propfirm_run"](state, {"source": "backtest", "fields": {**small, "max_trading_days": "2.5"}}, emit)
+    with pytest.raises(ValueError, match="min_trading_days .* is more than max_trading_days"):
+        METHODS["mc.propfirm_run"](state, {"source": "backtest", "fields": {**small, "min_trading_days": "30"}}, emit)

@@ -1,7 +1,8 @@
 """Backtest tab: rerun the applied strategy (its inputs, the Data tab's dataset) with this tab's capital, costs and fill
-mode, then everything `guban run` reports: metrics, evaluation, equity and drawdown, the resample / reorder / whole-day
-Monte Carlo with EV and horizons, monthly table; plus the tab's own charts (monthly net bars, daily P&L and daily
-drawdown histograms). Save writes the run folder `guban run` writes (trades.csv, metrics.json, report.html).
+mode, then what `guban run` reports: metrics, evaluation, equity and drawdown, monthly table; plus the tab's own charts
+(monthly net bars, daily P&L and daily drawdown histograms). The trade Monte Carlo is on the Monte Carlo tab: Run takes
+its settings (the evaluation's R Monte Carlo uses them) and Save runs it, so the run folder is the one `guban run`
+writes (trades.csv, metrics.json with monte_carlo, report.html).
 
 Windowed datasets use the windowed result (tab_strategy.run_window): metrics over bars [lo, hi) as
 metrics.window_metrics; per-trade lookups (trading days, rolls, session exposure) index the run's bars [:hi].
@@ -22,7 +23,7 @@ from guban.gui.tab_data import DATA_DIR, DATASETS, loaded
 from guban.gui.tab_strategy import Applied, applied, run_window
 
 REPORTS = Path("reports")
-DEFAULTS = {"capital": 1_000_000.0, "fill_mode": "magnifier", "mc_sims": 10_000, "mc_seed": 42}
+DEFAULTS = {"capital": 1_000_000.0, "fill_mode": "magnifier"}
 
 
 @dataclass
@@ -33,7 +34,7 @@ class Backtested:
     capital: float
     costs_from: str
     metrics: dict
-    mc: object  # MonteCarloResult, {"skipped": reason} or None
+    mc_settings: dict  # the Monte Carlo tab's trade settings at Run (tab_montecarlo.trade_settings)
     evaluation: dict | None
     exposure: dict
     rolls: dict
@@ -138,13 +139,12 @@ def charts(b: Backtested) -> dict:
 
 def report_html(b: Backtested) -> dict:
     """report.html's own sections, as HTML fragments for the tab (styled by the renderer)."""
-    from guban.report import _evaluation_html, _monte_carlo_html, _monthly_table, _summary_table, _tiles
+    from guban.report import _evaluation_html, _monthly_table, _summary_table, _tiles
 
     tr = b.a.result.trades
     return {
         "tiles": _tiles(b.metrics),
         "evaluation": _evaluation_html(b.evaluation),
-        "monte_carlo": _monte_carlo_html(b.mc),
         "summary": _summary_table(b.metrics),
         "monthly": _monthly_table(tr),
     }
@@ -183,20 +183,15 @@ def backtest_defaults(state: State, params: dict, emit) -> dict:
 def backtest_run(state: State, params: dict, emit) -> dict:
     from guban.cli import _costs, _mc_trade_info
     from guban.evaluation import evaluate
+    from guban.gui.tab_montecarlo import trade_settings
     from guban.metrics import backtest_metrics, roll_summary, session_exposure
-    from guban.montecarlo import MIN_TRADES, check_settings, run_monte_carlo
 
     prev = applied(state)
     capital = _num(params, "capital", float, DEFAULTS["capital"], low=1.0)
     commission = _num(params, "commission", float, None, low=0.0)
     slippage = _num(params, "slippage", float, None, low=0.0)
     fill_mode = str(params.get("fill_mode") or DEFAULTS["fill_mode"])
-    sims = _num(params, "mc_sims", int, DEFAULTS["mc_sims"], low=0)
-    seed = _num(params, "mc_seed", int, DEFAULTS["mc_seed"])
-    dd_limit = _num(params, "mc_dd_limit", float, None)
-    risk = _num(params, "mc_risk", float, None)
-    oos_from = str(params.get("mc_oos_from") or "").strip() or None
-    check_settings(sims, seed, dd_limit, risk, oos_from)
+    s = trade_settings(params)
     t0 = time.perf_counter()
     a = run_window(state, prev.cls, prev.inputs, commission, slippage, fill_mode, emit)
     _, _, costs_from = _costs(a.spec, commission, slippage)
@@ -204,21 +199,14 @@ def backtest_run(state: State, params: dict, emit) -> dict:
     tr = a.result.trades
     metrics = backtest_metrics(a.result, _window_bars(a))
     info = _mc_trade_info(tr, a.bars)
-    mc = None
-    if sims:
-        if len(tr) >= MIN_TRADES:
-            emit("progress", message=f"Monte Carlo: {sims:,} runs per method on {len(tr):,} trades…")
-            mc = run_monte_carlo(tr["net_pnl"].to_numpy(float), sims, seed, dd_limit, risk=risk, oos_from=oos_from, **info)
-        else:
-            mc = {"skipped": f"needs at least {MIN_TRADES} trades; this run has {len(tr)}"}
+    evaluation = evaluate(tr, metrics, info["days"], s["sims"], s["seed"], s["risk"]) if len(tr) else None
     t2 = time.perf_counter()
-    evaluation = evaluate(tr, metrics, info["days"], sims, seed, risk) if len(tr) else None
-    b = Backtested(a, capital, costs_from, metrics, mc, evaluation, session_exposure(tr, a.bars), roll_summary(tr, a.bars), {})
+    b = Backtested(a, capital, costs_from, metrics, s, evaluation, session_exposure(tr, a.bars), roll_summary(tr, a.bars), {})
     state.backtest = b
     emit("progress", message="Drawing charts…")
     images = charts(b)
     t3 = time.perf_counter()
-    b.seconds = {"backtest": round(t1 - t0, 2), "monte_carlo": round(t2 - t1, 2), "charts": round(t3 - t2, 2)}
+    b.seconds = {"backtest": round(t1 - t0, 2), "evaluation": round(t2 - t1, 2), "charts": round(t3 - t2, 2)}
     lo_t, hi_t = a.bars.index[a.lo], a.bars.index[a.hi - 1]
     return {
         "title": f"{a.cls.__name__} · {a.spec.symbol} {loaded(state).tf} · {DATASETS[a.dataset].lower()}",
@@ -242,9 +230,11 @@ def run_folder(b: Backtested, d) -> Path:
 
 @method("backtest.save")
 def backtest_save(state: State, params: dict, emit) -> dict:
-    """Write the run folder `guban run` writes: trades.csv, metrics.json, report.html (light charts, like the CLI's)."""
+    """Write the run folder `guban run` writes: trades.csv, metrics.json, report.html (light charts, like the CLI's), with
+    the trade Monte Carlo run on the settings the Run used."""
     from guban.charts import theme
-    from guban.cli import _details
+    from guban.cli import _details, _mc_trade_info
+    from guban.gui.tab_montecarlo import trade_monte_carlo
     from guban.metrics import jsonable
     from guban.report import write_report
 
@@ -256,6 +246,7 @@ def backtest_save(state: State, params: dict, emit) -> dict:
     out = Path(params["out"]) if params.get("out") else run_folder(b, d)
     trade_charts = bool(params.get("trade_charts", False))
     data_from = d.bars.index[0].date().isoformat()
+    mc = trade_monte_carlo(a.result.trades, _mc_trade_info(a.result.trades, a.bars), b.mc_settings, emit)
     emit("progress", message=f"Writing {out}…")
     path = a.result.write_trades_csv(out / "trades.csv", b.capital)
     first, last = a.bars.index[0], a.bars.index[a.hi - 1]
@@ -265,7 +256,7 @@ def backtest_save(state: State, params: dict, emit) -> dict:
                  "capital": b.capital, "inputs": a.inputs, "first_bar": first, "last_bar": last, "bars": a.hi,
                  "dataset": DATASETS[a.dataset], "window": [a.bars.index[a.lo], last], "written_by": "Guban Studio",
                  "contract_rolls": b.rolls, "session_exposure": b.exposure}  # fmt: skip
-    mc_json = {} if b.mc is None else {"monte_carlo": b.mc if isinstance(b.mc, dict) else b.mc.summary()}
+    mc_json = {} if mc is None else {"monte_carlo": mc if isinstance(mc, dict) else mc.summary()}
     ev_json = {} if b.evaluation is None else {"evaluation": b.evaluation}
     (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **b.metrics, **mc_json, **ev_json}), indent=2, default=str) + "\n", encoding="utf-8")
     meta = {
@@ -279,7 +270,7 @@ def backtest_save(state: State, params: dict, emit) -> dict:
     if trade_charts:
         emit("progress", message=f"Drawing {len(a.result.trades):,} trade images…")
     with theme("light"):  # the CLI's report look, whatever the window's theme
-        report = write_report(a.result, a.bars, out / "report.html", b.metrics, meta, monte_carlo=b.mc, trade_charts=trade_charts,
+        report = write_report(a.result, a.bars, out / "report.html", b.metrics, meta, monte_carlo=mc, trade_charts=trade_charts,
                               evaluation=b.evaluation)  # fmt: skip
     return {"folder": str(out), "files": [str(path), str(out / "metrics.json"), str(report)], "report": str(report.resolve())}
 

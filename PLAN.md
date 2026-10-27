@@ -284,6 +284,10 @@ class VaultBreak(Strategy):
 - [x] Phase 19: Guban Studio — Electron desktop GUI with Data, Strategy, Backtest, Optimization tabs (done 2026-10-26, see "Phase 19 plan" and its results)
       Done when: `uv run guban gui` opens the app; `guban gui --smoke` drives all four tabs on NQ and exits 0; the GUI's
       Backtest numbers equal `guban run`'s on the same window; full `pytest` green (incl. test_ledger, test_report).
+- [x] Phase 20: Guban Studio Walk Forward and Monte Carlo tabs (done 2026-10-26, see "Phase 20 plan" and its results)
+      Done when: `walk_forward(folds=)` / `guban wfo --folds` exist; the WF tab's Save equals `walk_forward` on the same
+      settings; the MC tab's trade MC equals the Backtest Save's and its prop-firm equals `guban propfirm`; the Backtest
+      Save still equals `guban run`; full `pytest` and `guban gui --smoke` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1264,3 +1268,51 @@ table + candle image with entry/exit markers, indicator lines only via an opt-in
     Backtest run / sections / save, Optimization grid / stop / run / use inputs / save, worker crash + Restart) pass,
     also through the shortcut's command. Full suite 417 passed (111 s).
   - Parked (user): Trade, Cluster, Sensitivity, Walk Forward, Monte Carlo, Portfolio tabs; a Windows installer.
+
+## Phase 20 plan: Walk Forward and Monte Carlo tabs (approved 2026-10-26)
+Interview (dry-run, 6 questions): Q1 scope = **Walk Forward + Monte Carlo** tabs; Trade, Sensitivity, Cluster,
+Portfolio and the installer stay parked (user); Q2 Monte Carlo tab = **trade Monte Carlo (moved off the Backtest tab)
+and the prop-firm simulation, in separate sections** (user); Q3–Q5 walk-forward = **rolling, 12-month IS → 12-month
+OOS, step 12, 4 folds = the 60 months ending at the Data tab's End** (user); Q6 approved.
+
+- **Walk Forward:** `make_windows` / `walk_forward(folds=)` + `guban wfo --folds`: stop after N windows; fewer than N
+  full windows → "not enough data" error, never a partial fold; `folds=None` unchanged. Default start (GUI) = End + 1
+  day − (IS + step×(folds−1) + OOS) months. Runs in the "opt" worker (Stop kills it); WF and Optimization never run at
+  once. Form: grid (Optimization's widget), metric, min trades 30, IS/OOS/step/folds, rolling/anchored, Start (blank =
+  end-aligned), live fold preview + run count. Results: tiles (OOS net, PF, Sharpe, max DD, trades, WFE), per-fold
+  table, stitched OOS equity with fold boundaries, chosen inputs per fold (`wfo_report.wfo_section`); "Use last fold's
+  inputs"; Save = `guban wfo`'s `<run>_wfo/` files.
+- **Monte Carlo tab:** one trade source for both sections (last Backtest run / WF stitched OOS / a trades.csv or MC
+  export), stale marker when the source re-runs. Trade MC: sims 10,000, seed 42, DD limit, risk, OOS from → the
+  resample / reorder / day results, EV, horizons (`report._monte_carlo_html`); with the Backtest source it equals that
+  run's Save `monte_carlo`. Prop-firm: rules dropdown (config/propfirm/*.toml), editable rule/cost/sim fields (not
+  written back), toml notes shown; trades go through `tradelist` → `reports/_gui_tmp/trades.csv` → `load_trades` →
+  `run_propfirm`, so it equals `guban propfirm`; Save = the CLI's `reports/<trades>_<rules>/`. Both run in the main
+  worker (≈3 s each).
+- **Backtest tab:** no MC fields/section; Save sends the MC tab's trade-MC settings so the folder still equals `guban run`.
+- **Assumptions:** A1 WF shares the "opt" worker; A2 MC-export source: day = exit date, R only with a risk value;
+  A3 edited rules are not written back; A4 wf.run returns the stitched OOS trades to the main worker over stdio;
+  A5 `wfo_section` renders in the dark GUI.
+- **Steps:** 1 folds in wfo + CLI; 2 MC tab trade-MC section, Backtest trimmed; 3 Walk Forward tab; 4 prop-firm
+  section; 5 states, NQ check, docs, commit.
+
+- **Phase 20 results (2026-10-26); complete.** Library: `make_windows` / `walk_forward(folds=)`, `wfo.fold_start`,
+  `guban wfo --folds` (unset: output unchanged); `cli.write_wfo_folder` and `cli.write_propfirm_folder` (the commands'
+  file writing, shared with the GUI); `wfo_report.oos_bands`; `propfirm.report.propfirm_body`. GUI: `tab_walkforward`
+  + walkforward.js, `tab_montecarlo` + montecarlo.js (sub-tabs Trade Monte Carlo / Prop-firm evaluation; Browse… opens
+  a native file dialog, `guban:pick-file`), the Backtest tab without its Monte Carlo (Run sends the MC tab's settings
+  for the evaluation, Save runs the Monte Carlo on them), a shared grid editor and an "opt"-worker lock in app.js
+  (`studio.gridEditor`, `studio.optJob`).
+  - Equality: synthetic data, GUI Walk Forward Save vs `guban wfo` byte-equal trades.csv / windows.csv / results.csv and
+    equal wfo.json (but written_by, seconds, workers); prop-firm vs `guban propfirm` equal propfirm.json (but
+    trades_file, seconds) and byte-equal CSVs; trade Monte Carlo on the Backtest source = that run's Save `monte_carlo`.
+    NQ 15m eth, Vault Break, noise_mult 0.4/0.8, 4 folds 2021-10-02 → 2026-10-01 (sessions): the GUI's and the CLI's
+    trades.csv, windows.csv, results.csv are byte-identical (890 OOS trades, net 47,690.00, WFE 53%); prop-firm on the
+    in-sample Backtest trades 52.325% in both (10,465 of 20,000).
+  - A2 held (MC exports: day = exit date, else entry date; R only with a risk value). A4 replaced: the opt worker
+    writes the stitched OOS trades to `reports/_gui_tmp/walkforward/` (trades.csv + days.csv) and `wf.register` tells
+    the main worker. A5 held (`wfo_section` renders in the dark window).
+  - Timings (NQ, 6 cores): walk-forward 2 combinations × 4 folds 22–27 s; Stop 0.2 s; prop-firm 1.7 s; trade MC
+    (2,000 runs) 0.3 s.
+  - Smoke: 31 steps pass (adds MC on the Backtest / file / walk-forward sources, WF preview / stop + lock / run / use /
+    save, prop-firm on the Backtest and an edited walk-forward run / save). Full suite 422 passed (114 s).

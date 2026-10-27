@@ -123,11 +123,11 @@
     },
     async backtest_run() {
       studio.showTab('backtest');
-      $('#bt-sims').value = '2000';
+      $('#mc-sims').value = '2000';
       $('#bt-images').checked = false;
       const r = await studio.backtest.run();
       for (const id of ['monthly', 'equity', 'drawdown', 'daily', 'dailydd']) await decoded($(`#bt-${id}`));
-      check($('#bt-sections #monte-carlo') && $('#bt-sections #evaluation'), 'Monte Carlo / Evaluation sections missing');
+      check($('#bt-sections #evaluation') && !$('#bt-sections #monte-carlo'), 'Evaluation missing, or a Monte Carlo section still on the Backtest tab');
       check($('#bt-perf .tiles') && $('#bt-perf table.summary'), 'tiles / summary missing');
       return { trades: r.trades, net: r.net_profit, seconds: r.seconds };
     },
@@ -140,6 +140,31 @@
       check(r.files.length === 3 && !$('#bt-open').disabled, 'save did not finish');
       $('main').scrollTop = 0;
       return r.files;
+    },
+    async mc_trade() {
+      // R7: the Monte Carlo tab simulates the Backtest run's trades (the same settings the Save just used)
+      studio.showTab('montecarlo');
+      studio.montecarlo.showSub('trade');
+      await studio.montecarlo.refreshSources();
+      $('#mc-source').value = 'backtest';
+      $('#mc-source').onchange();
+      const r = await studio.montecarlo.runTrade();
+      check($('#mc-trade-out #monte-carlo'), 'no Monte Carlo section');
+      for (const img of document.querySelectorAll('#mc-trade-out img')) await decoded(img);
+      check(r.summary.sims === 2000, `sims ${r.summary.sims}`);
+      check($('#mc-source-label').textContent.startsWith('Backtest'), 'source label');
+      return { source: r.source, span: r.span, seconds: r.seconds };
+    },
+    async mc_trade_file() {
+      $('#mc-source').value = 'file';
+      $('#mc-source').onchange();
+      check(!$('#mc-file').classList.contains('hidden'), 'file field hidden');
+      $('#mc-file').value = 'reports/_gui_smoke/run/trades.csv';
+      const r = await studio.montecarlo.runTrade();
+      check(r.source.startsWith('File: trades.csv'), r.source);
+      $('#mc-source').value = 'backtest';
+      $('#mc-source').onchange();
+      return { source: r.source, span: r.span };
     },
     async optimize_grid() {
       studio.showTab('optimization');
@@ -191,6 +216,96 @@
       studio.showTab('optimization');
       const r = await studio.optimize.save('reports/_gui_smoke/opt');
       check(r.files.length === 3, 'files');
+      return r.files;
+    },
+    async wf_preview() {
+      // R3: 4 folds of 12 + 12 months, rolling, step 12, ending at the Data tab's end
+      studio.showTab('walkforward');
+      for (const [id, v] of [['is', '12'], ['oos', '12'], ['step', '12'], ['folds', '4'], ['start', ''], ['mode', 'rolling'], ['mintrades', '30'], ['workers', '']]) $(`#wf-${id}`).value = v;
+      $('#wf-images').checked = false;
+      const r = await studio.walkforward.preview();
+      check(r && r.folds === 4 && $('#wf-windows tbody').rows.length === 4, 'four folds');
+      const rows = [...document.querySelectorAll('#wf-grid [data-name]')];
+      check(rows.length > 0, 'no grid rows');
+      for (const row of rows) {
+        const on = row.querySelector('input[type=checkbox]');
+        on.checked = row.dataset.name === 'noise_mult';
+        row.querySelector('input.values').disabled = !on.checked;
+        if (on.checked) row.querySelector('input.values').value = '0.4,0.8';
+      }
+      const c = await studio.walkforward.count();
+      check(c && c.count === 2, `expected 2 combinations, got ${c && c.count}`);
+      return { start: r.start, folds: r.rows };
+    },
+    async wf_stop() {
+      // R4 / R10: Stop ends it within 5 s; the Optimization tab's Run is locked meanwhile
+      const running = studio.walkforward.run().then(() => 'finished', (e) => (e.stopped ? 'stopped' : `failed: ${e.message}`));
+      await until(() => /Walk-forward runs: [1-9]/.test($('#wf-progress-text').textContent), 'walk-forward progress', 120000);
+      check($('#op-run').disabled, 'Optimization Run not locked during the walk-forward');
+      const t0 = performance.now();
+      await studio.walkforward.stop();
+      const outcome = await running;
+      const ms = Math.round(performance.now() - t0);
+      check(outcome === 'stopped', `run ${outcome}`);
+      check(ms < 5000, `stop took ${ms} ms`);
+      check(!$('#op-run').disabled, 'Optimization Run still locked');
+      return { outcome, stop_ms: ms };
+    },
+    async wf_run() {
+      const r = await studio.walkforward.run();
+      for (const id of ['equity', 'drawdown', 'folds-chart']) await decoded($(`#wf-${id}`));
+      check($('#wf-section table.windows') && $('#wf-perf .tiles'), 'walk-forward section / tiles');
+      check(r.windows.length === 4, 'four folds');
+      return { start: r.start, trades: r.trades, seconds: r.seconds, last: r.last_inputs };
+    },
+    async wf_use() {
+      const want = studio.walkforward.state.result.last_inputs;
+      studio.walkforward.useLast();
+      for (const [k, v] of Object.entries(want)) check($(`#st-in-${k}`).value === v, `Strategy tab ${k} = ${$(`#st-in-${k}`).value}, want ${v}`);
+      return want;
+    },
+    async wf_save() {
+      studio.showTab('walkforward');
+      const r = await studio.walkforward.save('reports/_gui_smoke/wfo');
+      check(r.files.length === 5 && !$('#wf-open').disabled, 'files');
+      return r.files;
+    },
+    async mc_walkforward() {
+      studio.showTab('montecarlo');
+      await studio.montecarlo.refreshSources();
+      $('#mc-source').value = 'walkforward';
+      $('#mc-source').onchange();
+      const r = await studio.montecarlo.runTrade();
+      check(r.source.startsWith('Walk-forward: VaultBreak'), r.source);
+      check(r.summary.trades === studio.walkforward.state.result.trades, 'trade count');
+      return { source: r.source, span: r.span };
+    },
+    async pf_backtest() {
+      // R8: the prop-firm evaluation on the Backtest run's trades, the rules file as it is
+      studio.montecarlo.showSub('propfirm');
+      await studio.montecarlo.resetRules();
+      $('#mc-source').value = 'backtest';
+      $('#mc-source').onchange();
+      const r = await studio.montecarlo.runPropfirm();
+      for (const img of document.querySelectorAll('#pf-out img')) await decoded(img);
+      check($('#pf-out .tiles') && document.querySelectorAll('#pf-out img').length >= 4, 'tiles / charts missing');
+      check(r.edited.length === 0, `edited ${r.edited}`);
+      return { source: r.source, pass_rate: r.pass_rate, verdict: r.verdict, seconds: r.seconds };
+    },
+    async pf_walkforward_edited() {
+      $('#mc-source').value = 'walkforward';
+      $('#mc-source').onchange();
+      $('#pf-in-max_drawdown').value = '2000';
+      $('#pf-in-max_drawdown').onchange();
+      check($('#pf-in-max_drawdown').classList.contains('edited'), 'edited field not marked');
+      const r = await studio.montecarlo.runPropfirm();
+      check(r.edited.join() === 'max_drawdown' && r.source.startsWith('Walk-forward'), `${r.source} edited ${r.edited}`);
+      return { source: r.source, pass_rate: r.pass_rate, edited: r.edited };
+    },
+    async pf_save() {
+      const r = await studio.montecarlo.savePropfirm('reports/_gui_smoke/propfirm');
+      check(r.files.length === 5 && !$('#pf-open').disabled, 'files');
+      await studio.montecarlo.resetRules();
       return r.files;
     },
     async worker_crash() {
