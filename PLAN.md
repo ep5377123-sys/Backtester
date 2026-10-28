@@ -288,6 +288,9 @@ class VaultBreak(Strategy):
       Done when: `walk_forward(folds=)` / `guban wfo --folds` exist; the WF tab's Save equals `walk_forward` on the same
       settings; the MC tab's trade MC equals the Backtest Save's and its prop-firm equals `guban propfirm`; the Backtest
       Save still equals `guban run`; full `pytest` and `guban gui --smoke` green.
+- [x] Phase 21: NQ RTH range-band study — range forecasts (ATR, HAR, VX, combined), band calibration, the reflection-principle extension formula, fades at the band edges (done 2026-10-28, see "Phase 21 plan" and its results)
+      Done when: `research/range_bands.py` writes `reports/range_bands/{days.csv,races.csv,results.json,report.html}`
+      from walk-forward (causal) forecasts; the four band-fade verdicts use the Phase 13 rule; full `pytest` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1316,3 +1319,55 @@ OOS, step 12, 4 folds = the 60 months ending at the Data tab's End** (user); Q6 
     (2,000 runs) 0.3 s.
   - Smoke: 31 steps pass (adds MC on the Backtest / file / walk-forward sources, WF preview / stop + lock / run / use /
     save, prop-firm on the Backtest and an edited walk-forward run / save). Full suite 422 passed (114 s).
+
+## Phase 21 plan: NQ RTH range-band study (user ask 2026-10-28: "build it")
+Question (user): can math estimate the range extremes of NQ, i.e. where a day stops expanding? Built as a Phase 13-style
+study: walk-forward forecasts, calibration checks, and a pre-registered test of whether price reverses at the band edges.
+- **Data (verified 2026-10-28):** NQ RTH 1-min bars from `load_bars("NQ", "1m", "rth")` (2018-12-31 → 2026-10-07, 2,004
+  sessions) and the pre-RTH part of `1m_eth` (overnight range). Volatility input: the user's
+  `data/VIX/XCBF-20261026-KCNSUYPJQB/*.ohlcv-1d.csv` — Databento CFE **VX futures** (not the VIX index), 2018-11-04 →
+  2026-10-24, outrights + spreads, two rows per contract per day (the 0.05-tick, larger-volume row is VX; the other is
+  taken to be the mini). Bars are UTC calendar days (no Saturday bars), so the bar dated D-1 closes 00:00 UTC, before D's
+  09:30 ET open.
+- **Defaults [assumed]:** VX input = 30-day constant maturity from the two nearest monthly contracts (expiry = the
+  Wednesday 30 days before the third Friday of the next month, checked against each contract's last bar), F1 alone when
+  F1 ≥ 30 days out — if wrong (forward vs spot VIX matters): fetch the VIX index history; the log models absorb a level
+  bias. Days = full RTH sessions only (early closes and sessions with < 385 bars dropped). Everything in log terms
+  (range = ln H/L) so 2019's and 2026's price levels compare.
+- **Forecasts (target ln R, RTH):** ATR14 (mean of the last 14 ranges, no fit), HAR (1d / 5d / 22d), VX (ln VX30), and
+  combined HAR+VX+overnight range. Refit on the first session of every month on all earlier days (expanding, ≥ 250 days),
+  so every forecast is out-of-sample; bands = forecast × the training window's residual quantiles.
+- **Checks (descriptive):** OOS R² / MAE per model; coverage of the 50/80/95% range bands and the high/low-from-open
+  excursion quantiles by year; textbook touch rates 2(1 − Φ(k)) at k·σ (σ = mean range / 1.596) vs observed; the
+  reflection formula P(new high ≥ H_t + d) = 2(1 − Φ((ln(H_t/P_t) + d) / (σ·√s(t)))) at 10:00 … 15:00 ET, s(t) = the
+  training days' average share of RTH variance still to come, as a reliability table.
+- **Primary test (pre-registered):** levels O·e^{±q·f} (f = the best model by OOS MSE of ln R) at q = 0.1 … 2.0 plus the
+  band edges q50 / q80 (training quantiles of excursion / f). From each level's first touch, race: back by Y = 0.25·f
+  (fade wins) vs on by Y (extension wins); the touch bar's high/low beyond Y = extension; a later bar spanning both =
+  ambiguous, none by the close = unresolved (both dropped and counted). Per side and band edge (4 tests): fade rate at
+  the edge vs all races on that side; REAL only if gap ≥ 3 pp, one-sided exact binomial p < 0.05, gap > 0 every year.
+- **Layout:** `src/guban/research/vx.py` (VX loader, CM30), `src/guban/research/ranges.py` (touch probability,
+  variance-time curve, races, walk-forward OLS), `research/range_bands.py` → `reports/range_bands/`; tests in
+  `tests/test_research.py`.
+
+- **Phase 21 results (2026-10-28); complete.** OOS 2020-03-02 → 2026-10-07, 1,639 RTH sessions (2,004 sessions → 1,929 full;
+  67 early closes and 8 with < 385 bars dropped; 1,907 have every input; 250 train first). Run time 14 s.
+  - **Forecasting the range works.** OOS R² of ln(range): ATR14 0.327, HAR 0.403, VX 0.200, HAR+VX+ON **0.429** (best;
+    MAE 32.7% of the range). Bands are calibrated: HAR+VX+ON covers 50.4 / 80.8 / 95.0% for the 50 / 80 / 95% bands
+    (by year the 80% band runs 75–86%, 2020 lowest). Excursion levels: the high reaches q80 on 18.3% of sessions, the low
+    on 23.1% (nominal 20%; the quantile pools both sides and down moves run longer). Final-fit coefficients:
+    ln R = −1.94 + 0.116 lr1 + 0.323 lr5 + 0.070 lr22 + 0.288 ln VX30 + 0.229 ln overnight range.
+  - **Textbook random walk, k σ from the open (σ = mean range / 1.596):** theory 61.7 / 31.7 / 13.4 / 4.6% at 0.5 / 1 /
+    1.5 / 2 σ; highs reach 59.1 / 29.2 / 11.5 / 3.5%, lows 58.1 / 32.3 / 17.5 / 8.4% — the down side has the fat tail.
+  - **Reflection formula** (91,784 predictions, 10:00–15:00 ET, d = 0 … 0.5 × forecast): mean |pred − obs| 2.3 pp;
+    from 20% to 70% predicted, price extends 2–5 pp less often than the random walk says (mild intraday mean
+    reversion); within 1–3 pp by checkpoint.
+  - **Primary: NOT REAL on all four.** Fade at the edge vs every level, same side: upper q50 47.6% vs 47.9% (−0.3 pp,
+    p 0.57, n 712); upper q80 43.4% vs 47.8% (−4.3 pp, p 0.90, n 198); lower q50 48.5% vs 48.9% (−0.5 pp, p 0.61, n 788);
+    lower q80 49.4% vs 49.0% (+0.4 pp, p 0.46, n 346). Fade rates by level are flat near 47–50% with no bump at the band
+    edges; upper levels fade slightly less than 50% (NQ's upward drift). Band edges are probabilities, not turning points.
+  - **Checks:** 300 random races recomputed from the raw bars with pandas: 0 mismatches. Median realized / forecast
+    range 1.008. Report checked in headless Edge (1280 px). Tests: 8 new in `tests/test_research.py` (reflection
+    probability vs a simulated random walk, races both sides, variance clock, walk-forward causality, VX expiry rule and
+    constant maturity). Full suite 430 passed (174 s).
+  - VX data note: 5 of 104 VX contracts (holiday weeks) last traded a day before the rule's expiry; left as is (± 1 day).

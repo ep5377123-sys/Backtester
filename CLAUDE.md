@@ -70,7 +70,10 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
   volume-at-price cache: `guban/data/ticks.py` (reads a store symbol folder — recognized by its quality.csv — or a DeepCharts
   folder of 57-byte records; from the store use only `tick_ok` days, `research.days` adds the column; some sessions are
   defective, so also keep a day only if its RTH tick volume matches the minute volume within 2%).
-  A `guban study` command is parked until a second study exists.
+  Second study: `research/range_bands.py` (Phase 21) → `reports/range_bands/`: walk-forward RTH range forecasts (ATR14, HAR,
+  VX, HAR+VX+overnight), band calibration, reflection-principle extension, band-edge fade test; core in
+  `guban/research/ranges.py` and `vx.py` (reads the user's Databento CFE VX futures CSV in `data/VIX/`, UTC-day bars).
+  A `guban study` command was parked until a second study exists; one now does, so building it is the user's call.
 
 ## Data
 - Data comes from **DeepCharts (dxFeed data)**, not MultiCharts (user, 2026-09-29) — so small price differences vs MC's feed are expected — through the shared market-data store below. Symbols: NQ, MNQ, ES, MES, BTC (GC dropped, user 2026-10-07).

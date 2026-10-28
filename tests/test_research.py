@@ -1,5 +1,6 @@
 """Research core (Phase 13): volume profiles, conditional-rate statistics, the verdict rule, the study report."""
 
+import datetime as dt
 import math
 import sys
 from pathlib import Path
@@ -192,3 +193,95 @@ def test_trading_days_and_minute_bars_from_the_store(tmp_path):
     mb = minute_bars(sym, days.iloc[0])
     assert mb.index[0] == pd.Timestamp("2025-08-05 09:31") and mb.index[-1] == pd.Timestamp("2025-08-05 16:00")
     assert mb.index.tz is None and len(mb) == 390 and mb["volume"].sum() == 3 * 390
+
+
+# --- range bands (Phase 21) -------------------------------------------------------------------------------------
+
+from guban.research.ranges import (  # noqa: E402
+    AMBIGUOUS, EXTEND, FADE, RANGE_PER_SIGMA, UNRESOLVED, UNTOUCHED, monthly_refits, race, remaining_share,
+    touch_prob, variance_shares,
+)  # fmt: skip
+from guban.research.vx import constant_maturity, expiry, vx_before  # noqa: E402
+
+
+def test_touch_prob_is_the_reflection_principle():
+    assert touch_prob(1.0, 1.0) == pytest.approx(0.31731, abs=1e-5)  # 2 * (1 - Phi(1))
+    assert touch_prob(2.0, 1.0) == pytest.approx(0.04550, abs=1e-5)
+    assert touch_prob(0.0, 1.0) == 1.0 and touch_prob(-0.5, 1.0) == 1.0
+    assert touch_prob(0.1, 0.0) == 0.0  # no time left, a level above is never reached
+    assert RANGE_PER_SIGMA == pytest.approx(1.5958, abs=1e-4)
+
+
+def test_touch_prob_matches_a_simulated_random_walk():
+    rng = np.random.default_rng(7)
+    paths = np.cumsum(rng.normal(0, 1 / math.sqrt(2000), (4000, 2000)), axis=1)  # sigma 1 over the window
+    hit = (paths.max(axis=1) >= 1.0).mean()
+    assert hit == pytest.approx(touch_prob(1.0, 1.0), abs=0.025)  # discrete steps undershoot a little
+    assert (paths.max(axis=1) - paths.min(axis=1)).mean() == pytest.approx(RANGE_PER_SIGMA, abs=0.06)
+
+
+def test_race_outcomes():
+    hi = np.array([1.0, 2.0, 2.2, 1.5, 1.0])
+    lo = np.array([0.5, 1.5, 1.9, 1.4, 0.4])
+    # touch level 2 on bar 1; bar 3's low 1.4 <= 2 - 0.5 -> fade; bar 2's high 2.2 < 2.5
+    assert race(hi, lo, 2.0, 0.5, 1) == (FADE, 1, 3)
+    # y = 0.15: bar 2's high 2.2 >= 2.15 while its low 1.9 > 1.85 -> extend
+    assert race(hi, lo, 2.0, 0.15, 1) == (EXTEND, 1, 2)
+    # the touching bar itself beyond y -> extend at once (its low is ignored)
+    assert race(hi, lo, 1.9, 0.05, 1) == (EXTEND, 1, 1)
+    assert race(hi, lo, 3.0, 0.1, 1)[0] == UNTOUCHED
+    assert race(hi, lo, 2.0, 5.0, 1) == (UNRESOLVED, 1, -1)
+    # a later bar spanning both thresholds
+    # (the touching bar reaching both counts as an extension, see above)
+    assert race(np.array([1.0, 1.2, 3.0]), np.array([0.9, 0.95, 0.0]), 1.0, 0.5, 1) == (AMBIGUOUS, 0, 2)
+
+
+def test_race_lower_side_mirrors_the_upper():
+    hi = np.array([1.0, 2.0, 2.2, 1.5, 1.0])
+    lo = np.array([0.5, 1.5, 1.9, 1.4, 0.4])
+    assert race(-lo, -hi, -2.0, 0.5, -1) == race(hi, lo, 2.0, 0.5, 1)
+    # touch low 0.5 on bar 0, back up to 1.0 (+0.5) on bar 1 before 0.0
+    assert race(hi, lo, 0.5, 0.5, -1) == (FADE, 0, 1)
+
+
+def test_variance_clock():
+    r = np.array([[1.0, 1.0, 0.0, 0.0], [2.0, 0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 0.0]])  # the zero day is skipped
+    s = variance_shares(r)
+    assert s.tolist() == [0.5, 0.25, 0.0, 0.25]
+    assert remaining_share(s).tolist() == [0.5, 0.25, 0.25, 0.0]
+
+
+def test_monthly_refits_train_only_on_earlier_months():
+    dates = pd.bdate_range("2024-01-01", "2024-04-30")
+    usable = np.ones(len(dates), bool)
+    usable[3] = False
+    seen = []
+    for start, train, test in monthly_refits(dates, usable, 30):
+        assert dates[train].max() < start <= dates[test].min()
+        assert not train[3] and not test[3]
+        assert (dates[test].to_period("M") == start.to_period("M")).all()
+        seen.append(start.month)
+    assert seen == [3, 4]  # January has no training data, February has fewer than 30 sessions before it
+
+
+def test_vx_expiry_rule():
+    assert expiry(2024, 3) == dt.date(2024, 3, 20)  # third Friday of April 2024 = 04-19, minus 30 days
+    assert expiry(2024, 4) == dt.date(2024, 4, 17)
+    assert expiry(2023, 12) == dt.date(2023, 12, 20)  # January 2024's third Friday = 01-19
+    assert all(expiry(y, m).weekday() == 2 for y in range(2019, 2027) for m in range(1, 13))
+
+
+def test_vx_constant_maturity_and_before():
+    d = pd.Timestamp("2024-03-01")
+    bars = pd.DataFrame({"date": [d, d, d], "symbol": ["VX/H4", "VX/J4", "VX/K4"], "close": [14.0, 16.0, 17.0],
+                         "expiry": pd.to_datetime(["2024-03-20", "2024-04-17", "2024-05-22"])})  # fmt: skip
+    cm = constant_maturity(bars)
+    t1, t2 = 19, 47
+    w = (t2 - 30) / (t2 - t1)
+    assert cm.loc[d, "vx"] == pytest.approx(w * 14 + (1 - w) * 16) and cm.loc[d, "t1"] == t1
+    # front contract 30+ days out: used alone
+    late = bars.assign(date=pd.Timestamp("2024-02-15"))
+    assert constant_maturity(late).iloc[0]["vx"] == 14.0
+    s = pd.Series([1.0, 2.0], index=pd.to_datetime(["2024-03-03", "2024-03-04"]))
+    out = vx_before(s, pd.DatetimeIndex(["2024-03-03", "2024-03-04", "2024-03-06"]))
+    assert np.isnan(out.iloc[0]) and out.iloc[1:].tolist() == [1.0, 2.0]  # strictly before: Sunday's bar for Monday
