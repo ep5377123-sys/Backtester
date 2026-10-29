@@ -73,6 +73,13 @@ max drawdown −26,522.50; ~30 s (the first run builds `data/NQ/big_trades.parqu
 Long-only, > 40 lots: 367 trades, net 3,576.75, PF 1.04, max drawdown −17,908.00. Needs `--tf 1m`; NQ ticks start 2024
 (2024-01 is defective), hence `--data-from 2024-02-01`.
 
+**VWAP band fade on NQ** (RTH VWAP ±2σ, market-if-touched entries, 30-pt stop and target; Phase 22):
+```
+uv run guban run strategies/vwap_bands.py --symbol NQ --tf 1m --session eth --tz America/New_York --commission 2.25 --slippage 5 --out reports/vwap_bands_nq --open
+```
+Result: 2,740,356 bars, 9,483 trades, net −209,321.75, PF 0.93, max drawdown −229,746.75, 427 ambiguous fills; ~45 s
+backtest, ~4 min with the report and trade images (`--no-trade-charts` skips them). Needs `--tf 1m`.
+
 Notes:
 - **Reward:risk per trade:** every trade records the stop and target in force from its entry fill (`set_stop_loss` / `set_profit_target`, or the strategy's own stop / limit exit orders; the tightest stop and nearest target win; later moves don't count). `trades.csv` ends with `risk_usd`, `reward_usd`, `planned_rr` (target ÷ stop, e.g. 20 pt stop + 40 pt target = 2.00) and `r_multiple` (net ÷ risk, so costs make a full stop-out slightly worse than −1R); empty for a trade without a stop. The report's trade list shows R and RR, and the summary has the average R, average planned RR and the count of trades with a stop. MNQ parity run: every trade risks $500 for $500 (RR 1.00), average R +0.083; IVB (`strategies/ivb.py --symbol MNQ --tf 1m --session eth --tz America/Chicago`, default inputs): RR 1.00 on all 1,065 trades, average R +0.067.
 - Outputs: `trades.csv` (MC trade-export layout + engine columns), `metrics.json`, `report.html`, and one price-chart image per trade in `trades/trade_<no>.png` (the report's trade viewer loads them; ~29 MB for the MNQ run). Add `--open` to open the report, `--no-report` to skip it, `--no-trade-charts` to skip the images (draw them later with `guban chart`).

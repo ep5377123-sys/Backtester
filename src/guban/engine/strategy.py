@@ -13,7 +13,8 @@
   floats. `guban run`/`optimize`/`wfo` add them to the bars (guban.data.features); run_backtest raises when a
   declared column is missing from the bars.
 - buy / sell / sell_short / buy_to_cover place orders for the NEXT bar: at="market" (the next bar's open),
-  or at="stop" / at="limit" with a price (filled intrabar; see guban.engine.backtest). An order lives for
+  or at="stop" / at="limit" / at="touch" with a price (filled intrabar; see guban.engine.backtest). at="touch"
+  is market-if-touched: it triggers where a limit would but fills as a market order. An order lives for
   one bar only; re-issue it on every bar you want it active. at="close" is MC's `this bar on close`: it fills
   at the close of the bar that placed it, right after on_bar() returns (a market fill for slippage and costs),
   so market_position shows it from the next bar on.
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
     from guban.engine.backtest import Broker
 
 BUY, SELL, SELL_SHORT, BUY_TO_COVER = "buy", "sell", "sell_short", "buy_to_cover"
-ORDER_KINDS = ("market", "stop", "limit", "close")
+ORDER_KINDS = ("market", "stop", "limit", "touch", "close")
 
 
 class StrategyError(RuntimeError):

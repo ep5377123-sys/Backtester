@@ -29,7 +29,7 @@ Python backtester for CME futures that reproduces MultiCharts (MC) results. Full
 - `tests/test_ledger.py` pins trade-ledger integrity (every signal fills once, every fill is one row, contracts add up,
   both fill modes). Any change to order handling or the ledger must keep it green.
 - Intrabar fills: pass `sub_bars=load_bars(sym, "1m", session)` for magnifier mode (else OHLC path). Stop/limit orders via
-  `at="stop"|"limit", price=`; `set_stop_loss`/`set_profit_target` persist until set to None. Details in PLAN.md "Phase 4 results".
+  `at="stop"|"limit", price=`; `at="touch"` = market-if-touched (triggers like a limit, slipped like a market fill; Phase 22); `set_stop_loss`/`set_profit_target` persist until set to None. Details in PLAN.md "Phase 4 results".
 - `data/` (Parquet) and `reports/` are generated and git-ignored.
 - MC charts for CME are in exchange time: run MC-parity backtests with `--session eth --tz America/Chicago` (MC Time/Date/input times are Central). Import with `--roll expiry` to match MC's continuous contract (rolls Wednesday of expiration week). Vault Break parity: `--data-from 2021-01-03` (MC's chart start; DailyATR has long memory), no `atr_seed_*` (retired, Phase 15) — command in USE.md.
 - `guban run <strategy.py> ...` writes `reports/<run>/trades.csv` (MC trade-export layout + engine columns, `guban/tradelist.py`), `metrics.json` (`guban/metrics.py`) and a self-contained `report.html` (`guban/report.py`; `--open`, `--no-report`); `guban compare --ours ... --mc <MC csv|xlsx> --contract MNQ` prints S3 stats and writes `diff.html` (`guban/parity.py`). Vault Break parity command: USE.md (full span 2021-01 → 2026-09, PLAN.md "Phase 15 results").

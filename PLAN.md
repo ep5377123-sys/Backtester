@@ -291,6 +291,10 @@ class VaultBreak(Strategy):
 - [x] Phase 21: NQ RTH range-band study — range forecasts (ATR, HAR, VX, combined), band calibration, the reflection-principle extension formula, fades at the band edges (done 2026-10-28, see "Phase 21 plan" and its results)
       Done when: `research/range_bands.py` writes `reports/range_bands/{days.csv,races.csv,results.json,report.html}`
       from walk-forward (causal) forecasts; the four band-fade verdicts use the Phase 13 rule; full `pytest` green.
+- [x] Phase 22: VWAP band fade + market-if-touched orders (done 2026-10-28, see "Phase 22 plan" and its results)
+      Done when: `at="touch"` fills like a limit trigger but slips like a market order (`tests/test_touch_order.py`);
+      `strategies/vwap_bands.py` bands equal a pandas reference and its trades obey the rules (`tests/test_vwap_bands.py`);
+      the NQ run finishes; full `pytest` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1371,3 +1375,25 @@ study: walk-forward forecasts, calibration checks, and a pre-registered test of 
     probability vs a simulated random walk, races both sides, variance clock, walk-forward causality, VX expiry rule and
     constant maturity). Full suite 430 passed (174 s).
   - VX data note: 5 of 104 VX contracts (holiday weeks) last traded a day before the rule's expiry; left as is (± 1 day).
+
+## Phase 22 plan: VWAP band fade (user ask 2026-10-28, approved after a 4-question dry-run interview)
+- **Ask:** long when price touches the RTH VWAP −2σ band, short when it touches the +2σ band (price above VWAP), 1:1,
+  30-pt stop, 30-pt target, a market order as soon as price hits the band.
+- **Decisions:** RTH only, VWAP reset on the first bar after 09:30 ET (user); a new engine order type, market-if-touched
+  (user); after an entry no new one until a bar closes strictly inside the bands while flat, no daily cap by default
+  (user). Defaults: σ = volume-weighted std of the typical price around VWAP; entries 09:45–15:00, time exit 15:55;
+  stop/target measured from the fill (USD per position); entries only while flat. Only the side the close is on
+  (below VWAP → buy at the lower band, above → short at the upper) is live, so one bar can never fill both and reverse.
+- **Engine:** `at="touch"` triggers where a limit at its price would (buy when price ≤ it, sell when ≥), fills at its price
+  or a gapped open, and is a market fill for costs (`Costs.slippage` half charged, `slippage_ticks` moved). As an exit it
+  counts as a target in `_protect`. `Broker._fire` slips every non-limit order; nothing else changed.
+
+- **Phase 22 results (2026-10-28); complete.** `uv run guban run strategies/vwap_bands.py --symbol NQ --tf 1m --session eth
+  --tz America/New_York --commission 2.25 --slippage 5 --out reports/vwap_bands_nq`: 2,740,356 bars (2018-12-30 →
+  2026-10-07), 9,483 trades (4,995 long, 4,488 short), net −209,321.75, PF 0.93, max drawdown −229,746.75, 427 ambiguous
+  fills, EV −22.07 per trade (−0.037 R, 95% CI −34.15 to −10.15), evaluation 0/4. Every year but 2019 (PF 1.02) loses;
+  2025 is the worst (PF 0.86). Exits: 4,748 stop, 4,492 target, 243 time exits. Not viable as specified.
+  - **Checks:** every entry 09:46–15:00 ET, every stop/target at exactly ±30 pts except two gapped-through targets that
+    filled at the better open (#2767 across a data gap, #6902 +0.75), no exit after 15:55, no overlapping trades. Tests:
+    5 in `tests/test_touch_order.py`, 8 in `tests/test_vwap_bands.py` (bands vs a pandas reference, entry price = band or
+    gapped open, ±30-pt exits, re-arm, cap, both fill modes). Full suite 443 passed.

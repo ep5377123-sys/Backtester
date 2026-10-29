@@ -15,8 +15,10 @@ near the open as the low (MC's rule; a tie goes high first), else open -> low ->
   - A buy stop / sell limit fires when price rises to its price; a buy limit / sell stop when price falls to
     it. A long's stop loss is a sell stop and its profit target a sell limit (mirrored for a short), priced
     at entry -/+ amount / (point value x contracts), rounded to the nearest tick.
+  - A touch order (market-if-touched) fires where a limit order at its price would, but fills as a market
+    order: slipped and charged slippage. As an exit it counts as a target (Reward:risk below).
   - An order already through the price at a sub-bar's open (a gap) fills at that open; otherwise it fills at
-    its own price. Market and stop fills are moved by Costs.slippage_ticks; limit fills are not.
+    its own price. Market, stop and touch fills are moved by Costs.slippage_ticks; limit fills are not.
   - After every fill the orders are re-checked at the fill price. So a stop loss is live from the entry fill
     on, including the rest of the entry bar, and an entry blocked by the open position (no pyramiding) can
     still fill after that position exits in the same bar.
@@ -94,10 +96,10 @@ class Costs:
     """Trading costs.
 
     commission: USD per contract per round trip, deducted from P&L (as MC does; fill prices are unchanged).
-    slippage: USD per contract per round trip, also deducted from P&L: half is charged on each market or stop
-    fill, none on a limit fill (limit orders, profit targets). MC does the same: in the Vault Break MNQ export,
+    slippage: USD per contract per round trip, also deducted from P&L: half is charged on each market, stop or
+    touch fill, none on a limit fill (limit orders, profit targets). MC does the same: in the Vault Break MNQ export,
     profit-target trades cost $0.02 per contract less than market- or stop-exit trades.
-    slippage_ticks: ticks moved against every market and stop fill price (buys higher, sells lower); limit
+    slippage_ticks: ticks moved against every market, stop and touch fill price (buys higher, sells lower); limit
     fills are never slipped. Use one slippage style or the other, not both, unless you mean to double it.
     All three must be finite and >= 0 (a negative cost would add profit).
     """
@@ -121,7 +123,7 @@ class Order:
     action: str
     name: str
     qty: int | None
-    kind: str  # market | stop | limit | close
+    kind: str  # market | stop | limit | touch | close
     bar: int  # bar index the order was placed on
     price: float | None = None  # stop/limit price
 
@@ -307,7 +309,7 @@ class Broker:
         self._walking = walk
         if isinstance(ref, Order):
             self.live.remove(ref)
-            self._execute(ref, price, slip=is_stop, amb=amb)
+            self._execute(ref, price, slip=ref.kind != "limit", amb=amb)  # stop and touch fills are market fills
         else:  # stop loss / profit target: exit the whole position
             self._close(pos.qty, self._slipped(price, -pos.direction) if is_stop else price, ref, amb, slip=is_stop)
 
@@ -358,7 +360,7 @@ class Broker:
         for o in orders:
             if o.action in (BUY, SELL_SHORT) or o.price is None or (-1 if o.action == SELL else 1) != -d:
                 continue  # entries, and exits of the other side
-            (stops if o.kind == "stop" else targets if o.kind == "limit" else []).append(o.price)
+            (stops if o.kind == "stop" else targets if o.kind in ("limit", "touch") else []).append(o.price)
         stops = [p for p in stops if (e - p) * d > 0]
         targets = [p for p in targets if (p - e) * d > 0]
         if pos.stop_px is None and stops:
