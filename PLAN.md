@@ -295,6 +295,9 @@ class VaultBreak(Strategy):
       Done when: `at="touch"` fills like a limit trigger but slips like a market order (`tests/test_touch_order.py`);
       `strategies/vwap_bands.py` bands equal a pandas reference and its trades obey the rules (`tests/test_vwap_bands.py`);
       the NQ run finishes; full `pytest` green.
+- [x] Phase 23: 10 AM open retest — 50-pt displacement from the 10:00 ET open, limit entry back at the open, 15/60 (done 2026-10-28, see "Phase 23 plan" and its results)
+      Done when: `strategies/ten_am_retest.py` trades match a pandas reference of the rules in both fill modes
+      (`tests/test_ten_am_retest.py`); the NQ run finishes; full `pytest` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1397,3 +1400,22 @@ study: walk-forward forecasts, calibration checks, and a pre-registered test of 
     filled at the better open (#2767 across a data gap, #6902 +0.75), no exit after 15:55, no overlapping trades. Tests:
     5 in `tests/test_touch_order.py`, 8 in `tests/test_vwap_bands.py` (bands vs a pandas reference, entry price = band or
     gapped open, ±30-pt exits, re-arm, cap, both fill modes). Full suite 443 passed.
+
+## Phase 23 plan: 10 AM open retest (user ask 2026-10-28, approved after a 2-question dry-run interview)
+- **Ask:** anchor = the 10:00 ET opening price. After price moves 50+ pts up from it, buy on a limit at the anchor; after
+  50+ pts down, short on a limit at the anchor. 15-pt stop, 60-pt target.
+- **Decisions:** entries until 12:30 ET, at most 2 trades per day (user). Defaults: anchor = open of the bar labeled 10:01
+  (no anchor bar by 10:05 → no trade); displacement counts the bar's wick; a bar reaching both ±50 picks by its color;
+  the limit is re-placed each bar labeled before 12:30, so no fill after 12:30; open trades run to stop/target or the
+  15:55 time exit (early-close days: 10 min before the halt); after an exit, the bars after the exit bar look for a new
+  ±50 move from the same anchor, either side. Engine limits fill on a touch (`Broker._triggers`/`_walk`), no slippage.
+
+- **Phase 23 results (2026-10-28); complete.** `uv run guban run strategies/ten_am_retest.py --symbol NQ --tf 1m --session eth
+  --tz America/New_York --commission 2.25 --slippage 5 --out reports/ten_am_retest_nq`: 2,740,356 bars (2018-12-30 →
+  2026-10-07), 1,100 trades (536 long +13,536, 564 short −9,822; 295 days with a second trade), net +3,715, PF 1.01, max
+  drawdown −21,161, 144 ambiguous fills, EV +3.38 per trade (+0.011 R, 95% CI −32.75 to 39.34), evaluation 0/4 (max DD
+  67.4 R). Win rate 20.4% vs 20% break-even for 4:1, so no edge after costs. 2020–2021 PF 1.15–1.20, 2023–2024 PF
+  0.85–0.87, 2026 PF 1.10. Exits: 872 stop, 224 target, 4 time exits. Not viable as specified.
+  - **Checks:** every entry at or before 12:30 ET, at most 2 per day, planned R:R 4.0 on all trades. Tests: 9 in
+    `tests/test_ten_am_retest.py` (trades vs a pandas reference of the rules, entry = anchor or a gapped open, 15/60 exits,
+    cutoff, cap, a hand-built long). Full suite 453 passed.
