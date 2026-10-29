@@ -298,6 +298,9 @@ class VaultBreak(Strategy):
 - [x] Phase 23: 10 AM open retest — 50-pt displacement from the 10:00 ET open, limit entry back at the open, 15/60 (done 2026-10-28, see "Phase 23 plan" and its results)
       Done when: `strategies/ten_am_retest.py` trades match a pandas reference of the rules in both fill modes
       (`tests/test_ten_am_retest.py`); the NQ run finishes; full `pytest` green.
+- [x] Phase 24: 10 AM retest — no second trade after a winner, 11:30 cutoff, walk-forward 2023–2026 (done 2026-10-28, see "Phase 24 results")
+      Done when: `stop_after_win` matches the reference in both fill modes (`tests/test_ten_am_retest.py`); the WFO
+      finishes; full `pytest` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1419,3 +1422,20 @@ study: walk-forward forecasts, calibration checks, and a pre-registered test of 
   - **Checks:** every entry at or before 12:30 ET, at most 2 per day, planned R:R 4.0 on all trades. Tests: 9 in
     `tests/test_ten_am_retest.py` (trades vs a pandas reference of the rules, entry = anchor or a gapped open, 15/60 exits,
     cutoff, cap, a hand-built long). Full suite 453 passed.
+
+## Phase 24 results: 10 AM retest walk-forward (user ask 2026-10-28)
+- **Ask:** max 2 trades a day, no second trade after a winning first, no entries after 11:30 ET; walk-forward 2023–2026.
+  Optimized: displacement 30–70 × target 30–60 (step 10), stop 15 fixed (user picked this grid).
+- **Engine:** `Strategy.net_profit` (MC NetProfit) = the broker's closed net P&L. The strategy's `stop_after_win`
+  compares it at the exit bar with its value the bar before the fill; net > 0 after costs = a winner.
+- **Command:** `uv run guban wfo strategies/ten_am_retest.py --grid "displace_pts=30:70:10 target_pts=30:60:10" --symbol NQ
+  --data-from 2023-01-01 --tf 1m --session eth --tz America/New_York --commission 2.25 --slippage 5 --set latest_entry=1130
+  --set max_trades_per_day=2 --set stop_after_win=true --is 12 --oos 3 --step 3 --out reports/ten_am_retest_nq_wfo`
+  (929 s on 6 workers).
+- **Results:** 11 windows, OOS 2024-02-01 → 2026-10-07: 557 trades (158 wins / 399 losses), net +4,249.25, PF 1.035, max
+  drawdown −12,626, WFE 23%. 6 of 11 windows positive; picks wander (displacement 30/40/50, target 30–60). By year:
+  2024 −5,060, 2025 +702, 2026 +8,606. First trades of the day +10,534, second trades −6,285 (141, none after a win).
+  Fixed 50/15/60 with the same rules over the same OOS span: 444 trades, net +5,926, PF 1.06, max DD −15,096
+  (`reports/ten_am_retest_nq_1130`). Neither passes the PF > 1.2 bar; re-optimizing adds nothing over the fixed values.
+- **Checks:** OOS entries all ≤ 11:29 ET, max 2 per day, 0 second trades after a winner. Tests: 11 in
+  `tests/test_ten_am_retest.py`. Full suite 455 passed.

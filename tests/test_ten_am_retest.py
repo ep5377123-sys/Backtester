@@ -45,8 +45,9 @@ def run(bars, mode="ohlc", **inputs):
     return s, res
 
 
-def expected_entries(bars: pd.DataFrame, exits: dict[int, int], disp=50.0, cutoff=1230, max_trades=2):
-    """Reference: (entry bar, direction, anchor) per setup, given the engine's exit bar for each entry bar."""
+def expected_entries(bars: pd.DataFrame, exits: dict[int, int], disp=50.0, cutoff=1230, max_trades=2, wins=frozenset()):
+    """Reference: (entry bar, direction, anchor) per setup, given the engine's exit bar for each entry bar; an entry
+    bar in `wins` (a winner, with stop_after_win) ends the day."""
     o, h, l, c = (bars[k].to_numpy() for k in ("open", "high", "low", "close"))  # noqa: E741
     hhmm = bars.index.hour * 100 + bars.index.minute
     out = []
@@ -71,6 +72,8 @@ def expected_entries(bars: pd.DataFrame, exits: dict[int, int], disp=50.0, cutof
                 break
             out.append((j, side, anchor))
             n += 1
+            if j in wins:
+                break
             i = exits[j] + 1
     return out
 
@@ -126,6 +129,22 @@ def test_no_trade_when_the_move_comes_after_the_cutoff():
     bars.loc[t > 1240, ["open", "high", "low", "close"]] = 17990.0
     _, res = run(bars)
     assert res.trades.empty and res.open_position is None
+
+
+@pytest.mark.parametrize("mode", ["ohlc", "magnifier"])
+def test_stop_after_win_ends_the_day_after_a_winner(mode):
+    bars = days(30, seed=2)
+    _, res = run(bars, mode, stop_after_win=True, latest_entry=1130)
+    tr = res.trades
+    wins = frozenset(tr.entry_bar[tr.net_pnl > 0])
+    want = expected_entries(bars, dict(zip(tr.entry_bar, tr.exit_bar)), cutoff=1130, wins=wins)
+    assert tr.entry_bar.tolist() == [j for j, _, _ in want]
+    first = tr.groupby(tr.entry_time.dt.date).head(1)
+    second = tr.drop(first.index)
+    assert len(second) > 0 and len(wins) > 0
+    assert (first.loc[first.entry_time.dt.date.isin(second.entry_time.dt.date), "net_pnl"] < 0).all()  # 2nd only after a loss
+    _, base = run(bars, mode, latest_entry=1130)
+    assert len(base.trades) > len(tr)  # the rule removed second trades
 
 
 def test_max_trades_per_day_caps_entries():

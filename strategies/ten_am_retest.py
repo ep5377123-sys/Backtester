@@ -12,7 +12,8 @@ EXITS:  stop stop_pts and target target_pts from the fill (set_stop_loss / set_p
         a time exit at the close of the bar labeled time_exit; on a scheduled early close (config/calendar.toml) the
         position is closed early_close_buffer minutes before the halt.
 AGAIN:  after an exit the lock clears; the bars after the exit bar look for a new displacement from the same anchor,
-        either side, up to max_trades_per_day entries (0 = no cap).
+        either side, up to max_trades_per_day entries (0 = no cap). With stop_after_win, a trade that closes with a
+        net profit (after costs) ends the day.
 
 Chart time is Eastern: run with `--tz America/New_York`, `--tf 1m`, `--session eth`.
 """
@@ -35,6 +36,7 @@ class TenAMRetest(Strategy):
         # Entry
         latest_entry=1230,
         max_trades_per_day=2,  # 0 = no cap
+        stop_after_win=False,  # no new entry today after a winning trade
         qty=1,
         # Exits (points from the fill)
         stop_pts=15.0,
@@ -56,6 +58,9 @@ class TenAMRetest(Strategy):
         self.side = 0  # locked setup: 1 long, -1 short
         self.d_trades = 0
         self.in_trade = False  # an entry filled and its exit bar has not been seen flat yet
+        self.pnl_prev = 0.0  # net_profit at the previous bar's close
+        self.pnl_before = 0.0  # net_profit before the open trade
+        self.won = False  # a trade today closed with a net profit
         self.pending = None  # (direction, price) of the limit entry placed on the previous bar
 
     def on_bar(self):
@@ -68,7 +73,7 @@ class TenAMRetest(Strategy):
 
         if date != self.day:
             self.day = date
-            self.anchor, self.skip, self.side, self.d_trades = None, False, 0, 0
+            self.anchor, self.skip, self.side, self.d_trades, self.won = None, False, 0, 0, False
 
         # --- Did last bar's limit entry fill? (a touch fills it, the open included) ---
         if self.pending is not None:
@@ -77,7 +82,9 @@ class TenAMRetest(Strategy):
                 self.d_trades += 1
                 self.side = 0
                 self.in_trade = True
+                self.pnl_before = self.pnl_prev  # flat through the previous bar, so no part of this trade
             self.pending = None
+        self.pnl_prev = self.net_profit
 
         # --- Anchor: the open of the first bar after anchor_time ---
         if self.anchor is None and not self.skip and time > p.anchor_time:
@@ -107,11 +114,13 @@ class TenAMRetest(Strategy):
             return
         if self.in_trade:  # flat on the exit bar: the next setup starts on the bars after it
             self.in_trade = False
+            self.won = self.won or self.net_profit > self.pnl_before
             return
 
-        # --- Setup and entry: anchored, under the cap, before the cutoff ---
+        # --- Setup and entry: anchored, under the cap, before the cutoff, no win yet (stop_after_win) ---
         if (
             a is None
+            or (p.stop_after_win and self.won)
             or (p.max_trades_per_day > 0 and self.d_trades >= p.max_trades_per_day)
             or time >= min(p.latest_entry, flat_at)
         ):

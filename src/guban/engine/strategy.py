@@ -174,6 +174,11 @@ class Strategy:
         return None if pos is None else self._clock.i - pos.entry_bar
 
     @property
+    def net_profit(self) -> float:
+        """Net profit (after costs) of the closed trades so far, USD (MC NetProfit)."""
+        return self._broker.closed_pnl
+
+    @property
     def big_point_value(self) -> float:
         """USD per point per contract of the traded contract (MC BigPointValue)."""
         return self._broker.spec.point_value
