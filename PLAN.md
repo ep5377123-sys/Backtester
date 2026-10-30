@@ -301,6 +301,9 @@ class VaultBreak(Strategy):
 - [x] Phase 24: 10 AM retest — no second trade after a winner, 11:30 cutoff, walk-forward 2023–2026 (done 2026-10-28, see "Phase 24 results")
       Done when: `stop_after_win` matches the reference in both fill modes (`tests/test_ten_am_retest.py`); the WFO
       finishes; full `pytest` green.
+- [x] Phase 25: Typo VM — stop-and-reverse on a TradingView CVD-divergence indicator's signals, 20/20 bracket (done 2026-10-29, see "Phase 25 results")
+      Done when: both indicator chains equal a pandas reference of the Pine script and every window signal enters or
+      reverses once (`tests/test_typo_vm.py`, both fill modes); the NQ run finishes; full `pytest` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1439,3 +1442,30 @@ study: walk-forward forecasts, calibration checks, and a pre-registered test of 
   (`reports/ten_am_retest_nq_1130`). Neither passes the PF > 1.2 bar; re-optimizing adds nothing over the fixed values.
 - **Checks:** OOS entries all ≤ 11:29 ET, max 2 per day, 0 second trades after a winner. Tests: 11 in
   `tests/test_ten_am_retest.py`. Full suite 455 passed.
+
+## Phase 25 results: Typo VM CVD-divergence stop-and-reverse (user ask 2026-10-29)
+- **Ask:** trade only the signals of the user's Pine v6 indicator "Typo VM" (pasted in chat), planned in a 5-question
+  dry-run interview. Entry windows (ET, bar labels, start <= t < end): 08:00–11:30, 13:30–16:59, 18:00–20:00 (the user's
+  13:30–17:00 and 16:00–20:00 merged, flat before the 17:00 halt); buy signal = long, sell = short, opposite signal
+  reverses; flat at each window end; 20-pt stop and 20-pt target (user, at approval).
+- **Port:** `strategies/typo_vm.py`. Delta is the script's bar-shape estimate, volume × (2·(C−L)/(H−L) − 1), not tick
+  delta (user: add real delta only if this works). Two independent `_Chain`s run on every bar: the script's daytime
+  inputs (EMA 10, Min-Max 60, Daily reset at the session_date change, lookbacks 3/5, spacing 1) and its
+  18:00–08:00 preset (HMA 14, norm 100, no reset, 2/4, spacing 5); bars labeled 18:00–07:59 trade on the preset.
+  Pine semantics assumed, not read from TradingView docs: EMA seeded with the SMA of its first n values, HMA lengths
+  floored, rolling values blank until n bars (normalised CVD = 0 then), population stdev, `ta.lowest(x[1], n)` =
+  previous n bars. Entries fill at the next bar's open. A data gap that carries a position into another window
+  instance (session, window) closes it on the first bar after the gap. Early-close days (`session_close` before
+  `regular_close` 17:00) stop 10 min before the halt.
+- **Command:** `uv run guban run strategies/typo_vm.py --symbol NQ --tf 1m --session eth --tz America/New_York
+  --commission 2.25 --slippage 5 --mc-sims 1000 --no-trade-charts --out reports/typo_vm_nq` (137 s). The default 10,000
+  sims ran out of memory in `evaluation.evaluate`'s R Monte Carlo (10,000 × 79,823 float64 = 6 GB); trade charts off
+  for 80k trades.
+- **Results (2018-12-30 → 2026-10-07):** 79,823 trades (~40 per day), net −336,062, PF 0.97, max DD −348,447 (870 R,
+  R = $400), Sharpe −1.37, evaluation 0/4. Gross before costs +191,285, PF 1.019 (+$2.40/trade vs $7.25 costs).
+  Every window, both sides, both signal kinds (divergence / weak OS-OB cross) and 7 of 8 full years lose net
+  (2020 +23,095). Stops 20,703 vs targets 20,548. One flagged "held past close" trade (#15644) is a missing
+  2020-11-30 session; it was closed on the first bar after the gap (stopped at the gap open).
+- **Checks:** `tests/test_typo_vm.py` (11): five chain configs equal the pandas reference bar for bar; entries ==
+  window signals not already on that side, flat outside windows and after the early-close cut, ±20-pt exits, gap close.
+  Full suite 466 passed.
