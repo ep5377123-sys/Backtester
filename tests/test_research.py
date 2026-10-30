@@ -285,3 +285,66 @@ def test_vx_constant_maturity_and_before():
     s = pd.Series([1.0, 2.0], index=pd.to_datetime(["2024-03-03", "2024-03-04"]))
     out = vx_before(s, pd.DatetimeIndex(["2024-03-03", "2024-03-04", "2024-03-06"]))
     assert np.isnan(out.iloc[0]) and out.iloc[1:].tolist() == [1.0, 2.0]  # strictly before: Sunday's bar for Monday
+
+
+# --- previous-day high/low reversal (Phase 26) -------------------------------------------------------------------
+
+import pdh_pdl_reversal as pdh  # noqa: E402
+
+
+def _sessions(rows):
+    """rows: (time, session_date, contract, open, high, low, close)."""
+    idx = pd.DatetimeIndex([pd.Timestamp(t, tz="America/New_York") for t, *_ in rows], name="time")
+    return pd.DataFrame([r[1:] for r in rows], index=idx, columns=["session_date", "contract", "open", "high", "low", "close"])
+
+
+def test_daily_levels_are_the_previous_session_and_flag_rolls():
+    b = _sessions([
+        ("2024-03-03 18:01", "2024-03-04", "NQH4", 100, 110, 90, 100),
+        ("2024-03-04 16:59", "2024-03-04", "NQH4", 100, 105, 95, 100),
+        ("2024-03-04 18:01", "2024-03-05", "NQH4", 100, 120, 80, 100),
+        ("2024-03-05 18:01", "2024-03-06", "NQM4", 100, 101, 99, 100),
+    ])
+    lv = pdh.daily_levels(b)
+    assert np.isnan(lv.loc["2024-03-04", "pdh"])
+    assert (lv.loc["2024-03-05", "pdh"], lv.loc["2024-03-05", "pdl"]) == (110, 90)
+    assert (lv.loc["2024-03-06", "pdh"], lv.loc["2024-03-06", "pdl"]) == (120, 80)
+    assert lv["roll"].tolist() == [False, False, True]
+
+
+def test_signal_rules_need_a_sweep_a_colour_and_a_close_back_inside():
+    lv = pd.DataFrame({"pdh": [110.0], "pdl": [90.0], "roll": [False]}, index=pd.Index(["d"], name="session_date"))
+    c = _sessions([
+        ("2024-03-05 09:45", "d", "X", 109, 112, 105, 106),  # bearish
+        ("2024-03-05 10:00", "d", "X", 109, 110, 105, 106),  # high = PDH: no sweep
+        ("2024-03-05 10:15", "d", "X", 105, 112, 104, 106),  # green: no
+        ("2024-03-05 10:30", "d", "X", 112, 113, 110, 111),  # closes above PDH: no
+        ("2024-03-05 10:45", "d", "X", 91, 95, 88, 93),      # bullish
+        ("2024-03-05 11:00", "d", "X", 91, 95, 90, 93),      # low = PDL: no
+        ("2024-03-05 11:15", "d", "X", 89, 89.5, 87, 88),    # closes below PDL: no
+    ])
+    assert pdh.signals(c, lv)["side"].tolist() == ["bearish", "", "", "", "bullish", "", ""]
+    assert pdh.signals(c, lv.assign(roll=True)).empty
+
+
+def test_race_outcomes():
+    h, l = np.array([101.0, 100.0, 99.0]), np.array([98.0, 60.0, 40.0])
+    assert pdh.race(h, l, -1, 100.0, 102.0, 50.0) == ("success", 3, 60.0)
+    assert pdh.race(np.array([101.0, 103.0]), np.array([98.0, 40.0]), -1, 100.0, 102.0, 50.0)[0] == "ambiguous"
+    assert pdh.race(np.array([101.0, 102.5]), np.array([98.0, 99.0]), -1, 100.0, 102.0, 50.0) == ("failure", 2, 2.0)
+    assert pdh.race(np.array([101.0]), np.array([99.0]), -1, 100.0, 102.0, 50.0) == ("unresolved", 0, 1.0)
+    assert pdh.race(np.array([]), np.array([]), 1, 100.0, 98.0, 50.0) == ("unresolved", 0, 0.0)
+    # bullish mirror: wick touched exactly is not taken out
+    assert pdh.race(np.array([110.0, 150.0]), np.array([98.0, 99.0]), 1, 100.0, 98.0, 50.0) == ("success", 2, 50.0)
+
+
+def test_run_races_starts_after_the_candle_and_scores():
+    lv = pd.DataFrame({"pdh": [110.0], "pdl": [90.0], "roll": [False]}, index=pd.Index(["d"], name="session_date"))
+    c = pdh.signals(_sessions([("2024-03-05 09:45", "d", "X", 109, 112, 105, 106)]), lv)
+    m = _sessions([
+        ("2024-03-05 09:45", "d", "X", 0, 200, 0, 0),  # inside the candle: ignored
+        ("2024-03-05 09:46", "d", "X", 106, 107, 55, 56),
+    ])
+    r = pdh.run_races(c, m, 50.0)
+    assert r[["outcome", "risk_pts", "minutes_to_resolution"]].iloc[0].tolist() == ["success", 6.0, 1]
+    assert pdh.score(r, 50.0).tolist() == [50.0]

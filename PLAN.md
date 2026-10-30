@@ -304,6 +304,9 @@ class VaultBreak(Strategy):
 - [x] Phase 25: Typo VM — stop-and-reverse on a TradingView CVD-divergence indicator's signals, 20/20 bracket (done 2026-10-29, see "Phase 25 results")
       Done when: both indicator chains equal a pandas reference of the Pine script and every window signal enters or
       reverses once (`tests/test_typo_vm.py`, both fill modes); the NQ run finishes; full `pytest` green.
+- [x] Phase 26: NQ previous-day high/low sweep-reversal study — 15-min candles that sweep PDH/PDL and close back inside, 50-pt run vs the wick (done 2026-10-29, see "Phase 26 results")
+      Done when: levels, signal rules, race outcomes and roll dropping pass (`tests/test_research.py`); the NQ study
+      writes `reports/pdh_pdl_reversal/`; full `pytest` green.
 
 ---
 **Defaulted decisions recap** — A1–A10 above are every choice made on your behalf; any of them can be vetoed cheaply.
@@ -1469,3 +1472,23 @@ study: walk-forward forecasts, calibration checks, and a pre-registered test of 
 - **Checks:** `tests/test_typo_vm.py` (11): five chain configs equal the pandas reference bar for bar; entries ==
   window signals not already on that side, flat outside windows and after the early-close cut, ±20-pt exits, gap close.
   Full suite 466 passed.
+
+## Phase 26 results: NQ previous-day high/low sweep-reversal study (user ask 2026-10-29, approved after a 4-question dry-run interview)
+- **Rules (user):** previous day = the futures daily bar (18:00–17:00 ET session); every 15-min ETH candle of the next
+  session can signal. Bearish: high > PDH, close < open, close < PDH. Bullish: low < PDL, close > open, close > PDL
+  (the ask said "close bearish above the low"; read as bullish, A1). Every qualifying candle counts (user). From the
+  signal close, on 1-min bars to the session close: success = 50 pts in the reversal direction before the candle's wick
+  is taken out; otherwise failure. Defaults [assumed]: a 1-min bar reaching both = ambiguous, scored as failure;
+  unresolved by the session close = left out of rates; roll sessions (contract ≠ previous session's) dropped.
+- **Script:** `uv run python research/pdh_pdl_reversal.py [--symbol NQ] [--target 50]` → `reports/pdh_pdl_reversal/`
+  (`report.html`, `signals.csv`, `study.json`; 8 s). Expectancy = +50 per success, −risk (close-to-wick) per failure;
+  95% CI resamples whole sessions; control = every other red/green 15-min candle, same race. Verdict per side: CI > 0,
+  beats the control, positive every year.
+- **Results (2019-01-01 → 2026-10-07, 31 roll sessions dropped):** bearish at PDH 3,379 signals, success 31.6% vs
+  breakeven 30.4%, +1.17 pts/signal (+0.80 net of $7.50 RT), CI −0.24 … +2.62, loses in 2019/2023/2025 → NOT REAL.
+  Bullish at PDL 2,463 signals, 37.8% vs 39.1% breakeven, −0.78 pts (−1.15 net), CI −2.92 … +1.37, below the control
+  (+0.44) → NOT REAL. Both sides +0.36 pts gross, −0.02 net. First signal per session per side: bearish +1.02,
+  bullish +0.65 pts, CIs span 0. Ambiguous 3; unresolved 430 of 5,842.
+- **Checks:** `tests/test_research.py` (5 new): previous-session levels and roll flag, the signal rules incl. equality
+  edges, race outcomes both sides, the race starting after the candle; spot checks of 3 `signals.csv` rows vs 1-min
+  bars. Full suite 469 passed.
