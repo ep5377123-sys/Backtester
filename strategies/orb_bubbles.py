@@ -28,20 +28,16 @@ from guban.engine import Strategy
 class BubbleORB(Strategy):
     extra_columns = ("big_buy_body", "big_sell_body")
     inputs = dict(
-        # Opening range: bars with orb_start < time <= orb_end (HHMM, Eastern)
         orb_start=930,
         orb_end=945,
-        # Entry
-        min_bubble=60,  # a bubble must be bigger than this (contracts)
-        allow_shorts=True,  # False: longs only
+        min_bubble=60,
+        allow_shorts=True,
         latest_entry=1100,
         max_trades_per_day=1,
         qty=1,
-        # Exits
-        stop_ticks=1,  # stop this many ticks beyond the breakout bar's low (long) / high (short)
+        stop_ticks=1,
         reward_risk=1.0,
         time_exit=1555,
-        # Scheduled early close
         flatten_early_close=True,
         early_close_buffer=10,
     )
@@ -55,7 +51,7 @@ class BubbleORB(Strategy):
 
     def on_bar(self):
         if self.current_bar == 1:
-            return  # Date[1] needs one bar of history
+            return
         p = self.p
         o, h, l, c = self.open[0], self.high[0], self.low[0], self.close[0]
         date, time = self.date[0], self.time[0]
@@ -64,20 +60,16 @@ class BubbleORB(Strategy):
             self.orb_high = self.orb_low = None
             self.d_trades = 0
 
-        # --- Opening range ---
         if p.orb_start < time <= p.orb_end:
             self.orb_high = h if self.orb_high is None else max(self.orb_high, h)
             self.orb_low = l if self.orb_low is None else min(self.orb_low, l)
 
-        # --- Scheduled early close ---
         flatten = p.time_exit
         close_at = self.session_close[0]
         if p.flatten_early_close and close_at is not None and close_at.date() == date:
             cut = close_at.hour * 60 + close_at.minute - p.early_close_buffer
             flatten = min(flatten, cut // 60 * 100 + cut % 60)
 
-        # --- Entry: breakout candle with a big bubble of its own side in its body, at this bar's close ---
-        # NaN bubble columns (no usable ticks) are never bigger than min_bubble.
         entered = 0
         if (
             self.orb_high is not None
@@ -99,7 +91,6 @@ class BubbleORB(Strategy):
             if entered:
                 self.d_trades += 1
 
-        # --- Exits (for the next bar; an entry filled at this close is covered from the next bar on) ---
         pos = entered or self.market_position
         if pos == 1:
             if time >= flatten and not entered:

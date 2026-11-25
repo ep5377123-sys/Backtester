@@ -1,7 +1,3 @@
-// Backtest tab: rerun the applied strategy with this tab's capital / costs / fill mode and show what `guban run`
-// reports (report.html's sections, styled dark) plus monthly bars and daily histograms. The trade Monte Carlo lives on
-// the Monte Carlo tab; its settings go with Run (the evaluation) and Save, which writes the run folder `guban run`
-// writes. Worker side: guban/gui/tab_backtest.py.
 'use strict';
 
 (() => {
@@ -12,7 +8,6 @@
 
   const params = () => Object.fromEntries(Object.entries(FIELDS).map(([id, key]) => [key, f(id).value]));
 
-  // report.py's HTML fragments: parsed, never run (they hold no scripts), then moved into the page
   function fragment(html) {
     const doc = new DOMParser().parseFromString(html || '', 'text/html');
     return [...doc.body.childNodes];
@@ -31,7 +26,6 @@
     const saved = settings.get('backtest');
     f('capital').value = saved.capital ?? d.capital;
     f('fill').value = saved.fill_mode || d.fill_mode;
-    // costs are per contract: the loaded symbol's defaults unless this symbol had its own
     const costs = (saved.costs || {})[d.contract] || {};
     f('commission').value = costs.commission ?? d.commission;
     f('slippage').value = costs.slippage ?? d.slippage;

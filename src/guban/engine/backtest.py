@@ -83,12 +83,12 @@ TRADE_COLUMNS = [
     "exit_time", "exit_price", "exit_name", "exit_bar",
     "gross_pnl", "commission", "slippage", "net_pnl", "cum_net_pnl", "runup", "drawdown", "ambiguous",
     "risk_usd", "reward_usd", "planned_rr", "r_multiple",
-]  # fmt: skip
+]
 FILL_MODES = ("magnifier", "ohlc")
-STOP_LOSS, PROFIT_TARGET = "Stop Loss", "Profit Target"  # MC's exit names for SetStopLoss / SetProfitTarget
-WINDOW_END = "Window End"  # exit name of a position closed by flatten_at_end / a trading window's end
+STOP_LOSS, PROFIT_TARGET = "Stop Loss", "Profit Target"
+WINDOW_END = "Window End"
 
-Path_ = list[tuple[float, float, float, float]]  # sub-bars as (open, high, low, close)
+Path_ = list[tuple[float, float, float, float]]
 
 
 @dataclass(frozen=True)
@@ -123,32 +123,32 @@ class Order:
     action: str
     name: str
     qty: int | None
-    kind: str  # market | stop | limit | touch | close
-    bar: int  # bar index the order was placed on
-    price: float | None = None  # stop/limit price
+    kind: str
+    bar: int
+    price: float | None = None
 
 
 @dataclass
 class Position:
-    direction: int  # 1 long, -1 short
+    direction: int
     qty: int
     entry_price: float
     entry_bar: int
     entry_time: pd.Timestamp
     entry_name: str
-    entry_sub: tuple[int, int] | None = None  # (bar, sub-bar) of an intrabar entry
-    entry_walk: bool = False  # filled along the path, not at a bar or sub-bar open
-    entry_slip: bool = True  # entry was a market or stop fill (pays half the USD slippage)
-    stop_px: float | None = None  # initial protective stop / target price (Reward:risk above)
+    entry_sub: tuple[int, int] | None = None
+    entry_walk: bool = False
+    entry_slip: bool = True
+    stop_px: float | None = None
     target_px: float | None = None
-    hi: float = field(init=False)  # highest / lowest price seen since the entry fill
+    hi: float = field(init=False)
     lo: float = field(init=False)
 
     def __post_init__(self) -> None:
         self.hi = self.lo = self.entry_price
 
 
-def _ordered(o: float, h: float, l: float, c: float) -> tuple[float, float, float, float]:  # noqa: E741
+def _ordered(o: float, h: float, l: float, c: float) -> tuple[float, float, float, float]:
     """A sub-bar's price path by the path rule: O-H-L-C when the high is at least as near the open, else O-L-H-C."""
     return (o, h, l, c) if h - o <= o - l else (o, l, h, c)
 
@@ -157,8 +157,8 @@ class Broker:
     def __init__(self, spec: ContractSpec, costs: Costs, times: list[pd.Timestamp]) -> None:
         self.spec, self.costs, self._times = spec, costs, times
         self.position: Position | None = None
-        self.pending: list[Order] = []  # placed this bar, active next bar
-        self.live: list[Order] = []  # stop/limit orders active in the bar being processed
+        self.pending: list[Order] = []
+        self.live: list[Order] = []
         self.stop_loss_usd: float | None = None
         self.profit_target_usd: float | None = None
         self.trades: list[tuple] = []
@@ -185,12 +185,11 @@ class Broker:
         """True while a position is open and a stop loss or profit target is set."""
         return self.position is not None and (self.stop_loss_usd is not None or self.profit_target_usd is not None)
 
-    # --- intrabar equity ----------------------------------------------------------------------------
     def start_bar(self, i: int) -> None:
         self._i = i
-        self.eq_low = math.inf  # lowest equity seen in bar i
-        self.eq_peak = -math.inf  # highest equity seen so far in bar i
-        self.eq_dd = 0.0  # deepest drop below eq_peak so far in bar i (<= 0)
+        self.eq_low = math.inf
+        self.eq_peak = -math.inf
+        self.eq_dd = 0.0
 
     def mark(self, eq: float) -> None:
         """Equity was `eq` at the next point in time along the bar's path."""
@@ -218,7 +217,6 @@ class Broker:
         for sub in path:
             self.see(*_ordered(*sub))
 
-    # --- one strategy bar ---------------------------------------------------------------------------
     def process_bar(self, i: int, open_price: float, path_of: Callable[[int], Path_]) -> None:
         self._i, self._sub, self._walking = i, None, False
         orders, self.pending = self.pending, []
@@ -231,12 +229,12 @@ class Broker:
         path = path_of(i)
         j = 0
         if self.live or self.has_exits():
-            for j, (o, h, l, c) in enumerate(path):  # noqa: E741
+            for j, (o, h, l, c) in enumerate(path):
                 if not (self.live or self.has_exits()):
                     break
                 if not any(h >= t[0] if t[1] else l <= t[0] for t in self._triggers()):
                     self.see(*_ordered(o, h, l, c))
-                    continue  # nothing can fire in this sub-bar
+                    continue
                 self._sub, self._range = (i, j), (l, h)
                 self._settle(o, walk=False)
                 p = _ordered(o, h, l, c)
@@ -245,7 +243,7 @@ class Broker:
                 self._walk(p[2], p[3])
             else:
                 j = len(path)
-        if self.position is not None:  # the rest of the bar, walked without orders
+        if self.position is not None:
             self.see_path(path[j:])
         self.live, self._sub = [], None
 
@@ -258,9 +256,9 @@ class Broker:
             if o.action in (BUY, SELL_SHORT):
                 side = 1 if o.action == BUY else -1
                 if d == side:
-                    continue  # no pyramiding
+                    continue
             else:
-                side = -1 if o.action == SELL else 1  # a sell exits a long; a buy-to-cover exits a short
+                side = -1 if o.action == SELL else 1
                 if d != -side:
                     continue
             is_stop = o.kind == "stop"
@@ -309,18 +307,17 @@ class Broker:
         self._walking = walk
         if isinstance(ref, Order):
             self.live.remove(ref)
-            self._execute(ref, price, slip=ref.kind != "limit", amb=amb)  # stop and touch fills are market fills
-        else:  # stop loss / profit target: exit the whole position
+            self._execute(ref, price, slip=ref.kind != "limit", amb=amb)
+        else:
             self._close(pos.qty, self._slipped(price, -pos.direction) if is_stop else price, ref, amb, slip=is_stop)
 
     def _ambiguous(self, pos: Position, trig: list[tuple]) -> bool:
         if pos.entry_walk and pos.entry_sub == self._sub:
             return True
         lo, hi = self._range
-        inside = {t[2] for t in trig if lo <= t[0] <= hi}  # is_stop values of the exits this sub-bar reached
+        inside = {t[2] for t in trig if lo <= t[0] <= hi}
         return len(inside) == 2
 
-    # --- fills and ledger ---------------------------------------------------------------------------
     def _tick(self, price: float) -> float:
         tick = self.spec.tick_size
         return round(price / tick) * tick
@@ -333,14 +330,14 @@ class Broker:
         if o.action in (BUY, SELL_SHORT):
             d = 1 if o.action == BUY else -1
             if pos is not None and pos.direction == d:
-                return  # no pyramiding
+                return
             px = self._slipped(price, d) if slip else price
             if pos is not None:
                 self._close(pos.qty, px, o.name, amb, slip)
             self.position = Position(d, o.qty, px, self._i, self._times[self._i], o.name, self._sub, self._walking, slip)
             self._protect(self.live + self.pending)
         else:
-            d = 1 if o.action == SELL else -1  # direction of the position this order exits
+            d = 1 if o.action == SELL else -1
             if pos is None or pos.direction != d:
                 return
             qty = pos.qty if o.qty is None else min(o.qty, pos.qty)
@@ -359,7 +356,7 @@ class Broker:
             targets.append(self._tick(e + d * self.profit_target_usd / per_point))
         for o in orders:
             if o.action in (BUY, SELL_SHORT) or o.price is None or (-1 if o.action == SELL else 1) != -d:
-                continue  # entries, and exits of the other side
+                continue
             (stops if o.kind == "stop" else targets if o.kind in ("limit", "touch") else []).append(o.price)
         stops = [p for p in stops if (e - p) * d > 0]
         targets = [p for p in targets if (p - e) * d > 0]
@@ -370,12 +367,12 @@ class Broker:
 
     def _close(self, qty: int, price: float, name: str, amb: bool = False, slip: bool = True) -> None:
         pos, c, spec, i = self.position, self.costs, self.spec, self._i
-        slippage = c.slippage * (pos.entry_slip + slip) / 2  # per contract: half per market/stop fill
+        slippage = c.slippage * (pos.entry_slip + slip) / 2
         gross = spec.pnl(pos.entry_price, price, qty, pos.direction)
         net = spec.pnl(pos.entry_price, price, qty, pos.direction, c.commission, slippage)
         best, worst = (pos.hi, pos.lo) if pos.direction == 1 else (pos.lo, pos.hi)
         entry_cost = (c.commission + c.slippage * pos.entry_slip) / 2
-        runup = max(0.0, spec.pnl(pos.entry_price, best, qty, pos.direction, entry_cost))  # MC floors run-up at 0
+        runup = max(0.0, spec.pnl(pos.entry_price, best, qty, pos.direction, entry_cost))
         drawdown = spec.pnl(pos.entry_price, worst, qty, pos.direction, entry_cost)
         per_point = spec.point_value * qty
         risk = math.nan if pos.stop_px is None else abs(pos.entry_price - pos.stop_px) * per_point
@@ -387,11 +384,11 @@ class Broker:
             self._times[i], price, name, i,
             gross, c.commission * qty, slippage * qty, net, self.closed_pnl, runup, drawdown, amb,
             risk, reward, reward / risk, net / risk,
-        ))  # fmt: skip
+        ))
         pos.qty -= qty
         if pos.qty == 0:
             self.position = None
-        self.mark(self.closed_pnl + self.open_pnl(price))  # net costs land at the fill
+        self.mark(self.closed_pnl + self.open_pnl(price))
 
     def open_pnl(self, price: float) -> float:
         pos = self.position
@@ -423,19 +420,19 @@ class Broker:
 @dataclass
 class BacktestResult:
     trades: pd.DataFrame
-    equity: pd.Series  # closed net + open gross P&L at each bar close
+    equity: pd.Series
     open_position: Position | None
     strategy: Strategy | None
     fill_mode: str = "ohlc"
-    bars_without_sub_bars: int = 0  # magnifier mode: bars that had no 1-minute data and used their own OHLC
-    equity_low: pd.Series | None = None  # lowest equity within each bar (<= equity)
+    bars_without_sub_bars: int = 0
+    equity_low: pd.Series | None = None
     spec: ContractSpec | None = None
     costs: Costs | None = None
-    equity_high: pd.Series | None = None  # highest equity within each bar (>= equity)
-    bar_drawdown: pd.Series | None = None  # deepest drop within each bar below a peak reached earlier in the bar
-    bars_with_partial_sub_bars: int = 0  # magnifier mode: bars whose 1-minute data did not reproduce their OHLC
-    trade_from: int = 0  # no fills before this bar
-    window_ends: dict = field(default_factory=dict, repr=False)  # end -> (trade, (equity, low, high, drawdown))
+    equity_high: pd.Series | None = None
+    bar_drawdown: pd.Series | None = None
+    bars_with_partial_sub_bars: int = 0
+    trade_from: int = 0
+    window_ends: dict = field(default_factory=dict, repr=False)
 
     @property
     def net_profit(self) -> float:
@@ -446,7 +443,7 @@ class BacktestResult:
         from guban.tradelist import to_mc_layout
 
         path = Path(path)
-        table = to_mc_layout(self.trades, self.spec.point_value, capital)  # checks capital before creating anything
+        table = to_mc_layout(self.trades, self.spec.point_value, capital)
         path.parent.mkdir(parents=True, exist_ok=True)
         table.to_csv(path, index=False, lineterminator="\n")
         return path
@@ -476,7 +473,7 @@ class BacktestResult:
             trades=trades, equity=cut(self.equity, eq), open_position=None, strategy=self.strategy, fill_mode=self.fill_mode,
             equity_low=cut(self.equity_low, low), spec=self.spec, costs=self.costs, equity_high=cut(self.equity_high, high),
             bar_drawdown=cut(self.bar_drawdown, dd), trade_from=lo,
-        )  # fmt: skip
+        )
 
 
 def _check_bars(bars: pd.DataFrame, what: str = "bars") -> None:
@@ -495,7 +492,7 @@ def _check_bars(bars: pd.DataFrame, what: str = "bars") -> None:
         if not pd.api.types.is_numeric_dtype(dt) or pd.api.types.is_bool_dtype(dt):
             raise ValueError(f"{what} column {c!r} must be numeric, got {dt}")
     a = bars[cols].to_numpy(float)
-    o, h, l, c = a.T  # noqa: E741
+    o, h, l, c = a.T
     eps = 1e-9
     checks = [
         (~np.isfinite(a).all(axis=1), "a missing (NaN) or infinite price"),
@@ -550,7 +547,7 @@ def _map_sub_bars(bars: pd.DataFrame, sub: pd.DataFrame) -> tuple[np.ndarray, np
         off = (
             (np.abs(so[s] - bo[has]) > eps) | (np.abs(sc[e - 1] - bc[has]) > eps)
             | (np.abs(np.maximum.reduceat(sh, s) - bh[has]) > eps) | (np.abs(np.minimum.reduceat(sl, s) - bl[has]) > eps)
-        )  # fmt: skip
+        )
         partial = int(off.sum())
         ends[has[off]] = starts[has[off]]
     return starts, ends, sub, partial
@@ -622,7 +619,7 @@ def run_backtest(
             raise ValueError(f"{type(strategy).__name__}.extra_columns: {name!r} is a built-in bar series; drop it from extra_columns")
         if name not in bars.columns:
             raise ValueError(f"{type(strategy).__name__} reads bar column {name!r} (extra_columns), but the bars have none; "
-                             f"add it with guban.data.features.add_columns (guban run/optimize/wfo do)")  # fmt: skip
+                             f"add it with guban.data.features.add_columns (guban run/optimize/wfo do)")
         columns[name] = pd.to_numeric(bars[name]).to_numpy(float).tolist()
 
     def ohlc_path(i: int) -> Path_:
@@ -653,7 +650,7 @@ def run_backtest(
         clock.i = i
         broker.start_bar(i)
         if i < trade_from:
-            broker.pending.clear()  # warm-up: nothing fills before trade_from
+            broker.pending.clear()
         elif broker.pending or broker.has_exits():
             broker.process_bar(i, opens[i], path_of)
         elif broker.position is not None:
@@ -665,12 +662,11 @@ def run_backtest(
             strategy.on_bar()
         except Exception as e:
             pos = broker.position
-            # bar numbers are 1-based, as the strategy sees them (current_bar, MC CurrentBar)
             state = "flat" if pos is None else f"{pos.direction:+d} x{pos.qty} @ {pos.entry_price} since bar {pos.entry_bar + 1}"
             raise StrategyError(f"{type(strategy).__name__}.on_bar failed at bar {i + 1} ({times[i]}), position {state}: {e!r}") from e
         if i >= trade_from:
             broker.fill_on_close(closes[i])
-        else:  # warm-up: a close order would fill before trade_from
+        else:
             broker.pending = [o for o in broker.pending if o.kind != "close"]
         if i + 1 in ends:
             snaps[i + 1] = broker.flattened_end(closes[i])

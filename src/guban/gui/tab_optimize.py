@@ -48,7 +48,7 @@ def optimize_options(state: State, params: dict, emit) -> dict:
     from guban.optimize import MAX_COMBINATIONS, RESULT_METRICS
 
     return {"metrics": [{"key": k, "label": label} for k, label, _, _ in RESULT_METRICS], "defaults": DEFAULTS,
-            "cpus": os.cpu_count() or 1, "max_combinations": MAX_COMBINATIONS}  # fmt: skip
+            "cpus": os.cpu_count() or 1, "max_combinations": MAX_COMBINATIONS}
 
 
 @method("optimize.count")
@@ -93,10 +93,10 @@ def _equity_chart(top: list[dict], d) -> str:
 
     fig, ax = figure(9.6, 3.9)
     (a, b), (c, e) = d.windows["is"], d.windows["oos"]
-    follows = c > b  # out of sample after in sample: its curves continue from each combination's in-sample end
+    follows = c > b
     for key, color in (("is", COLORS["s1"]), ("oos", COLORS["s3"])):
         segs = []
-        for t in reversed(top):  # best last, on top
+        for t in reversed(top):
             s = t[f"{key}_daily"]
             if not len(s):
                 continue
@@ -105,7 +105,7 @@ def _equity_chart(top: list[dict], d) -> str:
             segs.append(np.c_[x, y])
         if segs:
             ax.add_collection(LineCollection(segs, colors=color, alpha=0.35, linewidths=0.8))
-    for key, color in (("is", COLORS["s1"]), ("oos", COLORS["s3"])):  # the in-sample winner, bold
+    for key, color in (("is", COLORS["s1"]), ("oos", COLORS["s3"])):
         s = top[0][f"{key}_daily"]
         if len(s):
             y = s.to_numpy(float) + (top[0]["is_daily"].iat[-1] if key == "oos" and follows and len(top[0]["is_daily"]) else 0.0)
@@ -118,7 +118,7 @@ def _equity_chart(top: list[dict], d) -> str:
     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(loc))
     ax.yaxis.set_major_formatter(MONEY)
     ax.legend(handles=[Line2D([], [], color=COLORS["s1"], label="In sample"), Line2D([], [], color=COLORS["s3"], label="Out of sample"),
-                       Line2D([], [], color=COLORS["ink2"], lw=2, label="Rank 1 (bold)")], loc="upper left", ncols=3)  # fmt: skip
+                       Line2D([], [], color=COLORS["ink2"], lw=2, label="Rank 1 (bold)")], loc="upper left", ncols=3)
     ax.set_title(f"Cumulative net profit, top {len(top)} in-sample combinations" + ("" if follows else " (each window from 0)"))
     return to_data_uri(fig)
 
@@ -131,7 +131,7 @@ def _hist_chart(top: list[dict]) -> str:
         vals = {w: np.array([t[w][key] for t in top], float) for w in ("is", "oos")}
         vals = {w: v[np.isfinite(v)] for w, v in vals.items()}
         both = np.concatenate(list(vals.values()))
-        bins = np.histogram_bin_edges(both, bins=30) if len(both) else 30  # shared, so the two windows compare
+        bins = np.histogram_bin_edges(both, bins=30) if len(both) else 30
         for w, color, name in (("is", COLORS["s1"], "In sample"), ("oos", COLORS["s3"], "Out of sample")):
             v = vals[w]
             if len(v):
@@ -184,21 +184,21 @@ def optimize_run(state: State, params: dict, emit) -> dict:
     workers = int(params["workers"]) if params.get("workers") not in (None, "") else None
     fill_mode = str(params.get("fill_mode") or "magnifier")
     spec = get_contract(d.symbol)
-    num = lambda k: None if params.get(k) in (None, "") else float(params[k])  # noqa: E731
+    num = lambda k: None if params.get(k) in (None, "") else float(params[k])
     commission, slippage, costs_from = _costs(spec, num("commission"), num("slippage"))
     costs = Costs(commission=commission, slippage=slippage)
     (lo_is, hi_is), (lo_oos, hi_oos) = d.bounds("is"), d.bounds("oos")
     data = DataSpec(d.symbol, d.tf, d.session, d.tz, fill_mode=fill_mode, data_dir=str(DATA_DIR), data_from=d.first.isoformat(),
-                    extra_columns=tuple(cls.extra_columns))  # fmt: skip
+                    extra_columns=tuple(cls.extra_columns))
     common = dict(data=data, fixed=fixed, class_name=cls.__name__, workers=workers)
     opt = optimize(str(path), grid, spec, costs, metric=metric, min_trades=min_trades, confirm=bool(params.get("confirm")),
-                   progress=_throttled(emit, "In sample"), window=(lo_is, hi_is), **common)  # fmt: skip
+                   progress=_throttled(emit, "In sample"), window=(lo_is, hi_is), **common)
     t1 = time.perf_counter()
     ranked = opt.ranked()
     ranked = ranked[ranked["rank"].notna()].head(top_n)
     combos = [{k: (v.item() if isinstance(v, np.generic) else v) for k, v in row.items()} for row in ranked[list(grid)].to_dict("records")]
     runs = window_runs(str(path), [(c, lo, hi) for c in combos for lo, hi in ((lo_is, hi_is), (lo_oos, hi_oos))], spec, costs,
-                       progress=_throttled(emit, "Top combinations, in and out of sample"), **common)  # fmt: skip
+                       progress=_throttled(emit, "Top combinations, in and out of sample"), **common)
     t2 = time.perf_counter()
     emit("progress", message="Drawing charts…")
     top = []
@@ -207,15 +207,15 @@ def optimize_run(state: State, params: dict, emit) -> dict:
         top.append({"rank": k + 1, "inputs": c,
                     "is": flatten_metrics(backtest_metrics(r_is, d.bars.iloc[lo_is:hi_is])),
                     "oos": flatten_metrics(backtest_metrics(r_oos, d.bars.iloc[lo_oos:hi_oos])),
-                    "is_daily": _daily(r_is, d.bars, lo_is, hi_is), "oos_daily": _daily(r_oos, d.bars, lo_oos, hi_oos)})  # fmt: skip
+                    "is_daily": _daily(r_is, d.bars, lo_is, hi_is), "oos_daily": _daily(r_oos, d.bars, lo_oos, hi_oos)})
     images = _charts(top, d, METRICS[metric][0]) if top else {}
     t3 = time.perf_counter()
     columns = ["rank", *grid, *(f"IS {lab}" for _, lab in TABLE_METRICS), *(f"OOS {lab}" for _, lab in TABLE_METRICS)]
-    rnd = lambda v: None if v is None or (isinstance(v, float) and not np.isfinite(v)) else round(float(v), 2)  # noqa: E731
+    rnd = lambda v: None if v is None or (isinstance(v, float) and not np.isfinite(v)) else round(float(v), 2)
     rows = [[t["rank"], *(t["inputs"][g] for g in grid), *(rnd(t["is"][k]) for k, _ in TABLE_METRICS), *(rnd(t["oos"][k]) for k, _ in TABLE_METRICS)]
-            for t in top]  # fmt: skip
+            for t in top]
     state.optimization = {"opt": opt, "top": top, "grid": grid, "d": d, "cls": cls, "path": path, "fixed": fixed, "metric": metric,
-                          "costs": (commission, slippage, costs_from), "fill_mode": fill_mode, "top_n": top_n}  # fmt: skip
+                          "costs": (commission, slippage, costs_from), "fill_mode": fill_mode, "top_n": top_n}
     w = {k: [x.isoformat() for x in d.windows[k]] for k in ("is", "oos")}
     return {
         "combinations": len(opt.results),
@@ -243,7 +243,7 @@ def optimize_save(state: State, params: dict, emit) -> dict:
     out = Path(params["out"]) if params.get("out") else run_dir(o["path"], d.symbol, d.symbol, d.tf, d.session, "_opt_is_oos")
     results = o["opt"].write_csv(out / "results.csv")
     rows = [{"rank": t["rank"], **t["inputs"], **{f"is_{k}": v for k, v in t["is"].items()}, **{f"oos_{k}": v for k, v in t["oos"].items()}}
-            for t in o["top"]]  # fmt: skip
+            for t in o["top"]]
     oos = out / "oos.csv"
     pd.DataFrame(rows).to_csv(oos, index=False, lineterminator="\n")
     commission, slippage, costs_from = o["costs"]
@@ -252,6 +252,6 @@ def optimize_save(state: State, params: dict, emit) -> dict:
             "grid": o["grid"], "fixed": o["fixed"], "metric": o["metric"], "min_trades": o["opt"].min_trades, "top_n": o["top_n"],
             "fill_mode": o["fill_mode"], "commission": commission, "slippage": slippage, "costs": costs_from,
             "combinations": len(o["opt"].results), "workers": o["opt"].workers, "seconds": o["opt"].seconds,
-            "best_in_sample": o["opt"].best, "written_by": "Guban Studio"}  # fmt: skip
+            "best_in_sample": o["opt"].best, "written_by": "Guban Studio"}
     (out / "optimize.json").write_text(json.dumps(jsonable({"run": meta, "top": rows}), indent=2, default=str) + "\n", encoding="utf-8")
     return {"folder": str(out), "files": [str(results), str(oos), str(out / "optimize.json")]}

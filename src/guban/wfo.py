@@ -54,11 +54,11 @@ YEAR_DAYS = 365.25
 @dataclass(frozen=True)
 class Window:
     no: int
-    is_start: pd.Timestamp  # session dates; ends are exclusive
+    is_start: pd.Timestamp
     is_end: pd.Timestamp
     oos_start: pd.Timestamp
-    oos_end: pd.Timestamp  # cut off at the day after the last session
-    partial: bool = False  # the out-of-sample window was cut off by the end of the data
+    oos_end: pd.Timestamp
+    partial: bool = False
 
     @property
     def is_years(self) -> float:
@@ -138,16 +138,16 @@ class WalkForwardResult:
     is_months: int
     oos_months: int
     step_months: int
-    results: pd.DataFrame  # one row per (window, combo): inputs, is_<metric>..., is_rank, oos_<metric>..., oos_rank
-    summary: pd.DataFrame  # one row per window: dates, chosen combo and inputs, IS/OOS profit, WFE, OOS rank
-    trades: pd.DataFrame  # stitched out-of-sample trades (engine columns; bar numbers index `bars`)
-    equity: pd.Series  # stitched out-of-sample equity over the out-of-sample bars
+    results: pd.DataFrame
+    summary: pd.DataFrame
+    trades: pd.DataFrame
+    equity: pd.Series
     equity_low: pd.Series
     equity_high: pd.Series
     bar_drawdown: pd.Series
-    metrics: dict  # guban.metrics.compute_metrics of the stitched result
-    pooled: dict  # windows that traded: {"is_net_per_year", "oos_net_per_year", "wfe"} (None when undefined)
-    boundary_trades: int  # stitched trades closed by an out-of-sample window's end ("Window End")
+    metrics: dict
+    pooled: dict
+    boundary_trades: int
     bars: pd.DataFrame
     spec: ContractSpec
     costs: Costs
@@ -170,7 +170,7 @@ class WalkForwardResult:
         return BacktestResult(
             self.trades, self.equity, None, None, self.fill_mode, 0, self.equity_low, self.spec, self.costs,
             equity_high=self.equity_high, bar_drawdown=self.bar_drawdown,
-        )  # fmt: skip
+        )
 
     def write_csvs(self, out: str | Path) -> list[Path]:
         """windows.csv (the summary) and results.csv (every window x combination)."""
@@ -224,9 +224,9 @@ def walk_forward(
     trades in each in-sample window. progress(done, total) reports the grid runs.
     """
     job, frames, combos = _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm,
-                                 min_trades, workers)  # fmt: skip
+                                 min_trades, workers)
     t0 = time.perf_counter()
-    frame = bars if bars is not None else data.load()[0]  # also builds missing bar caches before the workers read them
+    frame = bars if bars is not None else data.load()[0]
     sess = session_keys(frame.index, frame["session_date"] if "session_date" in frame.columns else None)
     if not sess.is_monotonic_increasing:
         raise ValueError("bars' session dates must not decrease")
@@ -251,7 +251,7 @@ def walk_forward(
         results, summary, trades, equity, equity_low, equity_high, bar_dd, metrics, pooled, boundary,
         frame, spec, costs, job.fill_mode or ("magnifier" if sub_bars is not None else "ohlc"),
         workers, time.perf_counter() - t0, job.fixed,
-    )  # fmt: skip
+    )
 
 
 def _rank_windows(windows, combos, rows, metric, min_trades) -> tuple[pd.DataFrame, list[int | None]]:
@@ -301,7 +301,7 @@ def _stitch(frame, oos_r, runs: dict[int, BacktestResult]):
     trades["trade_no"] = np.arange(1, len(trades) + 1)
     trades["cum_net_pnl"] = trades["net_pnl"].astype(float).cumsum()
     series = [pd.Series(np.concatenate(parts[key]), index=idx, name=name)
-              for key, name in (("eq", "equity"), ("low", "equity_low"), ("high", "equity_high"), ("dd", "bar_drawdown"))]  # fmt: skip
+              for key, name in (("eq", "equity"), ("low", "equity_low"), ("high", "equity_high"), ("dd", "bar_drawdown"))]
     total = float(trades["net_pnl"].sum()) if len(trades) else 0.0
     final = float(series[0].iat[-1]) if len(idx) else 0.0
     if not math.isclose(final, total, rel_tol=1e-9, abs_tol=1e-6):
@@ -312,7 +312,7 @@ def _stitch(frame, oos_r, runs: dict[int, BacktestResult]):
 
 def _summary(windows, grid, combos, results, chosen, metric) -> tuple[pd.DataFrame, dict]:
     rows = []
-    sums = [0.0, 0.0, 0.0, 0.0]  # IS net, IS years, OOS net, OOS years (windows that traded)
+    sums = [0.0, 0.0, 0.0, 0.0]
     for w, c in zip(windows, chosen):
         t = results[results["window"] == w.no]
         row = {
@@ -322,12 +322,12 @@ def _summary(windows, grid, combos, results, chosen, metric) -> tuple[pd.DataFra
             "partial": w.partial,
             "eligible": int(t["is_rank"].notna().sum()),
             "combo": c,
-        }  # fmt: skip
+        }
         r = t[t["combo"] == c].iloc[0] if c is not None else None
         row.update({k: (combos[c - 1][k] if c is not None else None) for k in grid})
         if r is None:
             row.update(is_metric=None, is_net_profit=None, is_trades=None, is_net_per_year=None, oos_net_profit=None,
-                       oos_trades=None, oos_net_per_year=None, wfe=None, oos_rank=None)  # fmt: skip
+                       oos_trades=None, oos_net_per_year=None, wfe=None, oos_rank=None)
         else:
             is_net, oos_net = float(r["is_net_profit"]), float(r["oos_net_profit"])
             is_py, oos_py = is_net / w.is_years, oos_net / w.oos_years
@@ -335,7 +335,7 @@ def _summary(windows, grid, combos, results, chosen, metric) -> tuple[pd.DataFra
                 is_metric=_num(r[f"is_{metric}"]), is_net_profit=is_net, is_trades=int(r["is_total_trades"]), is_net_per_year=is_py,
                 oos_net_profit=oos_net, oos_trades=int(r["oos_total_trades"]), oos_net_per_year=oos_py,
                 wfe=oos_py / is_py if is_py > 0 else None, oos_rank=None if pd.isna(r["oos_rank"]) else int(r["oos_rank"]),
-            )  # fmt: skip
+            )
             sums = [sums[0] + is_net, sums[1] + w.is_years, sums[2] + oos_net, sums[3] + w.oos_years]
         rows.append(row)
     summary = pd.DataFrame(rows)

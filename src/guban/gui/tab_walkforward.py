@@ -24,7 +24,7 @@ from guban.gui.tab_data import Loaded, load_data, loaded
 from guban.gui.tab_strategy import coerce_inputs
 
 DEFAULTS = {"is_months": 12, "oos_months": 12, "step_months": 12, "folds": 4, "anchored": False, "metric": "net_profit", "min_trades": 30}
-CAPITAL = 1_000_000.0  # trades.csv's cum_profit_pct base, as `guban wfo` without --capital
+CAPITAL = 1_000_000.0
 
 
 def _int(params: dict, key: str, low: int = 1) -> int:
@@ -44,7 +44,7 @@ def layout(params: dict) -> dict:
     """The window layout from the form: is/oos/step months, folds, anchored, start (None = end-aligned)."""
     start = str(params.get("start") or "").strip() or None
     return {"is_months": _int(params, "is_months"), "oos_months": _int(params, "oos_months"), "step_months": _int(params, "step_months"),
-            "folds": _int(params, "folds"), "anchored": bool(params.get("anchored", DEFAULTS["anchored"])), "start": start}  # fmt: skip
+            "folds": _int(params, "folds"), "anchored": bool(params.get("anchored", DEFAULTS["anchored"])), "start": start}
 
 
 def windows(d: Loaded, lay: dict) -> list:
@@ -58,13 +58,13 @@ def windows(d: Loaded, lay: dict) -> list:
         months = lay["is_months"] + lay["step_months"] * (lay["folds"] - 1) + lay["oos_months"]
         raise ValueError(f"not enough data: {lay['folds']} folds of {lay['is_months']} + {lay['oos_months']} months (step {lay['step_months']}) "
                          f"need {months} months, from {start:%Y-%m-%d}; the Data tab's bars start {sess[0]:%Y-%m-%d}: load more data "
-                         "or use fewer / shorter folds")  # fmt: skip
+                         "or use fewer / shorter folds")
     return make_windows(sess[0], sess[-1], lay["is_months"], lay["oos_months"], lay["step_months"], lay["anchored"], start, lay["folds"])
 
 
 def _window_rows(ws) -> list[list]:
     return [[f"W{w.no}", f"{w.is_start:%Y-%m-%d} → {w.is_end - pd.Timedelta(days=1):%Y-%m-%d}",
-             f"{w.oos_start:%Y-%m-%d} → {w.oos_end - pd.Timedelta(days=1):%Y-%m-%d}"] for w in ws]  # fmt: skip
+             f"{w.oos_start:%Y-%m-%d} → {w.oos_end - pd.Timedelta(days=1):%Y-%m-%d}"] for w in ws]
 
 
 @method("wf.options")
@@ -150,7 +150,7 @@ def wf_run(state: State, params: dict, emit) -> dict:
     grid = _grid(cls, params.get("grid"))
     fixed = coerce_inputs(cls, {k: v for k, v in (params.get("inputs") or {}).items() if k not in grid})
     lay = layout(params)
-    ws = windows(d, lay)  # whole folds inside the Data tab's bars, or the "not enough data" error
+    ws = windows(d, lay)
     start = f"{ws[0].is_start:%Y-%m-%d}"
     metric = str(params.get("metric") or DEFAULTS["metric"])
     if metric not in METRICS:
@@ -159,15 +159,15 @@ def wf_run(state: State, params: dict, emit) -> dict:
     workers = int(params["workers"]) if params.get("workers") not in (None, "") else None
     fill_mode = str(params.get("fill_mode") or "magnifier")
     spec = get_contract(d.symbol)
-    num = lambda k: None if params.get(k) in (None, "") else float(params[k])  # noqa: E731
+    num = lambda k: None if params.get(k) in (None, "") else float(params[k])
     commission, slippage, costs_from = _costs(spec, num("commission"), num("slippage"))
     data = DataSpec(d.symbol, d.tf, d.session, d.tz, fill_mode=fill_mode, data_dir=str(_data_dir()), data_from=d.first.isoformat(),
-                    extra_columns=tuple(cls.extra_columns))  # fmt: skip
+                    extra_columns=tuple(cls.extra_columns))
     n = int(np.prod([len(v) for v in grid.values()]))
     wf = walk_forward(str(path), grid, spec, Costs(commission=commission, slippage=slippage), data=data, fixed=fixed, class_name=cls.__name__,
                       is_months=lay["is_months"], oos_months=lay["oos_months"], step_months=lay["step_months"], anchored=lay["anchored"],
                       start=start, folds=lay["folds"], metric=metric, min_trades=min_trades, workers=workers, confirm=bool(params.get("confirm")),
-                      progress=_throttled(emit, "Walk-forward runs"))  # fmt: skip
+                      progress=_throttled(emit, "Walk-forward runs"))
     t1 = time.perf_counter()
     emit("progress", message="Drawing charts…")
     _write_for_monte_carlo(wf)
@@ -179,7 +179,7 @@ def wf_run(state: State, params: dict, emit) -> dict:
     chosen = s[s["combo"].notna()]
     last_inputs = {g: str(chosen.iloc[-1][g]) for g in grid} if len(chosen) else None
     state.walkforward = {"wf": wf, "path": path, "cls": cls, "d": d, "grid": grid, "fixed": fixed, "folds": lay["folds"], "n": n,
-                         "costs": (commission, slippage, costs_from), "fill_mode": fill_mode, "workers": workers}  # fmt: skip
+                         "costs": (commission, slippage, costs_from), "fill_mode": fill_mode, "workers": workers}
     t2 = time.perf_counter()
     return {
         "strategy": cls.__name__,
@@ -200,7 +200,7 @@ def wf_run(state: State, params: dict, emit) -> dict:
 def _data_dir() -> Path:
     from guban.gui import tab_data
 
-    return tab_data.DATA_DIR  # looked up per call, so tests can point it at a temporary store
+    return tab_data.DATA_DIR
 
 
 @method("wf.register")
@@ -224,10 +224,10 @@ def wf_save(state: State, params: dict, emit) -> dict:
     commission, slippage, costs_from = w["costs"]
     trade_charts = bool(params.get("trade_charts", False))
     emit("progress", message=f"Writing {out}…")
-    with theme("light"):  # the CLI's report look
+    with theme("light"):
         trades, csvs, html_path = write_wfo_folder(
             w["wf"], out, cls=cls, strategy_file=path, symbol=d.symbol, spec=w["wf"].spec, tf=d.tf, session=d.session, tz=d.tz,
             fill_mode=w["fill_mode"], history_from=None, commission=commission, slippage=slippage, costs_from=costs_from,
             data_from=d.first.isoformat(), fixed=w["fixed"], capital=CAPITAL, combinations=w["n"], folds=w["folds"],
-            trade_charts=trade_charts, workers=w["workers"], written_by="Guban Studio")  # fmt: skip
+            trade_charts=trade_charts, workers=w["workers"], written_by="Guban Studio")
     return {"folder": str(out), "files": [str(trades), *map(str, csvs), str(out / "wfo.json"), str(html_path)], "report": str(html_path.resolve())}

@@ -50,7 +50,7 @@ def test_parse_timeframe():
 
 
 def test_rth_5min_matches_hand_built_bars():
-    m = one_minute("2024-03-05 09:00", "2024-03-05 16:30")  # includes pre- and post-RTH bars
+    m = one_minute("2024-03-05 09:00", "2024-03-05 16:30")
     b = resample(m, "5m", "rth")
     assert len(b) == 78
     assert b.index[0] == pd.Timestamp("2024-03-05 09:35", tz=TZ)
@@ -59,13 +59,12 @@ def test_rth_5min_matches_hand_built_bars():
     assert bar(b, 1) == hand_bar(m, "2024-03-05 09:36", "2024-03-05 09:40")
     assert bar(b, -1) == hand_bar(m, "2024-03-05 15:56", "2024-03-05 16:00")
     assert (b.session_date == pd.Timestamp("2024-03-05")).all()
-    # every in-session 1-min bar is used exactly once
     assert b.volume.sum() == m.between_time("09:31", "16:00").volume.sum()
 
 
 @pytest.mark.parametrize(
     "before, after",
-    [("2024-03-08", "2024-03-11"), ("2024-11-01", "2024-11-04")],  # spring-forward and fall-back weekends
+    [("2024-03-08", "2024-03-11"), ("2024-11-01", "2024-11-04")],
     ids=["spring", "fall"],
 )
 def test_dst_week_keeps_rth_open_at_0930(before, after):
@@ -78,24 +77,24 @@ def test_dst_week_keeps_rth_open_at_0930(before, after):
         assert day.index[-1].strftime("%H:%M") == "16:00"
         assert bar(day, 0) == hand_bar(m, f"{d} 09:31", f"{d} 09:35")
     offsets = {b[b.session_date == pd.Timestamp(d)].index[0].utcoffset() for d in (before, after)}
-    assert len(offsets) == 2  # the UTC offset changed across the weekend, the wall-clock open did not
+    assert len(offsets) == 2
 
 
 def test_eth_overnight_session_belongs_to_next_trading_day():
-    m = one_minute("2024-03-10 18:01", "2024-03-11 17:00")  # Sunday evening (after DST switch) -> Monday
+    m = one_minute("2024-03-10 18:01", "2024-03-11 17:00")
     b = resample(m, "60m", "eth")
     assert len(b) == 23
     assert b.index[0] == pd.Timestamp("2024-03-10 19:00", tz=TZ)
     assert b.index[-1] == pd.Timestamp("2024-03-11 17:00", tz=TZ)
     assert (b.session_date == pd.Timestamp("2024-03-11")).all()
     assert bar(b, 0) == hand_bar(m, "2024-03-10 18:01", "2024-03-10 19:00")
-    assert bar(b, 6) == hand_bar(m, "2024-03-11 00:01", "2024-03-11 01:00")  # bin that crosses midnight
+    assert bar(b, 6) == hand_bar(m, "2024-03-11 00:01", "2024-03-11 01:00")
 
 
 def test_gaps_are_not_filled():
     m = one_minute("2024-03-05 09:31", "2024-03-05 10:00")
-    m = m.drop(m.loc["2024-03-05 09:36":"2024-03-05 09:40"].index)  # a whole 5-min bin missing
-    m = m.drop(m.loc["2024-03-05 09:43":"2024-03-05 09:44"].index)  # a partially missing bin
+    m = m.drop(m.loc["2024-03-05 09:36":"2024-03-05 09:40"].index)
+    m = m.drop(m.loc["2024-03-05 09:43":"2024-03-05 09:44"].index)
     b = resample(m, "5m", "rth")
     assert list(b.index.strftime("%H:%M")) == ["09:35", "09:45", "09:50", "09:55", "10:00"]
     assert bar(b, 1) == hand_bar(m, "2024-03-05 09:41", "2024-03-05 09:45")
@@ -114,7 +113,7 @@ def test_timeframe_not_dividing_session_fails_loudly():
     with pytest.raises(ValueError, match="does not divide"):
         resample(m, "7m", "rth")
     b = resample(m, "7m", "rth", allow_partial=True)
-    assert b.index[-1] == pd.Timestamp("2024-03-05 16:00", tz=TZ)  # 390 = 55*7 + 5: last bar is short
+    assert b.index[-1] == pd.Timestamp("2024-03-05 16:00", tz=TZ)
     assert bar(b, -1) == hand_bar(m, "2024-03-05 15:56", "2024-03-05 16:00")
 
 
@@ -149,7 +148,6 @@ def _source(tmp_path, start="2024-03-05 09:00", end="2024-03-05 16:30"):
 
 
 def test_cache_rebuilds_when_the_session_definition_changes(tmp_path, monkeypatch):
-    # FIX.md #8: editing config/sessions.toml used to leave the old bars in the cache
     _source(tmp_path)
     assert load_bars("NQ", "5m", "rth", tmp_path).index[0] == pd.Timestamp("2024-03-05 09:35", tz=TZ)
     monkeypatch.setattr(rs, "get_session", lambda key: Session("rth", "RTH", time(10, 0), time(16, 0)))
@@ -163,8 +161,7 @@ def test_cache_rebuilds_on_a_new_cache_version_or_a_same_mtime_source_change(tmp
     old_version = rs.read_fingerprint(cached)["version"]
     monkeypatch.setattr(rs, "CACHE_VERSION", old_version + 1)
     pd.testing.assert_frame_equal(load_bars("NQ", "5m", "rth", tmp_path), first)
-    assert rs.read_fingerprint(cached)["version"] == old_version + 1  # rebuilt and re-stamped
-    # a rewritten source with its old modification time (a copy that kept timestamps) is still noticed by its size
+    assert rs.read_fingerprint(cached)["version"] == old_version + 1
     st = src.stat()
     one_minute("2024-03-06 09:00", "2024-03-06 12:00").to_parquet(src)
     os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))
@@ -174,12 +171,12 @@ def test_cache_rebuilds_on_a_new_cache_version_or_a_same_mtime_source_change(tmp
 def test_corrupt_or_foreign_cache_is_rebuilt_and_writes_are_atomic(tmp_path):
     _source(tmp_path)
     cached = cache_path("NQ", "5m", "rth", tmp_path)
-    cached.write_bytes(b"not parquet")  # e.g. a write cut off by a crash under the old direct-write code
+    cached.write_bytes(b"not parquet")
     bars = load_bars("NQ", "5m", "rth", tmp_path)
     assert len(bars) == 78 and rs.read_fingerprint(cached) is not None
-    pd.DataFrame({"x": [1]}).to_parquet(cached)  # a Parquet file without a fingerprint
+    pd.DataFrame({"x": [1]}).to_parquet(cached)
     assert len(load_bars("NQ", "5m", "rth", tmp_path)) == 78
-    assert not list(cached.parent.glob("*.tmp"))  # no temporary files left behind
+    assert not list(cached.parent.glob("*.tmp"))
 
 
 def test_session_close_is_the_template_end_or_the_scheduled_early_close():
@@ -192,7 +189,7 @@ def test_session_close_is_the_template_end_or_the_scheduled_early_close():
     assert list(eth.dt.strftime("%Y-%m-%d %H:%M")) == ["2024-12-23 17:00", "2024-12-24 13:15", "2024-12-24 13:15", "2024-12-26 17:00"]
     assert str(eth.dt.tz) == TZ
     rth = session_closes(days, get_session("rth"), early | {pd.Timestamp("2024-12-26").date(): time(18, 0)})
-    assert list(rth.dt.strftime("%H:%M")) == ["16:00", "13:15", "13:15", "16:00"]  # a later "early" close never extends
+    assert list(rth.dt.strftime("%H:%M")) == ["16:00", "13:15", "13:15", "16:00"]
 
 
 def test_load_bars_adds_session_close_from_the_symbols_calendar_in_chart_time(tmp_path):
@@ -200,11 +197,10 @@ def test_load_bars_adds_session_close_from_the_symbols_calendar_in_chart_time(tm
     b = load_bars("NQ", "5m", "rth", tmp_path, tz="America/Chicago")
     assert (b["session_close"] == pd.Timestamp("2024-12-24 12:15", tz="America/Chicago")).all()
     assert str(b["session_close"].dt.tz) == "America/Chicago"
-    assert "session_close" not in pd.read_parquet(cache_path("NQ", "5m", "rth", tmp_path)).columns  # not cached
+    assert "session_close" not in pd.read_parquet(cache_path("NQ", "5m", "rth", tmp_path)).columns
 
 
 def test_h24_session_is_one_trading_day_from_1800_to_1800():
-    # BTC trades 24/7 since 2026-05-29: Friday 18:00 -> Saturday 18:00 is Saturday's session
     from guban.data.resample import resample
 
     idx = pd.date_range("2026-06-05 18:01", "2026-06-06 18:00", freq="1min", tz="America/New_York")

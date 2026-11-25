@@ -19,17 +19,17 @@ from pathlib import Path
 import matplotlib
 import numpy as np
 
-matplotlib.use("Agg")  # no display: reports are written from the CLI and worker processes
+matplotlib.use("Agg")
 
-from matplotlib.figure import Figure  # noqa: E402
-from matplotlib.ticker import Formatter, FuncFormatter  # noqa: E402
+from matplotlib.figure import Figure
+from matplotlib.ticker import Formatter, FuncFormatter
 
 DPI = 150
 COLORS = {
     "page": "#f9f9f7", "surface": "#fcfcfb", "ink": "#0b0b0b", "ink2": "#52514e", "muted": "#898781",
     "grid": "#e1e0d9", "axis": "#c3c2b7", "s1": "#2a78d6", "up": "#2a78d6", "down": "#e34948",
     "good": "#0ca30c", "bad": "#d03b3b", "s2": "#e8a33d", "s3": "#7a5ccf", "s4": "#2fa59a",
-}  # fmt: skip
+}
 SERIES = [COLORS["s1"], COLORS["s2"], COLORS["s3"], COLORS["s4"], COLORS["bad"], COLORS["muted"]]
 _RC = {
     "font.family": ["Segoe UI", "DejaVu Sans", "sans-serif"],
@@ -59,7 +59,7 @@ DARK = {
     "page": "#0b0f17", "surface": "#111723", "ink": "#dde2ea", "ink2": "#aab2c0", "muted": "#8b93a3",
     "grid": "#222a3a", "axis": "#3a4458", "s1": "#4c9df0", "up": "#1fc7a5", "down": "#ef5b5b",
     "good": "#2fbf71", "bad": "#ef5b5b", "s2": "#e8a33d", "s3": "#a77bf3", "s4": "#2fa59a",
-}  # fmt: skip
+}
 LIGHT = dict(COLORS)
 _THEME = ["light"]
 
@@ -76,7 +76,7 @@ def set_theme(name: str) -> str:
         "text.color": COLORS["ink2"], "axes.facecolor": COLORS["surface"], "axes.edgecolor": COLORS["axis"],
         "axes.labelcolor": COLORS["ink2"], "axes.titlecolor": COLORS["ink"], "grid.color": COLORS["grid"],
         "xtick.color": COLORS["ink2"], "ytick.color": COLORS["ink2"], "figure.facecolor": COLORS["surface"],
-    })  # fmt: skip
+    })
     previous, _THEME[0] = _THEME[0], name
     return previous
 
@@ -124,7 +124,7 @@ class _ValueFormatter(Formatter):
 
     def __init__(self, kind: str):
         self.kind = kind
-        self.step = 1.0  # tick spacing, set by format_ticks (Formatter.locs is deprecated in matplotlib 3.11)
+        self.step = 1.0
 
     def format_ticks(self, values) -> list[str]:
         v = np.asarray(values, float)
@@ -133,7 +133,7 @@ class _ValueFormatter(Formatter):
 
     def __call__(self, v, pos=None) -> str:
         step = self.step
-        places = lambda s: next((d for d in range(4) if abs(round(s, d) - s) < 1e-9 * max(1.0, abs(s))), 4)  # noqa: E731
+        places = lambda s: next((d for d in range(4) if abs(round(s, d) - s) < 1e-9 * max(1.0, abs(s))), 4)
         if self.kind == "usd":
             d = places(step)
             s = f"{v:,.{d}f}"

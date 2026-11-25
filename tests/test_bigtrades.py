@@ -26,33 +26,32 @@ def ticks(rows):
     return pd.DataFrame({
         "ts_utc": [t0 + pd.Timedelta(milliseconds=ms) for ms, *_ in rows],
         "price": [r[1] for r in rows], "size": [r[2] for r in rows], "side": np.array([r[3] for r in rows], np.int8),
-    })  # fmt: skip
+    })
 
 
 def test_bubbles_merge_one_millisecond_of_one_side():
     every = bubbles_of(ticks([
-        (5, 100.00, 30, 1), (5, 100.25, 15, 1),  # one 45-lot buy bubble, size-weighted price
-        (5, 100.25, 50, -1), (5, 100.00, 20, -1),  # same millisecond, sell side: its own 70-lot sell bubble
-        (6, 100.25, 41, 0),  # between the quotes: ignored
-        (7, 100.50, 0, 1),  # size 0: adds nothing
-        (8, 100.50, 41, 1),  # another millisecond: its own bubble
-        (9, 100.50, 9, 1),  # under the floor (10)
-        (60_001, 101.0, 12, 1),  # next minute
-    ]))  # fmt: skip
+        (5, 100.00, 30, 1), (5, 100.25, 15, 1),
+        (5, 100.25, 50, -1), (5, 100.00, 20, -1),
+        (6, 100.25, 41, 0),
+        (7, 100.50, 0, 1),
+        (8, 100.50, 41, 1),
+        (9, 100.50, 9, 1),
+        (60_001, 101.0, 12, 1),
+    ]))
     sell = every[every["side"] == -1]
     assert sell["size"].tolist() == [70] and sell["price"].iat[0] == pytest.approx((100.25 * 50 + 100.0 * 20) / 70)
     b = every[every["side"] == 1]
     assert b["size"].tolist() == [45, 41, 12]
     assert b["price"].iat[0] == pytest.approx((100.0 * 30 + 100.25 * 15) / 45)
-    # labeled by bar close time: 10:46:00.005 ET -> the 10:47 bar, 10:47:00.001 -> the 10:48 bar
     assert [t.strftime("%H:%M") for t in b["time"]] == ["10:47", "10:47", "10:48"]
 
 
 def minute_bars(prices, start="2025-03-10 10:47", contract="202503"):
     idx = pd.date_range(start, periods=len(prices), freq="1min", tz=TZ, name="time")
-    o, h, l, c = np.array(prices, float).T  # noqa: E741
+    o, h, l, c = np.array(prices, float).T
     return pd.DataFrame({"open": o, "high": h, "low": l, "close": c, "volume": 1, "contract": contract,
-                         "session_date": pd.Timestamp("2025-03-10")}, index=idx)  # fmt: skip
+                         "session_date": pd.Timestamp("2025-03-10")}, index=idx)
 
 
 def test_body_bubbles_inside_body_only_and_nan_without_ticks():
@@ -61,15 +60,13 @@ def test_body_bubbles_inside_body_only_and_nan_without_ticks():
         "contract": "202503",
         "time": pd.to_datetime(["2025-03-10 10:47", "2025-03-10 10:47", "2025-03-10 10:47", "2025-03-10 10:48",
                                 "2025-03-10 10:49"]).tz_localize(TZ),
-        "price": [100.0, 102.5, 101.0, 98.5, 99.5],  # bar 1: edge (in), top wick (out), body (in); bar 2: lower wick
+        "price": [100.0, 102.5, 101.0, 98.5, 99.5],
         "size": [60, 90, 45, 70, 50],
-    })  # fmt: skip
+    })
     ok = pd.DataFrame({"trade_date": ["20250310"], "contract": ["202503"]})
     col = body_bubbles(bars, bubbles, ok)
     assert col.tolist() == [60.0, 0.0, 50.0]
-    # chart time zone does not matter
     assert body_bubbles(bars.tz_convert("America/Chicago"), bubbles, ok).tolist() == [60.0, 0.0, 50.0]
-    # a bubble of another contract does not count; a day without usable ticks is NaN
     assert body_bubbles(bars, bubbles.assign(contract="202506"), ok).tolist() == [0.0, 0.0, 0.0]
     assert all(math.isnan(v) for v in body_bubbles(bars, bubbles, ok.iloc[:0]))
 
@@ -102,15 +99,13 @@ def test_engine_binds_declared_columns_and_refuses_missing_ones():
         run_backtest(Reads(), bars.drop(columns="flow"), NQ)
 
 
-# --- Bubble ORB ---------------------------------------------------------------------------------
-
 
 def day(breakout, bubble=80.0, after=None, column="big_buy_body"):
     """One session 09:31..15:59: a flat 100..102 ORB, the breakout bar at 09:50 with `bubble` in `column`, then
     `after` bars (default flat at the breakout close)."""
     idx = pd.date_range("2025-03-10 09:31", "2025-03-10 15:59", freq="1min", tz=TZ, name="time")
     n = len(idx)
-    o, h, l, c = (np.full(n, 101.0), np.full(n, 102.0), np.full(n, 100.0), np.full(n, 101.0))  # noqa: E741
+    o, h, l, c = (np.full(n, 101.0), np.full(n, 102.0), np.full(n, 100.0), np.full(n, 101.0))
     k = idx.get_loc(pd.Timestamp("2025-03-10 09:50", tz=TZ))
     o[k], h[k], l[k], c[k] = breakout
     o[k + 1:], h[k + 1:], l[k + 1:], c[k + 1:] = c[k], c[k] + 0.5, c[k] - 0.5, c[k]
@@ -119,19 +114,18 @@ def day(breakout, bubble=80.0, after=None, column="big_buy_body"):
     flows = {"big_buy_body": np.zeros(n), "big_sell_body": np.zeros(n)}
     flows[column][k] = bubble
     return pd.DataFrame({"open": o, "high": h, "low": l, "close": c, "volume": 1, "session_date": pd.Timestamp("2025-03-10"),
-                         **flows}, index=idx)  # fmt: skip
+                         **flows}, index=idx)
 
 
 def trades(bars, **inputs):
     return run_backtest(ORB(**inputs), bars, NQ, Costs(), fill_mode="ohlc").trades
 
 
-LONG = (101.5, 104.5, 101.25, 104.0)  # closes above the ORB high 102, green, top wick 0.5 < body 2.5
-SHORT = (100.5, 100.75, 97.5, 98.0)  # closes below the ORB low 100, red, bottom wick 0.5 < body 2.5
+LONG = (101.5, 104.5, 101.25, 104.0)
+SHORT = (100.5, 100.75, 97.5, 98.0)
 
 
 def test_bubble_orb_long_on_the_breakout_close_with_a_one_to_one_bracket():
-    # stop 1 tick under the low (101.0), target 107.0; the next bar reaches 107
     t = trades(day(LONG, after=[(104.0, 107.25, 103.5, 107.0)]))
     assert len(t) == 1
     r = t.iloc[0]
@@ -140,7 +134,6 @@ def test_bubble_orb_long_on_the_breakout_close_with_a_one_to_one_bracket():
 
 
 def test_bubble_orb_short_mirrors_the_long():
-    # stop 1 tick over the high (101.0), target 95.0; the next bar reaches 95
     t = trades(day(SHORT, column="big_sell_body", after=[(98.0, 98.5, 94.75, 95.0)]))
     assert len(t) == 1
     r = t.iloc[0]
@@ -153,15 +146,15 @@ def test_bubble_orb_short_mirrors_the_long():
 @pytest.mark.parametrize(
     "breakout, bubble, column",
     [
-        (LONG, 60.0, "big_buy_body"),  # bubble must be BIGGER than 60
-        (LONG, math.nan, "big_buy_body"),  # no usable ticks
-        (LONG, 80.0, "big_sell_body"),  # a sell bubble does not back a long
-        ((103.0, 106.0, 101.25, 104.0), 80.0, "big_buy_body"),  # top wick 2.0 > body 1.0
-        ((104.5, 105.0, 101.25, 104.0), 80.0, "big_buy_body"),  # red candle above the ORB
-        ((101.0, 102.0, 100.75, 101.75), 80.0, "big_buy_body"),  # does not close above the ORB high (102)
-        (SHORT, 80.0, "big_buy_body"),  # a buy bubble does not back a short
-        ((99.0, 99.25, 96.0, 98.0), 80.0, "big_sell_body"),  # bottom wick 2.0 > body 1.0
-        ((97.5, 100.75, 97.25, 98.0), 80.0, "big_sell_body"),  # green candle below the ORB
+        (LONG, 60.0, "big_buy_body"),
+        (LONG, math.nan, "big_buy_body"),
+        (LONG, 80.0, "big_sell_body"),
+        ((103.0, 106.0, 101.25, 104.0), 80.0, "big_buy_body"),
+        ((104.5, 105.0, 101.25, 104.0), 80.0, "big_buy_body"),
+        ((101.0, 102.0, 100.75, 101.75), 80.0, "big_buy_body"),
+        (SHORT, 80.0, "big_buy_body"),
+        ((99.0, 99.25, 96.0, 98.0), 80.0, "big_sell_body"),
+        ((97.5, 100.75, 97.25, 98.0), 80.0, "big_sell_body"),
     ],
 )
 def test_bubble_orb_skips_bars_that_miss_a_condition(breakout, bubble, column):
@@ -169,7 +162,6 @@ def test_bubble_orb_skips_bars_that_miss_a_condition(breakout, bubble, column):
 
 
 def test_bubble_orb_one_trade_per_day_and_stop_one_tick_under_the_low():
-    # the stop is hit on the next bar; a second qualifying breakout later that day is not taken
     after = [(104.0, 104.0, 100.5, 101.0), (101.5, 104.5, 101.25, 104.0)]
     bars = day(LONG, after=after)
     bars.iloc[bars.index.get_loc(pd.Timestamp("2025-03-10 09:52", tz=TZ)), bars.columns.get_loc("big_buy_body")] = 80.0

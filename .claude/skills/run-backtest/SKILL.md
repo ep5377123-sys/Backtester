@@ -19,10 +19,10 @@ Runs one strategy through `guban run` on NQ data and opens the HTML report in th
    uv run guban run strategies/<file>.py --symbol NQ --tf 5m --session eth --tz America/New_York --commission 2.25 --slippage 5 <strategy --set flags> --out reports/<file>_nq --open
    ```
 
-   - Defaults: 5m bars, the 24-hour Globex session, Eastern chart time (user, 2026-09-29; strategy input times are Eastern), 1-minute magnifier fills, and $2.25 commission + $5 slippage per NQ contract per round trip. The MC exports were made on Chicago chart time, so a run meant for `guban compare` against an old MC export needs `--tz America/Chicago` and the old input times.
+   - Defaults: 5m bars, the 24-hour Globex session, Eastern chart time (strategy input times are Eastern), 1-minute magnifier fills, and $2.25 commission + $5 slippage per NQ contract per round trip.
    - `--open` opens `report.html` in the default browser. Always pass it.
    - `<strategy --set flags>`:
-     - `vault_break.py`: `--set take_profit_usd=1000 --set stop_loss_usd=1000 --set num_contracts=1`. That is 1 NQ with a 50-point target and stop, the same distance as the MC run. No ATR warm-up seed: NQ data now starts 2018-12-30 (the fitted `atr_seed_*` inputs are retired, PLAN.md Phase 15).
+     - `vault_break.py`: `--set take_profit_usd=1000 --set stop_loss_usd=1000 --set num_contracts=1`. That is 1 NQ with a 50-point target and stop.
      - `ivb.py`: its defaults are Central, so shift them to Eastern (always run in ET, user 2026-10-08): `--tf 1m --set ivb_start=930 --set ivb_end=1000 --set latest_entry=1300 --set time_exit=1500`. If the user gives a time (e.g. an 11:00 entry cutoff), use it as Eastern.
      - `orb_bubbles.py`: `--tf 1m --data-from 2024-02-01` (it reads tick bubbles; NQ ticks start 2024), no `--set` flags.
      - Any other strategy: no `--set` flags (its own input defaults), unless the user gives inputs.
@@ -61,5 +61,5 @@ Runs one strategy through `guban run` on NQ data and opens the HTML report in th
 
 ## If it fails
 - Exit code 2 prints `Error: ...` with the fix, for example "run `guban import` first" when data is missing.
-- If the error is a bug, fix it (the bug-fix exception in CLAUDE.md) and rerun.
+- If the error is a bug, fix it and rerun.
 - If data is missing, tell the user and offer the import command from USE.md.

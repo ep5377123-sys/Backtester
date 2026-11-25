@@ -84,7 +84,6 @@ table.grid tr.selected, table.kv tr.selected { background: #16324a; }
 table.clickable tbody tr { cursor: pointer; }
 td.pos { color: var(--accent); } td.neg { color: var(--bad); }
 
-/* report.html's own sections (guban/report.py fragments), in the window's dark look */
 .report section { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 12px; }
 .report h2 { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
 .report h3 { font-size: 13px; margin: 0 0 2px; color: var(--ink); } .report h3.mc-h { margin: 16px 0 4px; }
@@ -117,7 +116,6 @@ progress { flex: 1; height: 10px; accent-color: var(--accent); }
 
 .status { display: flex; justify-content: space-between; gap: 16px; padding: 4px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; background: var(--panel); }
 
-/* Monte Carlo tab: trade source row, the two simulations as sub-tabs */
 input.path { flex: 1; min-width: 260px; }
 .stale { color: var(--warn); margin-left: 8px; }
 .subtabs { display: flex; gap: 2px; margin: 0 0 12px; border-bottom: 1px solid var(--border); }
@@ -127,7 +125,6 @@ input.path { flex: 1; min-width: 260px; }
 .sub { display: none; }
 .sub.active { display: block; }
 #pf-fields .edited { border-color: var(--warn); }
-/* propfirm.html's own classes (guban/propfirm/report.py) */
 .report .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0 12px; }
 .report .tile .s { font-size: 12px; color: var(--muted); }
 .report table.kv td.l { white-space: normal; }

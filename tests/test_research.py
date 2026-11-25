@@ -14,9 +14,7 @@ from guban.research.report import write_study_report
 from guban.research.stats import binom_sf, by_period, rate_test, verdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "research"))
-import poc_shift  # noqa: E402
-
-# --- profiles --------------------------------------------------------------------------------------------------
+import poc_shift
 
 
 def test_poc_is_the_price_with_most_volume():
@@ -26,24 +24,19 @@ def test_poc_is_the_price_with_most_volume():
 
 
 def test_poc_tie_goes_to_the_middle_of_the_range_then_lower():
-    # ticks 0..8, equal peaks at 1 and 5: the middle is 4, so 5 wins
     p = from_volume([0, 1, 5, 8], [1, 9, 9, 1], 0.25)
     assert p.poc() == 5 * 0.25
-    # equal peaks equidistant from the middle (2 and 6 around 4): the lower one
     p = from_volume([0, 2, 6, 8], [1, 9, 9, 1], 0.25)
     assert p.poc() == 2 * 0.25
 
 
 def test_value_area_grows_toward_more_volume():
-    # ticks 0..6 volumes 1 2 3 10 6 2 1 (25 total, 70% = 17.5): POC 3, add 4 (6>3) -> 16, add 2 (3>2) -> 19
     p = from_volume(np.arange(7), [1, 2, 3, 10, 6, 2, 1], 1.0)
     assert p.value_area() == (2.0, 4.0)
-    # a single-price profile
     assert from_volume([4], [10], 0.25).value_area() == (1.0, 1.0)
 
 
 def test_bar_profile_spreads_volume_evenly():
-    # bar 1: 100.00..100.50 (3 ticks) vol 30; bar 2: 100.50 only, vol 5
     p = from_bars([100.0, 100.5], [100.5, 100.5], [30, 5], 0.25)
     assert p.volume.tolist() == [10.0, 10.0, 15.0]
     assert p.total == 35 and p.poc() == 100.5
@@ -54,11 +47,9 @@ def test_empty_profile_raises():
         from_bars([1.0], [2.0], [0], 0.25)
 
 
-# --- statistics ------------------------------------------------------------------------------------------------
-
 
 def test_binom_sf_matches_hand_values():
-    assert binom_sf(8, 10, 0.5) == pytest.approx(56 / 1024)  # (45 + 10 + 1) / 1024 = 0.0547
+    assert binom_sf(8, 10, 0.5) == pytest.approx(56 / 1024)
     assert binom_sf(0, 10, 0.3) == 1.0
     assert binom_sf(11, 10, 0.3) == 0.0
     assert binom_sf(3, 3, 0.2) == pytest.approx(0.008)
@@ -72,8 +63,8 @@ def test_binom_sf_large_n_stays_finite():
 
 
 def test_rate_test_counts_and_gap():
-    hit = np.array([1, 1, 1, 0, 1, 0, 0, 0, 1, 0], bool)  # base 5/10
-    sig = np.array([1, 1, 1, 1, 0, 0, 0, 0, 0, 0], bool)  # 3/4 hits with the signal
+    hit = np.array([1, 1, 1, 0, 1, 0, 0, 0, 1, 0], bool)
+    sig = np.array([1, 1, 1, 1, 0, 0, 0, 0, 0, 0], bool)
     t = rate_test(hit, sig, "x")
     assert (t.n, t.hits, t.base_n, t.base_hits) == (4, 3, 10, 5)
     assert t.rate == 0.75 and t.base_rate == 0.5 and t.gap == 0.25
@@ -92,9 +83,8 @@ def _run(*periods):
 
 
 def test_verdict_rule():
-    v = _run(("a", 35, 50, 225, 450), ("b", 35, 50, 225, 450))  # 70% vs 52% in both periods
+    v = _run(("a", 35, 50, 225, 450), ("b", 35, 50, 225, 450))
     assert v.real and all(ok for _, ok, _ in v.checks)
-    # overall gap and p pass, but period b's gap is negative: rule 3 fails alone
     v2 = _run(("a", 50, 50, 225, 450), ("b", 24, 50, 225, 450))
     assert not v2.real and [ok for _, ok, _ in v2.checks] == [True, True, False]
     assert "b" in v2.checks[2][2]
@@ -107,8 +97,6 @@ def test_verdict_small_gap_fails():
     assert not v.real and v.checks[0][1] is False
 
 
-# --- study logic (research/poc_shift.py) -----------------------------------------------------------------------
-
 
 def _days(pocs, contracts=None, clean=None):
     n = len(pocs)
@@ -117,7 +105,7 @@ def _days(pocs, contracts=None, clean=None):
         "contract": contracts or ["202406"] * n, "tick_clean": clean or [True] * n,
         "tick_poc": pocs, "tick_val": np.array(pocs) - 5, "tick_vah": np.array(pocs) + 5,
         "tick_open": 100.0, "tick_close": 101.0,
-    }, index=idx)  # fmt: skip
+    }, index=idx)
 
 
 def test_triples_signal_and_outcome():
@@ -129,7 +117,7 @@ def test_triples_signal_and_outcome():
 
 def test_triples_drop_unclean_days_without_bridging():
     t, drops = poc_shift.build_triples(_days([100, 110, 120, 130, 140], clean=[True, True, False, True, True]), "tick")
-    assert t.empty and drops["unclean day"] == 3  # every triple touches day 3; days 2 and 4 are never joined
+    assert t.empty and drops["unclean day"] == 3
 
 
 def test_triples_drop_contract_rolls():
@@ -150,8 +138,6 @@ def test_small_first_year_is_pooled():
     assert set(p[:110]) == {"2023-2024"} and set(p[110:]) == {"2025"}
 
 
-# --- report ----------------------------------------------------------------------------------------------------
-
 
 def test_study_report_writes_a_page(tmp_path):
     frame = pd.DataFrame({"n": [1, 2]}, index=pd.Index(["a", "b"], name="k"))
@@ -160,13 +146,11 @@ def test_study_report_writes_a_page(tmp_path):
         verdicts=[{"label": "Up", "real": False, "headline": "h", "checks": [{"rule": "r", "passed": False, "detail": "d"}]}],
         charts=[{"id": "c", "title": "C", "x": ["2024"], "series": [{"name": "s", "y": [1.0]}], "ref": 0}],
         tables=[{"title": "Tab", "frame": frame}], notes=["n"],
-    )  # fmt: skip
+    )
     text = path.read_text(encoding="utf-8")
     assert "T &lt;x&gt;" in text and "NOT REAL" in text and "<td class='l'>b</td>" in text
     assert "<img class='chart' src='data:image/png;base64," in text and "id='c'" in text and "Plotly" not in text
 
-
-# --- trading days from the market-data store (Phase 15) ----------------------------------------------------------
 
 
 def test_trading_days_and_minute_bars_from_the_store(tmp_path):
@@ -180,59 +164,52 @@ def test_trading_days_and_minute_bars_from_the_store(tmp_path):
         d = pd.Timestamp(s) + pd.Timedelta(days=1)
         ts = pd.date_range(d + pd.Timedelta("9h29min"), d + pd.Timedelta("16h"), freq="1min", tz="America/New_York").tz_convert("UTC")
         df = pd.DataFrame({"ts_utc": ts, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 3, "ask_vol": 1, "bid_vol": 2,
-                           "contract": "202509", "source": "minute"})  # fmt: skip
+                           "contract": "202509", "source": "minute"})
         (sym / "minute" / "202509").mkdir(parents=True, exist_ok=True)
         df.to_parquet(sym / "minute" / "202509" / f"{s}.parquet", index=False)
         rows.append({"session": s, "trade_date": f"{d:%Y-%m-%d}", "contract": "202509", "minute_volume": 3 * len(ts), "bars": len(ts),
-                     "bar_source": "minute", "tick_ok": ok, "front": True, "thin": False})  # fmt: skip
+                     "bar_source": "minute", "tick_ok": ok, "front": True, "thin": False})
     pd.DataFrame(rows).reindex(columns=QUALITY_COLUMNS).to_csv(sym / "quality.csv", index=False)
     days = trading_days(sym, "NQ")
     assert list(days.index.strftime("%Y-%m-%d")) == ["2025-08-05", "2025-08-06", "2025-08-07"]
-    assert days["tick_ok"].tolist() == [True, False, False]  # empty tick_ok (no check) is not ok
+    assert days["tick_ok"].tolist() == [True, False, False]
     assert (days["contract"] == "202509").all() and days["session_file"].tolist() == ["20250804", "20250805", "20250806"]
     mb = minute_bars(sym, days.iloc[0])
     assert mb.index[0] == pd.Timestamp("2025-08-05 09:31") and mb.index[-1] == pd.Timestamp("2025-08-05 16:00")
     assert mb.index.tz is None and len(mb) == 390 and mb["volume"].sum() == 3 * 390
 
 
-# --- range bands (Phase 21) -------------------------------------------------------------------------------------
-
-from guban.research.ranges import (  # noqa: E402
+from guban.research.ranges import (
     AMBIGUOUS, EXTEND, FADE, RANGE_PER_SIGMA, UNRESOLVED, UNTOUCHED, monthly_refits, race, remaining_share,
     touch_prob, variance_shares,
-)  # fmt: skip
-from guban.research.vx import constant_maturity, expiry, vx_before  # noqa: E402
+)
+from guban.research.vx import constant_maturity, expiry, vx_before
 
 
 def test_touch_prob_is_the_reflection_principle():
-    assert touch_prob(1.0, 1.0) == pytest.approx(0.31731, abs=1e-5)  # 2 * (1 - Phi(1))
+    assert touch_prob(1.0, 1.0) == pytest.approx(0.31731, abs=1e-5)
     assert touch_prob(2.0, 1.0) == pytest.approx(0.04550, abs=1e-5)
     assert touch_prob(0.0, 1.0) == 1.0 and touch_prob(-0.5, 1.0) == 1.0
-    assert touch_prob(0.1, 0.0) == 0.0  # no time left, a level above is never reached
+    assert touch_prob(0.1, 0.0) == 0.0
     assert RANGE_PER_SIGMA == pytest.approx(1.5958, abs=1e-4)
 
 
 def test_touch_prob_matches_a_simulated_random_walk():
     rng = np.random.default_rng(7)
-    paths = np.cumsum(rng.normal(0, 1 / math.sqrt(2000), (4000, 2000)), axis=1)  # sigma 1 over the window
+    paths = np.cumsum(rng.normal(0, 1 / math.sqrt(2000), (4000, 2000)), axis=1)
     hit = (paths.max(axis=1) >= 1.0).mean()
-    assert hit == pytest.approx(touch_prob(1.0, 1.0), abs=0.025)  # discrete steps undershoot a little
+    assert hit == pytest.approx(touch_prob(1.0, 1.0), abs=0.025)
     assert (paths.max(axis=1) - paths.min(axis=1)).mean() == pytest.approx(RANGE_PER_SIGMA, abs=0.06)
 
 
 def test_race_outcomes():
     hi = np.array([1.0, 2.0, 2.2, 1.5, 1.0])
     lo = np.array([0.5, 1.5, 1.9, 1.4, 0.4])
-    # touch level 2 on bar 1; bar 3's low 1.4 <= 2 - 0.5 -> fade; bar 2's high 2.2 < 2.5
     assert race(hi, lo, 2.0, 0.5, 1) == (FADE, 1, 3)
-    # y = 0.15: bar 2's high 2.2 >= 2.15 while its low 1.9 > 1.85 -> extend
     assert race(hi, lo, 2.0, 0.15, 1) == (EXTEND, 1, 2)
-    # the touching bar itself beyond y -> extend at once (its low is ignored)
     assert race(hi, lo, 1.9, 0.05, 1) == (EXTEND, 1, 1)
     assert race(hi, lo, 3.0, 0.1, 1)[0] == UNTOUCHED
     assert race(hi, lo, 2.0, 5.0, 1) == (UNRESOLVED, 1, -1)
-    # a later bar spanning both thresholds
-    # (the touching bar reaching both counts as an extension, see above)
     assert race(np.array([1.0, 1.2, 3.0]), np.array([0.9, 0.95, 0.0]), 1.0, 0.5, 1) == (AMBIGUOUS, 0, 2)
 
 
@@ -240,12 +217,11 @@ def test_race_lower_side_mirrors_the_upper():
     hi = np.array([1.0, 2.0, 2.2, 1.5, 1.0])
     lo = np.array([0.5, 1.5, 1.9, 1.4, 0.4])
     assert race(-lo, -hi, -2.0, 0.5, -1) == race(hi, lo, 2.0, 0.5, 1)
-    # touch low 0.5 on bar 0, back up to 1.0 (+0.5) on bar 1 before 0.0
     assert race(hi, lo, 0.5, 0.5, -1) == (FADE, 0, 1)
 
 
 def test_variance_clock():
-    r = np.array([[1.0, 1.0, 0.0, 0.0], [2.0, 0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 0.0]])  # the zero day is skipped
+    r = np.array([[1.0, 1.0, 0.0, 0.0], [2.0, 0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 0.0]])
     s = variance_shares(r)
     assert s.tolist() == [0.5, 0.25, 0.0, 0.25]
     assert remaining_share(s).tolist() == [0.5, 0.25, 0.25, 0.0]
@@ -261,90 +237,26 @@ def test_monthly_refits_train_only_on_earlier_months():
         assert not train[3] and not test[3]
         assert (dates[test].to_period("M") == start.to_period("M")).all()
         seen.append(start.month)
-    assert seen == [3, 4]  # January has no training data, February has fewer than 30 sessions before it
+    assert seen == [3, 4]
 
 
 def test_vx_expiry_rule():
-    assert expiry(2024, 3) == dt.date(2024, 3, 20)  # third Friday of April 2024 = 04-19, minus 30 days
+    assert expiry(2024, 3) == dt.date(2024, 3, 20)
     assert expiry(2024, 4) == dt.date(2024, 4, 17)
-    assert expiry(2023, 12) == dt.date(2023, 12, 20)  # January 2024's third Friday = 01-19
+    assert expiry(2023, 12) == dt.date(2023, 12, 20)
     assert all(expiry(y, m).weekday() == 2 for y in range(2019, 2027) for m in range(1, 13))
 
 
 def test_vx_constant_maturity_and_before():
     d = pd.Timestamp("2024-03-01")
     bars = pd.DataFrame({"date": [d, d, d], "symbol": ["VX/H4", "VX/J4", "VX/K4"], "close": [14.0, 16.0, 17.0],
-                         "expiry": pd.to_datetime(["2024-03-20", "2024-04-17", "2024-05-22"])})  # fmt: skip
+                         "expiry": pd.to_datetime(["2024-03-20", "2024-04-17", "2024-05-22"])})
     cm = constant_maturity(bars)
     t1, t2 = 19, 47
     w = (t2 - 30) / (t2 - t1)
     assert cm.loc[d, "vx"] == pytest.approx(w * 14 + (1 - w) * 16) and cm.loc[d, "t1"] == t1
-    # front contract 30+ days out: used alone
     late = bars.assign(date=pd.Timestamp("2024-02-15"))
     assert constant_maturity(late).iloc[0]["vx"] == 14.0
     s = pd.Series([1.0, 2.0], index=pd.to_datetime(["2024-03-03", "2024-03-04"]))
     out = vx_before(s, pd.DatetimeIndex(["2024-03-03", "2024-03-04", "2024-03-06"]))
-    assert np.isnan(out.iloc[0]) and out.iloc[1:].tolist() == [1.0, 2.0]  # strictly before: Sunday's bar for Monday
-
-
-# --- previous-day high/low reversal (Phase 26) -------------------------------------------------------------------
-
-import pdh_pdl_reversal as pdh  # noqa: E402
-
-
-def _sessions(rows):
-    """rows: (time, session_date, contract, open, high, low, close)."""
-    idx = pd.DatetimeIndex([pd.Timestamp(t, tz="America/New_York") for t, *_ in rows], name="time")
-    return pd.DataFrame([r[1:] for r in rows], index=idx, columns=["session_date", "contract", "open", "high", "low", "close"])
-
-
-def test_daily_levels_are_the_previous_session_and_flag_rolls():
-    b = _sessions([
-        ("2024-03-03 18:01", "2024-03-04", "NQH4", 100, 110, 90, 100),
-        ("2024-03-04 16:59", "2024-03-04", "NQH4", 100, 105, 95, 100),
-        ("2024-03-04 18:01", "2024-03-05", "NQH4", 100, 120, 80, 100),
-        ("2024-03-05 18:01", "2024-03-06", "NQM4", 100, 101, 99, 100),
-    ])
-    lv = pdh.daily_levels(b)
-    assert np.isnan(lv.loc["2024-03-04", "pdh"])
-    assert (lv.loc["2024-03-05", "pdh"], lv.loc["2024-03-05", "pdl"]) == (110, 90)
-    assert (lv.loc["2024-03-06", "pdh"], lv.loc["2024-03-06", "pdl"]) == (120, 80)
-    assert lv["roll"].tolist() == [False, False, True]
-
-
-def test_signal_rules_need_a_sweep_a_colour_and_a_close_back_inside():
-    lv = pd.DataFrame({"pdh": [110.0], "pdl": [90.0], "roll": [False]}, index=pd.Index(["d"], name="session_date"))
-    c = _sessions([
-        ("2024-03-05 09:45", "d", "X", 109, 112, 105, 106),  # bearish
-        ("2024-03-05 10:00", "d", "X", 109, 110, 105, 106),  # high = PDH: no sweep
-        ("2024-03-05 10:15", "d", "X", 105, 112, 104, 106),  # green: no
-        ("2024-03-05 10:30", "d", "X", 112, 113, 110, 111),  # closes above PDH: no
-        ("2024-03-05 10:45", "d", "X", 91, 95, 88, 93),      # bullish
-        ("2024-03-05 11:00", "d", "X", 91, 95, 90, 93),      # low = PDL: no
-        ("2024-03-05 11:15", "d", "X", 89, 89.5, 87, 88),    # closes below PDL: no
-    ])
-    assert pdh.signals(c, lv)["side"].tolist() == ["bearish", "", "", "", "bullish", "", ""]
-    assert pdh.signals(c, lv.assign(roll=True)).empty
-
-
-def test_race_outcomes():
-    h, l = np.array([101.0, 100.0, 99.0]), np.array([98.0, 60.0, 40.0])
-    assert pdh.race(h, l, -1, 100.0, 102.0, 50.0) == ("success", 3, 60.0)
-    assert pdh.race(np.array([101.0, 103.0]), np.array([98.0, 40.0]), -1, 100.0, 102.0, 50.0)[0] == "ambiguous"
-    assert pdh.race(np.array([101.0, 102.5]), np.array([98.0, 99.0]), -1, 100.0, 102.0, 50.0) == ("failure", 2, 2.0)
-    assert pdh.race(np.array([101.0]), np.array([99.0]), -1, 100.0, 102.0, 50.0) == ("unresolved", 0, 1.0)
-    assert pdh.race(np.array([]), np.array([]), 1, 100.0, 98.0, 50.0) == ("unresolved", 0, 0.0)
-    # bullish mirror: wick touched exactly is not taken out
-    assert pdh.race(np.array([110.0, 150.0]), np.array([98.0, 99.0]), 1, 100.0, 98.0, 50.0) == ("success", 2, 50.0)
-
-
-def test_run_races_starts_after_the_candle_and_scores():
-    lv = pd.DataFrame({"pdh": [110.0], "pdl": [90.0], "roll": [False]}, index=pd.Index(["d"], name="session_date"))
-    c = pdh.signals(_sessions([("2024-03-05 09:45", "d", "X", 109, 112, 105, 106)]), lv)
-    m = _sessions([
-        ("2024-03-05 09:45", "d", "X", 0, 200, 0, 0),  # inside the candle: ignored
-        ("2024-03-05 09:46", "d", "X", 106, 107, 55, 56),
-    ])
-    r = pdh.run_races(c, m, 50.0)
-    assert r[["outcome", "risk_pts", "minutes_to_resolution"]].iloc[0].tolist() == ["success", 6.0, 1]
-    assert pdh.score(r, 50.0).tolist() == [50.0]
+    assert np.isnan(out.iloc[0]) and out.iloc[1:].tolist() == [1.0, 2.0]

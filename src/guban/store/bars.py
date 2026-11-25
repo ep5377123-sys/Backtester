@@ -36,7 +36,7 @@ TZ = "America/New_York"
 MINUTE_COLUMNS = ["ts_utc", "open", "high", "low", "close", "volume", "ask_vol", "bid_vol", "contract", "source"]
 TICK_COLUMNS = ["ts_utc", "price", "size", "side", "seq", "contract"]
 _AGG = dict(open=("open", "first"), high=("high", "max"), low=("low", "min"), close=("close", "last"),
-            volume=("volume", "sum"), ask_vol=("ask_vol", "sum"), bid_vol=("bid_vol", "sum"))  # fmt: skip
+            volume=("volume", "sum"), ask_vol=("ask_vol", "sum"), bid_vol=("bid_vol", "sum"))
 
 
 def to_utc(dotnet: np.ndarray) -> pd.DatetimeIndex:
@@ -57,7 +57,7 @@ def tick_rows(raw: np.ndarray, contract: str) -> pd.DataFrame:
     return pd.DataFrame({
         "ts_utc": to_utc(raw["ticks"]).as_unit("ms"), "price": price.astype(np.float64), "size": raw["size"].astype(np.int32),
         "side": side, "seq": raw["cum_volume"].astype(np.int32), "contract": pd.Series([contract] * len(raw), dtype="str"),
-    })  # fmt: skip
+    })
 
 
 def _bars(df: pd.DataFrame, contract: str, source: str) -> pd.DataFrame:
@@ -77,7 +77,7 @@ def minute_record_bars(raw: np.ndarray, contract: str) -> pd.DataFrame:
     df = pd.DataFrame({
         "ts_utc": to_utc(raw["ticks"]), "open": raw["open"], "high": raw["high"], "low": raw["low"], "close": raw["close"],
         "volume": raw["volume"].astype(np.int64), "ask_vol": raw["ask_vol"].astype(np.int64), "bid_vol": raw["bid_vol"].astype(np.int64),
-    })  # fmt: skip
+    })
     live = df.groupby("ts_utc")["volume"].transform("sum") > 0
     return _bars(df[live], contract, "minute")
 
@@ -91,7 +91,7 @@ def tick_bars(ticks: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame({
         "ts_utc": live["ts_utc"].dt.floor("min").dt.as_unit("ns"), "open": live["price"], "high": live["price"], "low": live["price"],
         "close": live["price"], "volume": size, "ask_vol": np.where(side == 1, size, 0), "bid_vol": np.where(side == -1, size, 0),
-    })  # fmt: skip
+    })
     contract = str(ticks["contract"].iat[0]) if len(ticks) else ""
     bars = _bars(df, contract, "tick")
     return bars[bars["volume"] > 0].reset_index(drop=True)
@@ -99,8 +99,8 @@ def tick_bars(ticks: pd.DataFrame) -> pd.DataFrame:
 
 @dataclass
 class SessionResult:
-    bars: pd.DataFrame  # MINUTE_COLUMNS
-    ticks: pd.DataFrame | None  # TICK_COLUMNS, None when there is no tick file
+    bars: pd.DataFrame
+    ticks: pd.DataFrame | None
     quality: dict
 
 
@@ -141,7 +141,7 @@ def session_bars(
     minute = minute_record_bars(minute_raw, contract)
     minute_volume = int(minute_raw["volume"].sum(dtype=np.int64))
     q = {"minute_volume": minute_volume, "tick_volume": None, "diff_pct": None, "minute_match": None, "ohlc_match": None,
-         "bar_source": "minute", "reason": "", "minute_bars_in_tick_session": 0}  # fmt: skip
+         "bar_source": "minute", "reason": "", "minute_bars_in_tick_session": 0}
     if tick_raw is None:
         q["reason"] = "no tick file"
         return SessionResult(minute, None, q | {"bars": len(minute)})

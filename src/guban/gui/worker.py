@@ -43,7 +43,7 @@ def call(state: State, method: str | None, params: dict, emit) -> dict:
         if os.environ.get("GUBAN_DEBUG"):
             error["traceback"] = traceback.format_exc()
         return {"ok": False, "error": error}
-    except Exception as e:  # a bug, not bad input: say so and keep serving
+    except Exception as e:
         tb = traceback.format_exc()
         print(tb, file=sys.stderr, flush=True)
         return {"ok": False, "error": {"message": f"Internal error: {type(e).__name__}: {e}", "frames": [], "traceback": tb}}
@@ -73,11 +73,11 @@ def serve(inp: IO[str], out: IO[str], state: State | None = None) -> None:
 
 def main() -> None:
     out = open(sys.stdout.fileno(), "w", encoding="utf-8", newline="\n", closefd=False)
-    sys.stdout = sys.stderr  # stray prints must not corrupt the protocol stream
+    sys.stdout = sys.stderr
     sys.stdin.reconfigure(encoding="utf-8")
     from guban.charts import set_theme
 
-    set_theme("dark")  # the window is dark; report files written from here switch back with charts.theme("light")
+    set_theme("dark")
     serve(sys.stdin, out)
 
 

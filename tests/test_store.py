@@ -24,7 +24,7 @@ NOW = pd.Timestamp("2025-08-20 12:00", tz=ET)
 def minute_raw(rows):
     """rows: [(naive ET bar-open time, open, high, low, close, volume, bid_vol, ask_vol)] -> RECORD array."""
     raw = np.zeros(len(rows), RECORD)
-    for i, (t, o, h, l, c, v, b, a) in enumerate(rows):  # noqa: E741
+    for i, (t, o, h, l, c, v, b, a) in enumerate(rows):
         raw[i] = (dotnet_ticks(pd.Timestamp(t)), h, l, o, c, b, a, v, v, 0)
     return raw
 
@@ -40,21 +40,20 @@ def tick_raw(rows, tick=0.25):
     return raw
 
 
-# One session (file 20250804 = Mon 18:00 ET): three minutes of trades.
 TICKS = [
     ("2025-08-04 18:00:00.100", 100.00, 2, 1),
     ("2025-08-04 18:00:30", 100.50, 1, -1),
     ("2025-08-04 18:00:59.999", 99.75, 3, 1),
     ("2025-08-04 18:01:10", 100.25, 4, -1),
-    ("2025-08-04 18:01:20", 100.25, 0, 0),  # size-0 record (2026 feed): no volume, no price
+    ("2025-08-04 18:01:20", 100.25, 0, 0),
     ("2025-08-04 18:02:00", 101.00, 5, 0),
 ]
-MINUTES = [  # the matching minute records: two records at 18:00 (merged), a zero-volume placeholder
+MINUTES = [
     ("2025-08-04 18:00", 100.00, 100.50, 100.00, 100.50, 3, 1, 2),
     ("2025-08-04 18:00", 100.50, 100.50, 99.75, 99.75, 3, 0, 3),
     ("2025-08-04 18:01", 100.25, 100.25, 100.25, 100.25, 4, 4, 0),
     ("2025-08-04 18:02", 101.00, 101.00, 101.00, 101.00, 5, 0, 0),
-    ("2025-08-04 18:03", 101.00, 101.00, 101.00, 101.00, 0, 0, 0),  # placeholder, dropped
+    ("2025-08-04 18:03", 101.00, 101.00, 101.00, 101.00, 0, 0, 0),
 ]
 
 
@@ -64,7 +63,6 @@ def test_to_utc_converts_eastern_wall_clock():
 
 
 def test_to_utc_infers_the_repeated_fall_back_hour():
-    # BTC trades 24/7 since 2026-05-29: a session can cross 01:00-02:00 on the first Sunday of November twice
     walls = ["2026-11-01 00:59", "2026-11-01 01:30", "2026-11-01 01:59", "2026-11-01 01:00", "2026-11-01 01:30", "2026-11-01 02:00"]
     t = to_utc(np.array([dotnet_ticks(pd.Timestamp(w)) for w in walls]))
     assert t.is_monotonic_increasing and t.is_unique
@@ -82,20 +80,19 @@ def test_tick_rows_keep_every_record_with_its_side():
 def test_tick_bars_open_label_ohlc_volume_and_sides():
     b = tick_bars(tick_rows(tick_raw(TICKS), "202509"))
     assert list(b.columns) == MINUTE_COLUMNS
-    assert b["ts_utc"].dt.strftime("%H:%M").tolist() == ["22:00", "22:01", "22:02"]  # bar OPEN, UTC
+    assert b["ts_utc"].dt.strftime("%H:%M").tolist() == ["22:00", "22:01", "22:02"]
     first = b.iloc[0]
     assert (first.open, first.high, first.low, first.close, first.volume, first.ask_vol, first.bid_vol) == (100.0, 100.5, 99.75, 99.75, 6, 5, 1)
-    assert b["volume"].tolist() == [6, 4, 5]  # the size-0 record adds nothing
-    assert b.iloc[2].ask_vol == 0 and b.iloc[2].bid_vol == 0  # a print between bid and ask has no side
+    assert b["volume"].tolist() == [6, 4, 5]
+    assert b.iloc[2].ask_vol == 0 and b.iloc[2].bid_vol == 0
     assert (b["source"] == "tick").all()
 
 
 def test_size_zero_records_count_for_prices_not_volume():
-    # 2026-05-26+ feed: DeepCharts' own minute bars include size-0 prices
     rows = [("2026-06-15 10:00:00", 100.0, 0, 1), ("2026-06-15 10:00:01", 100.5, 2, 1), ("2026-06-15 10:00:02", 99.5, 0, -1),
-            ("2026-06-15 10:00:03", 100.25, 1, -1), ("2026-06-15 10:01:00", 101.0, 0, 0)]  # fmt: skip
+            ("2026-06-15 10:00:03", 100.25, 1, -1), ("2026-06-15 10:01:00", 101.0, 0, 0)]
     b = tick_bars(tick_rows(tick_raw(rows), "202606"))
-    assert len(b) == 1  # 10:01 holds only a size-0 record: no bar
+    assert len(b) == 1
     first = b.iloc[0]
     assert (first.open, first.high, first.low, first.close, first.volume, first.ask_vol, first.bid_vol) == (100.0, 100.5, 99.5, 100.25, 3, 2, 1)
 
@@ -108,11 +105,10 @@ def test_minute_records_merge_same_label_and_drop_placeholders():
 
 
 def test_opening_minute_keeps_its_zero_volume_open_record():
-    # real NQ pattern (session 20240305): the 18:00 label is open (volume 0), high, low, close records
     rows = [("2024-03-05 18:00", 17981.0, 17981.0, 17981.0, 17981.0, 0, 0, 0),
             ("2024-03-05 18:00", 17985.25, 17985.25, 17985.25, 17985.25, 179, 0, 179),
             ("2024-03-05 18:00", 17972.5, 17972.5, 17972.5, 17972.5, 196, 196, 0),
-            ("2024-03-05 18:00", 17972.75, 17972.75, 17972.75, 17972.75, 32, 0, 0)]  # fmt: skip
+            ("2024-03-05 18:00", 17972.75, 17972.75, 17972.75, 17972.75, 32, 0, 0)]
     b = minute_record_bars(minute_raw(rows), "202403").iloc[0]
     assert (b.open, b.high, b.low, b.close, b.volume) == (17981.0, 17985.25, 17972.5, 17972.75, 407)
 
@@ -120,10 +116,10 @@ def test_opening_minute_keeps_its_zero_volume_open_record():
 def test_minute_rule_uses_the_minute_records_whenever_they_have_volume():
     r = session_bars(minute_raw(MINUTES), tick_raw(TICKS), "202509", 2.0, 0.99, bars="minute")
     assert r.quality["bar_source"] == "minute" and (r.bars["source"] == "minute").all() and r.quality["reason"] == ""
-    assert len(r.ticks) == len(TICKS)  # ticks are stored either way
+    assert len(r.ticks) == len(TICKS)
     extra = TICKS + [("2025-08-04 18:02:30", 101.0, 1, 1)]
     r = session_bars(minute_raw(MINUTES), tick_raw(extra), "202509", 2.0, 0.99, bars="minute")
-    assert r.quality["bar_source"] == "minute" and "+6.7%" in r.quality["reason"]  # the tick problem is still named
+    assert r.quality["bar_source"] == "minute" and "+6.7%" in r.quality["reason"]
     r = session_bars(np.empty(0, RECORD), tick_raw(TICKS), "202509", 2.0, 0.99, bars="minute")
     assert r.quality["bar_source"] == "tick" and r.quality["reason"] == "no minute volume"
     with pytest.raises(ValueError, match="bars"):
@@ -144,14 +140,13 @@ def test_no_tick_file_falls_back_to_minute_records():
 
 
 def test_tick_volume_outside_tolerance_falls_back():
-    extra = TICKS + [("2025-08-04 18:02:30", 101.0, 1, 1)]  # 16 vs 15: +6.7%
+    extra = TICKS + [("2025-08-04 18:02:30", 101.0, 1, 1)]
     r = session_bars(minute_raw(MINUTES), tick_raw(extra), "202509", 2.0, 0.99)
     assert r.quality["bar_source"] == "minute" and "+6.7%" in r.quality["reason"]
-    assert len(r.ticks) == len(extra)  # the ticks are still stored
+    assert len(r.ticks) == len(extra)
 
 
 def test_too_few_matching_minutes_falls_back():
-    # total within 2% but volume moved between minutes: the GC 2025-11+ pattern
     moved = [(t, p, s + (1 if i == 0 else -1 if i == 3 else 0), sd) for i, (t, p, s, sd) in enumerate(TICKS)]
     r = session_bars(minute_raw(MINUTES), tick_raw(moved), "202509", 50.0, 0.99)
     assert r.quality["bar_source"] == "minute" and r.quality["minute_match"] == pytest.approx(1 / 3)
@@ -159,16 +154,12 @@ def test_too_few_matching_minutes_falls_back():
 
 
 def test_minute_with_no_ticks_keeps_its_record_in_a_tick_session():
-    # 18:04 has a real record (volume 1) but no trade in the tick file: the bar keeps the record
     mins = MINUTES[:4] + [("2025-08-04 18:04", 102.0, 102.0, 102.0, 102.0, 1, 1, 0)]
     r = session_bars(minute_raw(mins), tick_raw(TICKS), "202509", 10.0, 0.5)
     assert r.quality["bar_source"] == "tick"
     assert r.bars["source"].tolist() == ["tick", "tick", "tick", "minute"]
     assert r.quality["minute_bars_in_tick_session"] == 1
 
-
-# ---------------------------------------------------------------------------
-# Builds
 
 
 def write(path, raw):
@@ -180,16 +171,16 @@ def write(path, raw):
 def make_source(src, sessions=("20250804", "20250805")):
     for s in sessions:
         day = pd.Timestamp(s)
-        shift = lambda rows: [(str(pd.Timestamp(r[0]) + (day - pd.Timestamp("20250804"))), *r[1:]) for r in rows]  # noqa: E731
+        shift = lambda rows: [(str(pd.Timestamp(r[0]) + (day - pd.Timestamp("20250804"))), *r[1:]) for r in rows]
         write(src / "NQ-CME" / "202509" / "Minute" / f"{s}.data", minute_raw(shift(MINUTES)))
         write(src / "NQ-CME" / "202509" / "Tick" / f"{s}.data", tick_raw(shift(TICKS)))
-    (src / "NQ-CME" / "202509" / "Minute" / "20250808.data").write_bytes(b"")  # Friday: no session
+    (src / "NQ-CME" / "202509" / "Minute" / "20250808.data").write_bytes(b"")
     return src
 
 
 def config(tmp_path, **kw):
     cfg = StoreConfig(root=tmp_path / "store", source=tmp_path / "src", symbols={"NQ": "NQ-CME"}, tolerance_pct=2.0,
-                      min_minute_match=0.99, session_end=time(18), settle_minutes=0, thin_ratio=0.2)  # fmt: skip
+                      min_minute_match=0.99, session_end=time(18), settle_minutes=0, thin_ratio=0.2)
     return replace(cfg, **kw)
 
 
@@ -201,20 +192,20 @@ def test_build_writes_sessions_manifest_quality_rolls_readme(tmp_path):
     make_source(tmp_path / "src")
     rep = build_store(config(tmp_path), now=NOW, workers=1)[0]
     root = tmp_path / "store"
-    assert rep.built == 2 and rep.tick_built == 0 and not rep.skipped and not rep.changed  # bars = "minute"
+    assert rep.built == 2 and rep.tick_built == 0 and not rep.skipped and not rep.changed
     m = pd.read_parquet(root / "NQ" / "minute" / "202509" / "20250804.parquet")
     assert list(m.columns) == MINUTE_COLUMNS and len(m) == 3
     t = pd.read_parquet(root / "NQ" / "tick" / "202509" / "20250805.parquet")
     assert list(t.columns) == TICK_COLUMNS and len(t) == len(TICKS)
     man = pd.read_csv(root / "manifest.csv", dtype=str)
-    assert len(man) == 5  # 2 minute + 2 tick + the empty Friday file
+    assert len(man) == 5
     assert set(man["kind"]) == {"minute", "tick"}
     q = pd.read_csv(root / "NQ" / "quality.csv", dtype={"session": str, "contract": str})
     assert q["session"].tolist() == ["20250804", "20250805"] and (q["bar_source"] == "minute").all()
-    assert q["tick_ok"].tolist() == [True, True]  # the ticks are stored and pass the tick check
+    assert q["tick_ok"].tolist() == [True, True]
     assert (root / "NQ" / "roll_calendar.csv").exists() and (root / "README.md").exists()
     out = root / "NQ" / "minute" / "202509" / "20250804.parquet"
-    assert not os.access(out, os.W_OK)  # write-once: read-only
+    assert not os.access(out, os.W_OK)
 
 
 def test_second_build_writes_nothing(tmp_path):
@@ -229,9 +220,7 @@ def test_second_build_writes_nothing(tmp_path):
 
 def test_in_progress_and_cut_off_sessions_are_skipped_and_listed(tmp_path):
     src = make_source(tmp_path / "src")
-    # the newest session (2025-08-19 18:00 -> 08-20 17:59) has not ended at NOW
     write(src / "NQ-CME" / "202509" / "Minute" / "20250819.data", minute_raw([("2025-08-19 18:00", 1, 1, 1, 1, 1, 1, 0)]))
-    # a finished session whose tick file is cut mid-record
     write(src / "NQ-CME" / "202509" / "Minute" / "20250806.data", minute_raw([("2025-08-06 18:00", 1, 1, 1, 1, 1, 1, 0)]))
     p = write(src / "NQ-CME" / "202509" / "Tick" / "20250806.data", tick_raw([("2025-08-06 18:00", 1.0, 1, 1)]))
     p.write_bytes(p.read_bytes()[:-5])
@@ -278,7 +267,7 @@ def test_source_is_never_written(tmp_path):
 
 def test_roll_calendar_switches_after_volume_crosses_and_when_the_front_has_no_file(tmp_path):
     src = tmp_path / "src" / "NQ-CME"
-    vols = {"202509": [10, 10, 4, 0], "202512": [1, 2, 9, 9]}  # crosses in session 3, old gone in session 4
+    vols = {"202509": [10, 10, 4, 0], "202512": [1, 2, 9, 9]}
     sessions = ["20250804", "20250805", "20250806", "20250807"]
     for c, vs in vols.items():
         for s, v in zip(sessions, vs):
@@ -291,7 +280,6 @@ def test_roll_calendar_switches_after_volume_crosses_and_when_the_front_has_no_f
     front = q[q["front"]].set_index("session")["contract"].to_dict()
     assert front == {"20250804": "202509", "20250805": "202509", "20250806": "202509", "20250807": "202512"}
 
-    # the front contract's file stops before the volume crosses: switch in that same session
     (src / "202509" / "Minute" / "20250806.data").unlink()
     build_store(config(tmp_path, root=tmp_path / "store2"), now=NOW, workers=1)
     cal = pd.read_csv(tmp_path / "store2" / "NQ" / "roll_calendar.csv", dtype=str)
@@ -299,7 +287,6 @@ def test_roll_calendar_switches_after_volume_crosses_and_when_the_front_has_no_f
 
 
 def test_a_session_with_ticks_but_no_minute_volume_still_has_a_front_contract(tmp_path):
-    # GC/BTC 2026-08-18..24: empty minute files, full tick files
     src = tmp_path / "src" / "NQ-CME" / "202509"
     for s in ("20250804", "20250805", "20250806"):
         d = pd.Timestamp(s)
@@ -352,16 +339,16 @@ def test_rebuild_all_switches_the_rule_and_keeps_files_whose_source_is_gone(tmp_
     build_store(config(tmp_path, bars="tick"), now=NOW, workers=1)
     root = tmp_path / "store"
     tick_out = root / "NQ" / "tick" / "202509" / "20250804.parquet"
-    (src / "NQ-CME" / "202509" / "Tick" / "20250804.data").unlink()  # the source loses this tick file
+    (src / "NQ-CME" / "202509" / "Tick" / "20250804.data").unlink()
     rep = build_store(config(tmp_path), now=NOW, workers=1, rebuild=["NQ:all"])[0]
-    assert rep.rebuilt == 3 and rep.built == 2 and rep.tick_built == 0  # 3: the empty Friday file too
+    assert rep.rebuilt == 3 and rep.built == 2 and rep.tick_built == 0
     for s in ("20250804", "20250805"):
         assert (pd.read_parquet(root / "NQ" / "minute" / "202509" / f"{s}.parquet")["source"] == "minute").all()
-    assert tick_out.exists() and not os.access(tick_out, os.W_OK)  # kept, still read-only
+    assert tick_out.exists() and not os.access(tick_out, os.W_OK)
     man = pd.read_csv(root / "manifest.csv", dtype=str, keep_default_na=False)
     assert "NQ-CME/202509/Tick/20250804.data" in set(man["source"]) and len(man) == 5
     q = pd.read_csv(root / "NQ" / "quality.csv", dtype={"session": str, "contract": str}).set_index("session")
-    assert q.loc["20250804", "tick_volume"] == 15 and bool(q.loc["20250804", "tick_ok"])  # its tick check is kept
+    assert q.loc["20250804", "tick_volume"] == 15 and bool(q.loc["20250804", "tick_ok"])
     assert verify_store(config(tmp_path))[0].passed
     before = snapshot(root)
     assert build_store(config(tmp_path), now=NOW, workers=1)[0].files_written == 0
@@ -373,11 +360,11 @@ def test_rebuild_changed_and_same_content_with_a_new_timestamp(tmp_path):
     cfg = config(tmp_path)
     build_store(cfg, now=NOW, workers=1)
     f = src / "NQ-CME" / "202509" / "Minute" / "20250805.data"
-    os.utime(f, ns=(f.stat().st_atime_ns, f.stat().st_mtime_ns + 10**9))  # re-downloaded, same bytes
+    os.utime(f, ns=(f.stat().st_atime_ns, f.stat().st_mtime_ns + 10**9))
     write(src / "NQ-CME" / "202509" / "Tick" / "20250804.data", tick_raw(TICKS + [("2025-08-04 18:03:00", 101.0, 1, 1)]))
     rep = build_store(cfg, now=NOW, workers=1)[0]
-    assert [k for k, _ in rep.changed] == ["202509/20250804"]  # the touched minute file is not a change
-    assert build_store(cfg, now=NOW, workers=1)[0].files_written == 0  # its new timestamp is recorded once
+    assert [k for k, _ in rep.changed] == ["202509/20250804"]
+    assert build_store(cfg, now=NOW, workers=1)[0].files_written == 0
     rep = build_store(cfg, now=NOW, workers=1, rebuild=["NQ:changed"])[0]
     assert rep.rebuilt == 1 and not rep.changed
     with pytest.raises(ValueError, match="SYM:changed"):

@@ -1,6 +1,3 @@
-// Guban Studio renderer: tab switching, the worker call helper, busy buttons, the error banner, small DOM helpers.
-// Every computation happens in the Python worker (window.guban.call, see preload.js); each tab lives in its own file
-// (data.js, ...) and talks to the others through studio.on / studio.fire.
 'use strict';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -14,14 +11,12 @@ class WorkerError extends Error {
   }
 }
 
-// Call a worker method ("main" worker unless named); resolves with its result, throws WorkerError with its message.
 async function api(method, params, worker) {
   const reply = await window.guban.call(method, params, worker);
   if (!reply.ok) throw new WorkerError(reply.error);
   return reply.result;
 }
 
-// Build an element: el('td', {className: 'x', title: 'y'}, 'text' | node | [children]).
 function el(tag, props = {}, children = []) {
   const node = Object.assign(document.createElement(tag), props);
   for (const c of [].concat(children)) node.append(c instanceof Node ? c : document.createTextNode(String(c)));
@@ -30,7 +25,6 @@ function el(tag, props = {}, children = []) {
 
 const fmtCell = (v) => (v === null || v === undefined ? '' : typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString('en-US') : v.toLocaleString('en-US', { maximumFractionDigits: 4 })) : String(v));
 
-// Fill a <table> with a header row and body rows; onRow(i, tr) decorates each body row.
 function fillTable(table, columns, rows, onRow) {
   const head = el('thead', {}, el('tr', {}, columns.map((c) => el('th', {}, c))));
   const body = el('tbody', {}, rows.map((r, i) => {
@@ -45,7 +39,6 @@ function fillSelect(select, items) {
   select.replaceChildren(...items.map(({ value, label }) => el('option', { value, textContent: label })));
 }
 
-// sticky: stays up when a new action starts (a dead worker needs Restart, not a retry)
 function showError(err, title = 'Error', sticky = false) {
   const banner = $('#banner');
   if (sticky) banner.dataset.sticky = '1'; else delete banner.dataset.sticky;
@@ -57,16 +50,14 @@ function showError(err, title = 'Error', sticky = false) {
   banner.classList.remove('hidden');
 }
 
-// The latest progress message from the worker, shown next to the busy timer.
 let progressText = '';
 window.guban.onEvent((msg) => {
   if (msg.event === 'progress' && msg.message) progressText = msg.message;
   studio.fire(`event:${msg.event}`, msg);
 });
 
-// Run fn with the button disabled and the elapsed time in the status bar; errors go to the banner and are rethrown.
 async function busy(button, label, fn) {
-  if (!$('#banner').dataset.sticky) $('#banner').classList.add('hidden'); // a new action replaces an old error
+  if (!$('#banner').dataset.sticky) $('#banner').classList.add('hidden');
   const buttons = [].concat(button);
   for (const b of buttons) { b.disabled = true; b.classList.add('busy'); }
   progressText = '';
@@ -93,19 +84,15 @@ function showTab(name) {
   for (const s of document.querySelectorAll('.tab')) s.classList.toggle('active', s.id === `tab-${name}`);
 }
 
-// Form values remembered between launches (per viewer, this machine only).
 const settings = {
   get(key) {
     try { return JSON.parse(localStorage.getItem(`studio.${key}`)) || {}; } catch (e) { return {}; }
   },
   set(key, value) {
-    try { localStorage.setItem(`studio.${key}`, JSON.stringify(value)); } catch (e) { /* storage unavailable: forget */ }
+    try { localStorage.setItem(`studio.${key}`, JSON.stringify(value)); } catch {}
   },
 };
 
-// A grid editor over a strategy's inputs: a tick box and a values field per input, remembered per strategy file under
-// `${prefix}:${file}`; count() asks the worker how many combinations the ticked values make. Used by the Optimization
-// and Walk Forward tabs. ui: { container, error, count } elements.
 function gridEditor(prefix, ui, fallbackPrefix) {
   const file = () => (studio.strategy.state.loaded || {}).file;
   const key = (pre) => `${pre}:${file()}`;
@@ -177,7 +164,6 @@ function gridEditor(prefix, ui, fallbackPrefix) {
   return ed;
 }
 
-// The "opt" worker runs one job at a time (an optimization or a walk-forward): the running tab holds it.
 const optJob = {
   holder: null,
   take(name) {
@@ -196,7 +182,7 @@ const studio = {
   api, el, fillTable, fillSelect, busy, showTab, showError, settings, gridEditor, optJob,
   on(name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
   fire(name, payload) { for (const fn of listeners[name] || []) fn(payload); },
-  ready: [], // tab init functions, run in order once the worker answers
+  ready: [],
 };
 window.studio = studio;
 
@@ -207,7 +193,7 @@ async function ping() {
 }
 
 window.guban.onWorkerExit((info) => {
-  if (info.worker !== 'main') return studio.fire('opt-worker-exit', info); // the Optimization tab reports it
+  if (info.worker !== 'main') return studio.fire('opt-worker-exit', info);
   $('#worker-status').textContent = 'Python worker stopped';
   showError({ message: `Python worker stopped (exit code ${info.code})`, frames: [], traceback: info.stderr.join('\n') }, 'Worker', true);
   const restart = el('button', {

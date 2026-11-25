@@ -1,7 +1,3 @@
-// Guban Studio main process: owns the window and the Python worker (uv run python -m guban.gui.worker, repo root).
-// The renderer reaches the worker only through preload.js (guban.call / onEvent); see src/guban/gui/worker.py for
-// the JSON-lines protocol. --smoke: run the renderer's smoke steps hidden, save a screenshot per step to
-// reports/_gui_smoke/, write result.json there and exit 0 (all passed) or 1.
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
@@ -12,8 +8,6 @@ const SMOKE = process.argv.includes('--smoke');
 const SMOKE_DIR = path.join(ROOT, 'reports', '_gui_smoke');
 const STDERR_LINES = 40;
 
-// One Python worker process. "main" holds the tabs' state; "opt" runs optimizations, started on its first call, so
-// Stop can end it (pool processes included) without losing the main worker's data.
 class Worker {
   constructor(name, onEvent, onExit) {
     this.name = name;
@@ -67,7 +61,7 @@ class Worker {
   }
 
   stopped(proc, code, why) {
-    if (proc !== this.proc) return; // an old process from before a restart
+    if (proc !== this.proc) return;
     this.proc = null;
     const stderr = [...(why ? [why] : []), ...this.stderr];
     for (const p of this.pending.values()) p.resolve({ ok: false, error: { message: 'Python worker stopped', frames: [], traceback: stderr.join('\n') } });
@@ -91,9 +85,8 @@ class Worker {
     this.proc = null;
     for (const p of this.pending.values()) p.resolve({ ok: false, error: { message: 'Stopped', frames: [], stopped: true } });
     this.pending.clear();
-    // uv starts python as its own child: end the whole tree, or python outlives the window
     if (process.platform === 'win32') {
-      try { execFileSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { stdio: 'ignore' }); } catch (e) { /* already gone */ }
+      try { execFileSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {}
     } else {
       proc.kill();
     }
@@ -129,7 +122,7 @@ async function smoke() {
   const results = [];
   for (let i = 0; i < steps.length; i++) {
     const r = await win.webContents.executeJavaScript(`studio.smoke.run(${i})`);
-    await new Promise((res) => setTimeout(res, 400)); // let images decode and paint
+    await new Promise((res) => setTimeout(res, 400));
     win.webContents.invalidate();
     await new Promise((res) => setTimeout(res, 200));
     const shot = path.join(SMOKE_DIR, `${String(i + 1).padStart(2, '0')}_${steps[i]}.png`);
@@ -138,7 +131,6 @@ async function smoke() {
     if (!r.ok) break;
   }
   const ok = results.length === steps.length && results.every((r) => r.ok);
-  // a GUI-subsystem exe's stdout does not reach the console on Windows: `guban gui --smoke` prints this file
   fs.writeFileSync(path.join(SMOKE_DIR, 'result.json'), JSON.stringify({ ok, results }, null, 2) + '\n');
   killAll();
   app.exit(ok ? 0 : 1);

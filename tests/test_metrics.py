@@ -42,7 +42,7 @@ def fixture_trades() -> pd.DataFrame:
         "commission": 2.0,
         "slippage": 1.0,
         "ambiguous": [False, False, True, False, False],
-    })  # fmt: skip
+    })
 
 
 def fixture_metrics() -> dict:
@@ -81,14 +81,11 @@ def test_trade_stats_long_and_short():
 
 def test_drawdowns_return_on_account_and_sharpe():
     acc = fixture_metrics()["account"]
-    # closed-trade equity 0, 100, 300, 300, 250, 170: peak 300 -> valley 170 at trade 5's exit
     assert acc["max_drawdown_close_to_close"] == -130
     assert acc["max_drawdown_close_to_close_time"] == IDX[5]
-    # peak before each bar 0, 0, 100, 300, 300, 300; bar lows 0, 50, 300, 150, 240, 160 -> worst 150 - 300 at bar 3
     assert acc["max_drawdown_intraday"] == -150
     assert acc["max_drawdown_intraday_time"] == IDX[3]
     assert acc["return_on_account"] == pytest.approx(170 / 150)
-    # session-end equity 300, 170 -> daily P&L 300, -130: mean 85, sd 215 * sqrt(2)
     assert acc["sharpe_daily"] == pytest.approx(85 / (215 * math.sqrt(2)) * math.sqrt(252))
     assert (acc["trading_days"], acc["open_position_pnl"]) == (2, 12.5)
 
@@ -103,9 +100,8 @@ def test_intraday_drawdown_uses_intrabar_peaks():
     low = pd.Series([0.0, -10.0, -5.0], index=IDX[:3])
     high = pd.Series([0.0, 10.0, 30.0], index=IDX[:3])
     bar_dd = pd.Series([0.0, -20.0, 0.0], index=IDX[:3])
-    # bar 1: 0 -> +10 -> -10 inside the bar = -20; bar 2: bar 1's intrabar peak (+10) is the prior peak -> -15
     assert intraday_drawdown(eq, low, high, bar_dd).tolist() == [0, -20, -15]
-    assert intraday_drawdown(eq, low).tolist() == [0, -10, -5]  # without the intrabar peaks: from bar closes
+    assert intraday_drawdown(eq, low).tolist() == [0, -10, -5]
 
 
 def test_empty_trades_and_json_safety():
@@ -115,18 +111,16 @@ def test_empty_trades_and_json_safety():
     assert m["all"]["total_trades"] == 0 and m["all"]["profit_factor"] is None
     assert m["account"]["return_on_account"] is None and m["account"]["sharpe_daily"] is None
     text = json.dumps(jsonable(fixture_metrics()), allow_nan=False)
-    assert json.loads(text)["short"]["profit_factor"] is None  # inf -> null
+    assert json.loads(text)["short"]["profit_factor"] is None
     assert json.loads(text)["account"]["max_drawdown_intraday_time"] == IDX[3].isoformat()
 
-
-# --- engine: run-up, drawdown, equity_low ---------------------------------------------------------
 
 
 def bars_from(ohlc) -> pd.DataFrame:
     a = np.asarray(ohlc, float)
     idx = pd.date_range("2024-01-02 09:35", periods=len(a), freq="5min", tz="America/New_York", name="time")
     return pd.DataFrame({"open": a[:, 0], "high": a[:, 1], "low": a[:, 2], "close": a[:, 3], "volume": 1,
-                         "session_date": idx.tz_localize(None).normalize()}, index=idx)  # fmt: skip
+                         "session_date": idx.tz_localize(None).normalize()}, index=idx)
 
 
 class Script(Strategy):
@@ -142,10 +136,7 @@ def test_runup_and_drawdown_follow_the_path_less_entry_costs():
     res = run_backtest(Script(plan={0: [("buy", {})], 3: [("sell", {})]}), bars, NQ, Costs(commission=4.0, slippage=2.0))
     (t,) = res.trades.itertuples()
     assert (t.entry_price, t.exit_price, t.net_pnl) == (101, 104, 3 * 20 - 6)
-    # seen from the entry at bar 1's open to the exit at bar 4's open: high 104.5 (bar 3), low 100 (bar 1)
-    # entry-side cost = (commission + slippage) / 2 = 3
     assert (t.runup, t.drawdown) == ((104.5 - 101) * 20 - 3, (100 - 101) * 20 - 3)
-    # equity_low: bar 1 worst = low 100 -> -20; bar 4 exits at the open -> closed net 54
     assert res.equity_low.tolist() == [0, -20, 0, 20, 54]
     assert res.equity.tolist() == [0, 10, 30, 50, 54]
 
@@ -154,16 +145,13 @@ def test_runup_is_floored_at_zero_and_limit_entries_pay_no_entry_slippage():
     bars = bars_from([(100, 100.5, 99.5, 100), (100, 100, 98, 99), (99, 99.5, 97, 98), (98, 98.5, 97.5, 98)])
     res = run_backtest(Script(plan={0: [("buy", {})], 1: [("sell", {})]}), bars, NQ, Costs(commission=4.0, slippage=2.0))
     (t,) = res.trades.itertuples()
-    # long from bar 1's open (100, also its high) to bar 2's open (99): never above the entry, low 98
     assert (t.entry_price, t.runup, t.drawdown) == (100, 0.0, (98 - 100) * 20 - 3)
     res = run_backtest(Script(plan={0: [("buy", dict(at="limit", price=99))], 1: [("sell", {})]}), bars, NQ, Costs(commission=4.0, slippage=2.0))
     (t,) = res.trades.itertuples()
-    # bar 1 walks 100 -> 100 -> 98 -> 99: the limit fills at 99 on the way down, then sees 98
-    assert (t.entry_price, t.drawdown) == (99, (98 - 99) * 20 - 2)  # entry-side cost: commission only
+    assert (t.entry_price, t.drawdown) == (99, (98 - 99) * 20 - 2)
 
 
 def test_max_drawdown_is_peak_to_valley_inside_one_bar():
-    # long at bar 1's open (100); bar 1 walks 100 -> 100.5 (+$10) -> 99.5 (-$10) -> 100: a $20 drop in one bar
     bars = bars_from([(100, 100, 100, 100), (100, 100.5, 99.5, 100), (100, 100, 100, 100)])
     one = ContractSpec(symbol="X", name="x", point_value=20.0, tick_size=0.25)
     res = run_backtest(Script(plan={0: [("buy", {})], 1: [("sell", {})]}), bars, one)
@@ -174,11 +162,9 @@ def test_max_drawdown_is_peak_to_valley_inside_one_bar():
 
 
 def test_trades_held_across_a_contract_roll_are_flagged():
-    # FIX.md #6: the series is unadjusted, so a position held through a roll takes the price gap as P&L
     bars = bars_from([(100, 100, 100, 100), (100, 100, 100, 100), (110, 110, 110, 110), (110, 110, 110, 110)])
     bars["contract"] = ["202403", "202403", "202406", "202406"]
     res = run_backtest(Script(plan={0: [("buy", {})], 1: [("sell", {})], 2: [("buy", {})]}), bars, NQ)
-    # trade 1: bars 1 -> 2 (spans the roll at bar 2); trade 2 enters at bar 3 and is still open
     assert contract_rolls(bars) == [(bars.index[2], "202403", "202406")]
     assert held_across_roll(res.trades, bars).tolist() == [True]
     r = roll_summary(res.trades, bars)
@@ -190,33 +176,28 @@ def _day_bars(times: list[str], session_dates: list[str], closes: list[str]) -> 
     idx = pd.DatetimeIndex(pd.to_datetime(times), name="time").tz_localize("America/New_York")
     return pd.DataFrame({"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1,
                          "session_date": pd.to_datetime(session_dates),
-                         "session_close": pd.DatetimeIndex(pd.to_datetime(closes)).tz_localize("America/New_York")}, index=idx)  # fmt: skip
+                         "session_close": pd.DatetimeIndex(pd.to_datetime(closes)).tz_localize("America/New_York")}, index=idx)
 
 
 def test_data_gaps_are_missing_bars_inside_a_session_or_data_stopping_before_the_scheduled_close():
     d1, d2, d3 = "2026-05-14", "2026-05-15", "2026-05-18"
-    c1, c2, c3 = f"{d1} 17:00", f"{d2} 13:15", f"{d3} 17:00"  # d2 has a scheduled early close
+    c1, c2, c3 = f"{d1} 17:00", f"{d2} 13:15", f"{d3} 17:00"
     bars = _day_bars(
         [f"{d1} 13:00", f"{d1} 13:05", f"{d1} 14:25", f"{d1} 18:05", f"{d2} 13:10", f"{d2} 13:15", f"{d3} 16:55", f"{d3} 17:00"],
         [d1, d1, d1, d2, d2, d2, d3, d3], [c1, c1, c1, c2, c2, c2, c3, c3],
     )
-    # bar 2: 13:10..14:20 missing; bar 3: d1's data stopped at 14:25, not 17:00; bar 4: 18:10..13:05 missing in d2.
-    # d2 ended at its scheduled 13:15 close: no gap before bar 6.
     assert data_gaps(bars) == [2, 3, 4]
     assert data_gaps(bars.drop(columns="session_close")) == [2, 4]
 
 
 def test_trades_held_past_the_session_close_or_across_a_gap_are_flagged():
-    # FIX.md follow-up A: the data stops at 14:25 (not the 17:00 close) and resumes in the next session at 18:05
     d1, d2 = "2026-05-14", "2026-05-15"
     bars = _day_bars([f"{d1} 13:00", f"{d1} 13:05", f"{d1} 14:25", f"{d1} 18:05", f"{d1} 18:10"],
                      [d1, d1, d1, d2, d2], [f"{d1} 17:00"] * 3 + [f"{d2} 17:00"] * 2)
-    # trade 1: bar 1 -> 2 (across the 13:10..14:20 gap); trade 2: bar 3 -> 4 (inside d2's session)
     res = run_backtest(Script(plan={0: [("buy", {})], 1: [("sell", {})], 2: [("buy", {})], 3: [("sell", {})]}), bars, NQ)
     e = session_exposure(res.trades, bars)
     assert (e["trades_held_across_gap"], e["gap_trade_nos"], e["trades_held_past_close"]) == (1, [1], 0)
     assert [g["before"] for g in e["data_gaps"]] == [bars.index[2], bars.index[3]]
-    # entered at 13:05 in d1, exits at 18:10 in d2: past d1's close and across the gap
     res = run_backtest(Script(plan={0: [("buy", {})], 3: [("sell", {})]}), bars, NQ)
     e = session_exposure(res.trades, bars)
     assert (e["trades_held_past_close"], e["past_close_trade_nos"], e["gap_trade_nos"]) == (1, [1], [1])

@@ -34,13 +34,13 @@ class Applied:
     dataset: str
     lo: int
     hi: int
-    bars: pd.DataFrame  # the bars the run saw (loaded bars [:hi], extra columns added)
-    result: object  # BacktestResult (for a window: result.window(lo, hi); equity over bars lo..hi-1)
+    bars: pd.DataFrame
+    result: object
     spec: object
     commission: float
     slippage: float
     fill_mode: str
-    plots: dict = field(default_factory=dict)  # name -> per-bar values (bars [:hi])
+    plots: dict = field(default_factory=dict)
     seconds: float = 0.0
 
 
@@ -100,7 +100,7 @@ def sub_bars(d: Loaded) -> pd.DataFrame:
 
 
 def run_window(state: State, cls, inputs: dict, commission: float | None = None, slippage: float | None = None,
-               fill_mode: str = "magnifier", emit=None) -> Applied:  # fmt: skip
+               fill_mode: str = "magnifier", emit=None) -> Applied:
     """Backtest `cls(**inputs)` on the Data tab's current dataset window."""
     from guban.cli import _costs
     from guban.config import get_contract
@@ -111,7 +111,7 @@ def run_window(state: State, cls, inputs: dict, commission: float | None = None,
         raise ValueError(f"fill mode must be magnifier or ohlc, got {fill_mode!r}")
     try:
         strategy = cls(**inputs)
-    except Exception as e:  # the strategy's own __init__ failed
+    except Exception as e:
         raise StrategyError(f"{cls.__name__}({', '.join(f'{k}={v!r}' for k, v in inputs.items())}) could not be created: {e!r}") from e
     spec = get_contract(d.symbol)
     commission, slippage, _ = _costs(spec, commission, slippage)
@@ -125,12 +125,12 @@ def run_window(state: State, cls, inputs: dict, commission: float | None = None,
     t0 = time.perf_counter()
     windowed = d.dataset != "full"
     res = run_backtest(strategy, bars, spec, Costs(commission=commission, slippage=slippage), sub_bars=sub, fill_mode=fill_mode,
-                       trade_from=lo, window_ends=(hi,) if windowed else ())  # fmt: skip
-    if windowed:  # flat at the window's start, closed ("Window End") at its last bar: what walk-forward windows do
+                       trade_from=lo, window_ends=(hi,) if windowed else ())
+    if windowed:
         res = res.window(lo, hi)
     seconds = time.perf_counter() - t0
     return Applied(cls, getattr(cls, "_studio_file", ""), vars(strategy.p), d.dataset, lo, hi, bars, res, spec, commission, slippage,
-                   fill_mode, strategy.plot_series(), seconds)  # fmt: skip
+                   fill_mode, strategy.plot_series(), seconds)
 
 
 def counts(a: Applied) -> list[list]:
@@ -140,7 +140,7 @@ def counts(a: Applied) -> list[list]:
     long_x = int((tr["direction"] == "long").sum()) if len(tr) else 0
     rows = [["Bars", a.hi - a.lo], ["Long entries", long_e], ["Short entries", len(entries) - long_e],
             ["Long exits", long_x], ["Short exits", len(tr) - long_x], ["Trades (exit fills)", len(tr)],
-            ["Net profit (default costs)", round(a.result.net_profit, 2)]]  # fmt: skip
+            ["Net profit (default costs)", round(a.result.net_profit, 2)]]
     return rows
 
 
@@ -149,10 +149,10 @@ TRADE_TABLE = ["#", "side", "qty", "entry time", "entry", "entry name", "exit ti
 
 def trade_table(a: Applied) -> dict:
     tr = a.result.trades
-    fmt = lambda t: f"{t:%Y-%m-%d %H:%M}"  # noqa: E731
+    fmt = lambda t: f"{t:%Y-%m-%d %H:%M}"
     rows = [[int(t.trade_no), t.direction.capitalize(), int(t.qty), fmt(t.entry_time), t.entry_price, t.entry_name,
              fmt(t.exit_time), t.exit_price, t.exit_name, round(t.net_pnl, 2), round(t.cum_net_pnl, 2),
-             None if pd.isna(t.r_multiple) else round(t.r_multiple, 2)] for t in tr.itertuples()]  # fmt: skip
+             None if pd.isna(t.r_multiple) else round(t.r_multiple, 2)] for t in tr.itertuples()]
     bars = [[int(t.entry_bar) - a.lo, int(t.exit_bar) - a.lo] for t in tr.itertuples()]
     return {"columns": TRADE_TABLE, "rows": rows, "bars": bars}
 
@@ -185,7 +185,7 @@ def _price_chart(a: Applied, i0: int, i1: int, title: str) -> str:
     w = 0.34
     b0, b1 = np.minimum(o, c), np.maximum(o, c)
     ax.add_collection(PolyCollection(np.stack([np.c_[x - w, b0], np.c_[x + w, b0], np.c_[x + w, b1], np.c_[x - w, b1]], axis=1),
-                                     facecolors=col, edgecolors=col, linewidths=0.6, zorder=2))  # fmt: skip
+                                     facecolors=col, edgecolors=col, linewidths=0.6, zorder=2))
     handles = []
     for k, (name, values) in enumerate(a.plots.items()):
         y = np.asarray(values[i0:i1], float)
@@ -200,12 +200,12 @@ def _price_chart(a: Applied, i0: int, i1: int, title: str) -> str:
         if 0 <= ei < m:
             long_ = t.direction == "long"
             ax.scatter([ei], [t.entry_price], marker="^" if long_ else "v", s=70, zorder=5, linewidths=0.8,
-                       color=COLORS["up"] if long_ else COLORS["down"], edgecolors=COLORS["ink"])  # fmt: skip
+                       color=COLORS["up"] if long_ else COLORS["down"], edgecolors=COLORS["ink"])
         if xi < m:
             ax.scatter([xi], [t.exit_price], marker="X", s=60, color=COLORS["s2"], edgecolors=COLORS["surface"], linewidths=0.6, zorder=5)
     handles += [Line2D([], [], marker="^", ls="", color=COLORS["up"], label="Long entry"),
                 Line2D([], [], marker="v", ls="", color=COLORS["down"], label="Short entry"),
-                Line2D([], [], marker="X", ls="", color=COLORS["s2"], label="Exit")]  # fmt: skip
+                Line2D([], [], marker="X", ls="", color=COLORS["s2"], label="Exit")]
     ax.legend(handles=handles, loc="upper left", ncols=len(handles), fontsize=8)
     ymin, ymax = lo.min(), h.max()
     for values in a.plots.values():
@@ -213,7 +213,7 @@ def _price_chart(a: Applied, i0: int, i1: int, title: str) -> str:
         if np.isfinite(y).any():
             ymin, ymax = min(ymin, np.nanmin(y)), max(ymax, np.nanmax(y))
     pad = (ymax - ymin) * 0.06 or 1.0
-    ax.set_ylim(ymin - pad, ymax + pad * 2.2)  # headroom for the legend
+    ax.set_ylim(ymin - pad, ymax + pad * 2.2)
     ax.set_xlim(-1, m)
     ticks = np.unique(np.linspace(0, m - 1, min(m, 9)).round().astype(int))
     ax.set_xticks(ticks)
@@ -252,7 +252,7 @@ def strategy_load(state: State, params: dict, emit) -> dict:
         "file": path.as_posix(),
         "doc": doc[0] if doc else "",
         "inputs": [{"name": k, "kind": _input_kind(v), "value": (str(v).lower() if _input_kind(v) == "bool" else str(v) if _input_kind(v) != "other" else repr(v))}
-                   for k, v in cls.inputs.items()],  # fmt: skip
+                   for k, v in cls.inputs.items()],
         "plots": list(cls.plots),
         "extra_columns": list(cls.extra_columns),
     }

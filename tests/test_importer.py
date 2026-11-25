@@ -37,7 +37,7 @@ def test_read_session_file_decodes_field_order_and_close_time_labels(tmp_path):
         f,
         [
             ("2023-11-20 18:00", 100.0, 100.0, 100.0, 100.0, 0),
-            ("2023-11-20 18:00", 101.0, 101.0, 101.0, 101.0, 10),  # duplicate open print
+            ("2023-11-20 18:00", 101.0, 101.0, 101.0, 101.0, 10),
             ("2023-11-20 18:01", 101.0, 103.0, 99.0, 102.0, 20),
         ],
     )
@@ -55,15 +55,12 @@ def test_choose_contracts_rolls_on_the_previous_sessions_volume_and_never_back()
         {"202312": [100, 90, 40, 60, 70], "202403": [10, 50, 80, 55, 30]},
         index=["20231211", "20231212", "20231213", "20231214", "20231215"],
     )
-    # 202403 out-trades 202312 on the 13th; that is known at the 14th's open, so the roll lands on the 14th
     assert list(choose_contracts(vol)) == ["202312", "202312", "202312", "202403", "202403"]
 
 
 def test_choose_contracts_never_uses_the_sessions_own_volume():
-    # FIX.md #6: the first session takes the front month even when the next contract trades more that day
     vol = pd.DataFrame({"202312": [5, 5], "202403": [100, 100]}, index=["20231211", "20231212"])
     assert list(choose_contracts(vol)) == ["202312", "202403"]
-    # changing a session's own volume never changes its own choice
     for k in range(len(vol)):
         bumped = vol.copy()
         bumped.iloc[k] = [1000, 1]
@@ -80,7 +77,7 @@ def test_import_store_builds_continuous_series(tmp_path):
     _write(src / "202403/Minute/20231213.data", [("2023-12-13 18:00", 2, 2, 2, 2, 100)])
     summary = import_store(src, "NQ", tmp_path / "data")
     out = pd.read_parquet(tmp_path / "data/NQ/1m.parquet")
-    assert list(out["contract"].astype(str)) == ["202312", "202312", "202403"]  # rolls the session after the crossover
+    assert list(out["contract"].astype(str)) == ["202312", "202312", "202403"]
     assert list(out["close"]) == [1, 1, 2]
     assert summary.rolls == [("20231211", "202312"), ("20231213", "202403")]
 
@@ -88,15 +85,13 @@ def test_import_store_builds_continuous_series(tmp_path):
 def test_third_friday():
     assert [str(third_friday(c).date()) for c in ("202506", "202512", "202603", "202609")] == [
         "2025-06-20", "2025-12-19", "2026-03-20", "2026-09-18",
-    ]  # fmt: skip
+    ]
 
 
 def test_choose_contracts_by_expiry_rolls_on_wednesday_of_expiration_week():
-    # Sessions start at 18:00 ET the evening before their trading day: Sun 20250615 -> Mon 06-16.
-    sessions = ["20250612", "20250615", "20250616", "20250617", "20250618"]  # trading days Fri 13, Mon 16 .. Thu 19
+    sessions = ["20250612", "20250615", "20250616", "20250617", "20250618"]
     vol = pd.DataFrame({"202506": [100, 90, 40, 30, 20], "202509": [10, 95, 80, 90, 95]}, index=sessions)
     chosen = choose_contracts_by_expiry(vol, days_before=2)
-    # June expires Fri 06-20: it is held through Tue 06-17 even though Sep has more volume, then Sep from Wed.
     assert list(chosen) == ["202506", "202506", "202506", "202509", "202509"]
     assert list(choose_contracts(vol)) == ["202506", "202506", "202509", "202509", "202509"]
 
@@ -113,7 +108,6 @@ def test_import_store_expiry_roll(tmp_path):
 
 
 def test_truncated_file_is_rejected_with_its_name(tmp_path):
-    # FIX.md #12: numpy silently ignored trailing bytes of a cut-off file
     f = tmp_path / "20231120.data"
     _write(f, [("2023-11-20 18:00", 100.0, 101.0, 99.0, 100.5, 10), ("2023-11-20 18:01", 100.5, 101.0, 100.0, 100.0, 5)])
     f.write_bytes(f.read_bytes()[:-7])

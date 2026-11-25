@@ -31,13 +31,13 @@ def write_ticks(path, trades):
 
 
 TRADES = [
-    ("2025-08-04 18:00:00", 100.00, 5),  # overnight: outside RTH
-    ("2025-08-05 09:29:59.999", 100.25, 7),  # one tick before the open
-    ("2025-08-05 09:30:00", 100.50, 2),  # first RTH trade
+    ("2025-08-04 18:00:00", 100.00, 5),
+    ("2025-08-05 09:29:59.999", 100.25, 7),
+    ("2025-08-05 09:30:00", 100.50, 2),
     ("2025-08-05 10:00:00", 100.75, 3),
     ("2025-08-05 12:00:00", 100.50, 4),
-    ("2025-08-05 15:59:59.999", 101.00, 1),  # last RTH trade
-    ("2025-08-05 16:00:00", 102.00, 9),  # the close itself is outside [start, end)
+    ("2025-08-05 15:59:59.999", 101.00, 1),
+    ("2025-08-05 16:00:00", 102.00, 9),
 ]
 
 
@@ -82,7 +82,6 @@ def test_bad_records_raise(tmp_path, mutate, match):
 
 
 def test_size_zero_records_add_no_volume(tmp_path):
-    # the feed since 2026-05-26 has size-0 records; they are kept and add nothing
     path = write_ticks(tmp_path / "20250804.data", TRADES[:3] + [("2025-08-05 09:31:00", 100.25, 0)] + TRADES[3:])
     raw = read_ticks(path)
     tr = window_trades(raw, pd.Timestamp("2025-08-05 09:30"), pd.Timestamp("2025-08-05 16:00"))
@@ -98,7 +97,7 @@ def test_truncated_file_raises(tmp_path):
 
 def test_trade_date_is_the_next_calendar_day():
     assert str(trade_date("20250804")) == "2025-08-05"
-    assert str(trade_date("20250803")) == "2025-08-04"  # Sunday evening -> Monday
+    assert str(trade_date("20250803")) == "2025-08-04"
 
 
 def _days(store):
@@ -109,17 +108,17 @@ def _days(store):
     return pd.DataFrame({
         "session_file": ["20250804", "20250805", "20250806", "20250807"], "contract": "202509",
         "rth_start": [d + pd.Timedelta("9h30min") for d in idx], "rth_end": [d + pd.Timedelta("16h") for d in idx],
-    }, index=idx)  # fmt: skip
+    }, index=idx)
 
 
 def test_build_rth_profiles(tmp_path):
     summary, vap = build_rth_profiles(tmp_path, _days(tmp_path), 0.25)
-    assert list(summary.index.strftime("%Y-%m-%d")) == ["2025-08-05", "2025-08-06", "2025-08-07"]  # 08-08 has no file
+    assert list(summary.index.strftime("%Y-%m-%d")) == ["2025-08-05", "2025-08-06", "2025-08-07"]
     d = summary.loc["2025-08-05"]
     assert (d.trades, d.volume, d.open, d.high, d.low, d.close) == (4, 10, 100.5, 101.0, 100.5, 101.0)
     assert str(d.last_trade) == "2025-08-05 15:59:59.999000"
-    assert summary.loc["2025-08-06"].trades == 0  # ends 09:29: no RTH
-    assert summary.loc["2025-08-07"].trades == 0  # empty file
+    assert summary.loc["2025-08-06"].trades == 0
+    assert summary.loc["2025-08-07"].trades == 0
     v = vap[vap.session_date == "2025-08-05"].set_index("price_tick")["volume"].to_dict()
     assert v == {402: 6, 403: 3, 404: 1}
 
@@ -129,7 +128,7 @@ def test_cache_is_reused_and_rebuilt_when_a_file_changes(tmp_path):
     s1, v1 = load_rth_profiles(tmp_path / "store", days, 0.25, tmp_path / "cache")
     calls = []
     s2, _ = load_rth_profiles(tmp_path / "store", days, 0.25, tmp_path / "cache", progress=lambda i, n: calls.append(i))
-    assert not calls  # served from the cache
+    assert not calls
     pd.testing.assert_frame_equal(s1, s2)
     write_ticks(tmp_path / "store" / "202509" / "Tick" / "20250804.data", TRADES[:4])
     s3, _ = load_rth_profiles(tmp_path / "store", days, 0.25, tmp_path / "cache", progress=lambda i, n: calls.append(i))
@@ -140,7 +139,7 @@ def write_store_ticks(path, trades, contract="202509"):
     """The market-data store's tick layout (D:\Market Data\<SYM>\tick\<contract>\<session>.parquet): UTC ms times."""
     ts = pd.DatetimeIndex([pd.Timestamp(t) for t, _, _ in trades]).tz_localize("America/New_York").tz_convert("UTC").as_unit("ms")
     df = pd.DataFrame({"ts_utc": ts, "price": [p for _, p, _ in trades], "size": np.array([s for _, _, s in trades], np.int32),
-                       "side": np.int8(1), "seq": np.int32(0), "contract": contract})  # fmt: skip
+                       "side": np.int8(1), "seq": np.int32(0), "contract": contract})
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
     return path
@@ -150,7 +149,7 @@ def test_build_rth_profiles_reads_the_market_data_store_the_same_way(tmp_path):
     binary = build_rth_profiles(tmp_path / "bin", _days(tmp_path / "bin"), 0.25)
     sym = tmp_path / "Market Data" / "NQ"
     (sym).mkdir(parents=True)
-    (sym / "quality.csv").write_text("session\n", encoding="utf-8")  # marks the store layout
+    (sym / "quality.csv").write_text("session\n", encoding="utf-8")
     write_store_ticks(sym / "tick" / "202509" / "20250804.parquet", TRADES)
     write_store_ticks(sym / "tick" / "202509" / "20250805.parquet", [("2025-08-05 18:00", 100.0, 1), ("2025-08-06 09:29", 100.0, 1)])
     write_store_ticks(sym / "tick" / "202509" / "20250806.parquet", [])
@@ -161,4 +160,4 @@ def test_build_rth_profiles_reads_the_market_data_store_the_same_way(tmp_path):
     s1, _ = load_rth_profiles(sym, days, 0.25, tmp_path / "cache")
     write_store_ticks(sym / "tick" / "202509" / "20250804.parquet", TRADES[:4])
     s2, _ = load_rth_profiles(sym, days, 0.25, tmp_path / "cache")
-    assert (s1.loc["2025-08-05"].volume, s2.loc["2025-08-05"].volume) == (10, 5)  # the cache sees the store file change
+    assert (s1.loc["2025-08-05"].volume, s2.loc["2025-08-05"].volume) == (10, 5)

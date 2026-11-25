@@ -30,13 +30,13 @@ def method(name: str):
 class State:
     """What the worker remembers between requests: each tab's inputs and results, later tabs built on earlier ones."""
 
-    data: Any = None  # tab_data.Loaded: bars, windows, dataset
-    strategy: Any = None  # the loaded Strategy subclass
-    applied: Any = None  # tab_strategy.Applied: the last Apply's run
-    backtest: Any = None  # tab_backtest.Backtested: the Backtest tab's last run
-    optimization: Any = None  # tab_optimize: the last optimize.run (in the "opt" worker process)
-    walkforward: Any = None  # tab_walkforward: the last wf.run (the result itself in the "opt" worker; here its summary)
-    monte_carlo: Any = None  # tab_montecarlo: the last Monte Carlo runs of the Monte Carlo tab
+    data: Any = None
+    strategy: Any = None
+    applied: Any = None
+    backtest: Any = None
+    optimization: Any = None
+    walkforward: Any = None
+    monte_carlo: Any = None
 
     def on_data_changed(self) -> None:
         """New bars, windows or dataset: results built on the old ones are gone."""
@@ -79,7 +79,7 @@ def debug_chart(state: State, params: dict, emit) -> dict:
     n = int(params.get("points", 2000))
     y = np.cumsum(np.random.default_rng(int(params.get("seed", 1))).normal(size=n))
     fig, ax = figure(float(params.get("width", 9.0)), float(params.get("height", 3.2)))
-    if params.get("noise"):  # incompressible pixels: a worst-case message size for timing the bridge
+    if params.get("noise"):
         ax.imshow(np.random.default_rng(1).random((600, 1800, 3)), aspect="auto")
     ax.plot(y, color=COLORS["s1"], linewidth=1)
     ax.set_title("Python worker → Electron (random walk)")
@@ -87,4 +87,4 @@ def debug_chart(state: State, params: dict, emit) -> dict:
     return {"image": uri, "bytes": len(uri), "draw_ms": round((time.perf_counter() - t0) * 1000, 1)}
 
 
-from guban.gui import tab_backtest, tab_data, tab_montecarlo, tab_optimize, tab_strategy, tab_walkforward  # noqa: E402, F401  (register the tabs' methods)
+from guban.gui import tab_backtest, tab_data, tab_montecarlo, tab_optimize, tab_strategy, tab_walkforward

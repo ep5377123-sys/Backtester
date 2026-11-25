@@ -28,8 +28,8 @@ import pandas as pd
 from guban.data.parquet import read_fingerprint, write_parquet
 
 TZ = "America/New_York"
-FLOOR = 10  # smallest bubble kept in the cache (contracts)
-CACHE_VERSION = 2  # 2: sell bubbles too (side column)
+FLOOR = 10
+CACHE_VERSION = 2
 COLUMNS = ["session", "contract", "side", "time", "price", "size"]
 SIDES = {"big_buy_body": 1, "big_sell_body": -1}
 
@@ -40,20 +40,20 @@ def bubbles_of(ticks: pd.DataFrame, floor: int = FLOOR) -> pd.DataFrame:
     t = ticks[(ticks["side"] != 0) & (ticks["size"] > 0)]
     size = t["size"].to_numpy(np.int64)
     g = pd.DataFrame({"side": t["side"].to_numpy(np.int8), "ts": t["ts_utc"].to_numpy(), "size": size,
-                      "notional": t["price"].to_numpy(float) * size})  # fmt: skip
+                      "notional": t["price"].to_numpy(float) * size})
     g = g.groupby(["side", "ts"], sort=True).sum().reset_index()
     g = g[g["size"] >= floor]
     time = pd.DatetimeIndex(g["ts"])
     time = time.tz_localize("UTC") if time.tz is None else time
     label = time.floor("min") + pd.Timedelta(minutes=1)
     return pd.DataFrame({"side": g["side"].to_numpy(np.int8), "time": label.tz_convert(TZ),
-                         "price": g["notional"].to_numpy() / g["size"].to_numpy(), "size": g["size"].to_numpy(np.int64)})  # fmt: skip
+                         "price": g["notional"].to_numpy() / g["size"].to_numpy(), "size": g["size"].to_numpy(np.int64)})
 
 
 def usable_sessions(bars: pd.DataFrame, quality: pd.DataFrame) -> pd.DataFrame:
     """The (session file, contract) of each trading date the bars hold, with tick_ok from the store's quality.csv."""
     pairs = pd.DataFrame({"trade_date": pd.to_datetime(bars["session_date"]).dt.strftime("%Y%m%d"),
-                          "contract": bars["contract"].astype(str)}).drop_duplicates()  # fmt: skip
+                          "contract": bars["contract"].astype(str)}).drop_duplicates()
     q = quality.assign(trade_date=quality["trade_date"].astype(str).str.replace("-", ""), contract=quality["contract"].astype(str))
     out = pairs.merge(q[["trade_date", "contract", "session", "tick_ok"]], on=["trade_date", "contract"], how="left")
     out["tick_ok"] = out["tick_ok"].fillna(False).astype(bool)
@@ -109,7 +109,7 @@ def body_bubbles(bars: pd.DataFrame, bubbles: pd.DataFrame, ok: pd.DataFrame) ->
     """Per bar, the largest of `bubbles` (contract, time, price, size) at the bar's close label and contract priced
     inside its body; 0 without one; NaN for bars whose (trade_date YYYYMMDD, contract) is not in `ok`."""
     key = pd.DataFrame({"trade_date": pd.to_datetime(bars["session_date"]).dt.strftime("%Y%m%d").to_numpy(),
-                        "contract": bars["contract"].astype(str).to_numpy()})  # fmt: skip
+                        "contract": bars["contract"].astype(str).to_numpy()})
     usable = key.merge(ok.assign(_ok=True), on=["trade_date", "contract"], how="left")["_ok"].fillna(False).to_numpy(bool)
     vals = np.where(usable, 0.0, np.nan)
     if not bubbles.empty:

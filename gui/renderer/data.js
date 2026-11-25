@@ -1,5 +1,3 @@
-// Data tab: symbol / timeframe / session / time zone / dates → Load; in-sample and out-of-sample windows (fraction
-// shortcut, Swap, dataset selector); bar table pages; close-price chart; quality report. Worker side: guban/gui/tab_data.py.
 'use strict';
 
 (() => {
@@ -82,7 +80,6 @@
     return r;
   }
 
-  // Window edits: validate in the worker; an invalid pair shows inline and blocks the later tabs until fixed.
   async function setWindows() {
     if (!S.loaded) return null;
     try {
@@ -149,7 +146,6 @@
     f('label').textContent = 'none loaded (the worker restarted: click Load)';
   });
   studio.ready.push(init);
-  // the form as data.load takes it (the Optimization tab rebuilds the bars from this in its own process)
   const params = () => {
     const w = windowsForm();
     return { ...form(), windows: { is: w.is, oos: w.oos }, dataset: w.dataset };

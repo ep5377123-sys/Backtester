@@ -18,7 +18,7 @@ def _session(root: Path, sym: str, contract: str, session: str, bars: list[tuple
         "ts_utc": ts, "open": [p for _, p, _ in bars], "high": [p + 1 for _, p, _ in bars], "low": [p - 1 for _, p, _ in bars],
         "close": [p for _, p, _ in bars], "volume": [v for _, _, v in bars], "ask_vol": [v // 2 for _, _, v in bars],
         "bid_vol": [v - v // 2 for _, _, v in bars], "contract": contract, "source": "minute",
-    })  # fmt: skip
+    })
     path = root / sym / "minute" / contract / f"{session}.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
@@ -27,27 +27,26 @@ def _session(root: Path, sym: str, contract: str, session: str, bars: list[tuple
 def _quality(root: Path, sym: str, rows: list[tuple[str, str, int, bool, bool]]) -> None:
     """rows: (session, contract, minute volume, front, thin)."""
     q = pd.DataFrame([{"session": s, "trade_date": (pd.Timestamp(s) + pd.Timedelta(days=1)).strftime("%Y-%m-%d"), "contract": c,
-                       "minute_volume": v, "bars": 1, "bar_source": "minute", "front": f, "thin": t} for s, c, v, f, t in rows])  # fmt: skip
+                       "minute_volume": v, "bars": 1, "bar_source": "minute", "front": f, "thin": t} for s, c, v, f, t in rows])
     q.reindex(columns=QUALITY_COLUMNS).to_csv(root / sym / "quality.csv", index=False)
 
 
 @pytest.fixture
 def store(tmp_path):
     root = tmp_path / "Market Data"
-    # 202312 is front for two sessions, then 202403 (volume roll); a back-month file exists every session
     for s, t in (("20231211", "2023-12-11 18:00"), ("20231212", "2023-12-12 18:00"), ("20231213", "2023-12-13 18:00")):
         _session(root, "NQ", "202312", s, [(t, 1.0, 5)])
         _session(root, "NQ", "202403", s, [(t, 2.0, 100)])
     _quality(root, "NQ", [("20231211", "202312", 5, True, False), ("20231211", "202403", 100, False, False),
                           ("20231212", "202312", 5, True, True), ("20231212", "202403", 100, False, False),
-                          ("20231213", "202312", 5, False, False), ("20231213", "202403", 100, True, False)])  # fmt: skip
+                          ("20231213", "202312", 5, False, False), ("20231213", "202403", 100, True, False)])
     return root
 
 
 def test_read_minute_labels_bars_by_close_time_in_new_york(store):
     bars = read_minute(store, "NQ", "202312", "20231211")
     assert str(bars.index.tz) == NY
-    assert list(bars.index.strftime("%Y-%m-%d %H:%M")) == ["2023-12-11 18:01"]  # open 18:00 -> close label 18:01
+    assert list(bars.index.strftime("%Y-%m-%d %H:%M")) == ["2023-12-11 18:01"]
     assert list(bars.columns) == ["open", "high", "low", "close", "volume", "bid_vol", "ask_vol"]
 
 
@@ -73,10 +72,9 @@ def test_import_from_store_expiry_roll(tmp_path):
         _session(root, "MNQ", "202506", s, [(t, 1.0, 5)])
         _session(root, "MNQ", "202509", s, [(t, 2.0, 100)])
     _quality(root, "MNQ", [("20250615", "202506", 5, False, False), ("20250615", "202509", 100, True, False),
-                           ("20250617", "202506", 5, False, False), ("20250617", "202509", 100, True, False)])  # fmt: skip
+                           ("20250617", "202506", 5, False, False), ("20250617", "202509", 100, True, False)])
     summary = import_from_store("MNQ", tmp_path / "data", root=root, roll="expiry")
     out = pd.read_parquet(tmp_path / "data/MNQ/1m.parquet")
-    # June expires Fri 2025-06-20: held through Tue 06-17's session start (trading day Mon 06-16), Sep from Wed
     assert list(out["contract"].astype(str)) == ["202506", "202509"]
     assert summary.rolls == [("20250615", "202506"), ("20250617", "202509")]
 
@@ -100,15 +98,13 @@ def test_missing_front_file_is_an_error_naming_it(store, tmp_path):
 def test_last_trade_date_rules():
     from guban.store.read import last_trade_date
 
-    assert last_trade_date("202509", "cme_equity") == pd.Timestamp("2025-09-19").date()  # third Friday
-    assert last_trade_date("202002", "cme_crypto") == pd.Timestamp("2020-02-28").date()  # last Friday
-    # Christmas Day 2020 was the last Friday: the contract expired the business day before
+    assert last_trade_date("202509", "cme_equity") == pd.Timestamp("2025-09-19").date()
+    assert last_trade_date("202002", "cme_crypto") == pd.Timestamp("2020-02-28").date()
     closed = {pd.Timestamp("2020-12-25").date()}
     assert last_trade_date("202012", "cme_crypto", lambda d: d not in closed) == pd.Timestamp("2020-12-24").date()
 
 
 def test_volume_roll_never_trades_a_contract_in_its_expiration_session(tmp_path):
-    # BTC 202002 expires Fri 2020-02-28 at 11:00 ET; the store's volume roll still names it front that session
     root = tmp_path / "Market Data"
     sessions = (("20200226", "2020-02-26 18:00"), ("20200227", "2020-02-27 18:00"), ("20200301", "2020-03-01 18:00"))
     for s, t in sessions:
@@ -117,7 +113,7 @@ def test_volume_roll_never_trades_a_contract_in_its_expiration_session(tmp_path)
         _session(root, "BTC", "202002", s, [(t, 1.0, 100)])
     _quality(root, "BTC", [("20200226", "202002", 100, True, False), ("20200226", "202003", 50, False, False),
                            ("20200227", "202002", 100, True, True), ("20200227", "202003", 50, False, False),
-                           ("20200301", "202003", 50, True, False)])  # fmt: skip
+                           ("20200301", "202003", 50, True, False)])
     summary = import_from_store("BTC", tmp_path / "data", root=root)
     out = pd.read_parquet(tmp_path / "data/BTC/1m.parquet")
     assert list(out["contract"].astype(str)) == ["202002", "202003", "202003"]

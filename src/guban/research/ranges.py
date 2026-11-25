@@ -17,7 +17,6 @@ import pandas as pd
 
 RANGE_PER_SIGMA = 2 * math.sqrt(2 / math.pi)
 
-# race outcomes
 FADE, EXTEND, AMBIGUOUS, UNRESOLVED, UNTOUCHED = 1, 0, -1, -2, -3
 OUTCOME_NAMES = {FADE: "fade", EXTEND: "extend", AMBIGUOUS: "ambiguous", UNRESOLVED: "unresolved", UNTOUCHED: "untouched"}
 

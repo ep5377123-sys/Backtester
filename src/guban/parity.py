@@ -35,7 +35,6 @@ import pandas as pd
 MC_COLUMNS = ["trade_no", "direction", "qty", "entry_time", "entry_price", "entry_name", "exit_time", "exit_price", "exit_name", "net_pnl"]
 EXCEL_EPOCH = pd.Timestamp("1899-12-30")
 
-# S3 thresholds
 MIN_MATCH_RATE = 0.95
 MIN_PRICE_OK_RATE = 0.95
 MAX_NET_DIFF = 0.03
@@ -74,7 +73,7 @@ def _read_mc_csv(path: Path) -> pd.DataFrame:
         "exit_price": np.nan,
         "exit_name": None,
         "net_pnl": df["profit_usd"].astype(float),
-    })  # fmt: skip
+    })
 
 
 def _read_mc_xlsx(path: Path) -> pd.DataFrame:
@@ -96,7 +95,7 @@ def _read_mc_xlsx(path: Path) -> pd.DataFrame:
                 int(entry["Trade #"]), "long" if kind.endswith("Long") else "short", int(entry["Contracts"]),
                 entry["stamp"], float(entry["Price"]), entry["Signal"],
                 r["stamp"], float(r["Price"]), r["Signal"], float(entry["Profit ($)"]),
-            ))  # fmt: skip
+            ))
             entry = None
     return pd.DataFrame(rows, columns=MC_COLUMNS)
 
@@ -122,7 +121,7 @@ def load_our_trades(path: str | Path) -> pd.DataFrame:
 
 @dataclass
 class Comparison:
-    matched: pd.DataFrame  # one row per matched pair
+    matched: pd.DataFrame
     mc_only: pd.DataFrame
     ours_only: pd.DataFrame
     start: pd.Timestamp
@@ -213,9 +212,9 @@ def compare_trades(
     start, end = _utc(start), _utc(end)
     if end < start:
         raise ValueError(f"the comparison window is empty ({start} > {end}): the two trade lists do not overlap in time; "
-                         "pass --start / --end")  # fmt: skip
+                         "pass --start / --end")
 
-    def near(t: pd.DataFrame) -> pd.DataFrame:  # candidates: the window plus one bar either side
+    def near(t: pd.DataFrame) -> pd.DataFrame:
         t = t[(t["entry_time"] >= start - bar) & (t["entry_time"] <= end + bar)]
         return t.sort_values("entry_time", kind="stable").reset_index(drop=True)
 
@@ -223,8 +222,8 @@ def compare_trades(
     ours_in = ((ours["entry_time"] >= start) & (ours["entry_time"] <= end)).to_numpy()
     mc_in = ((mc["entry_time"] >= start) & (mc["entry_time"] <= end)).to_numpy()
     every = _match(ours, mc, bar)
-    pairs = [(i, j) for i, j in every if mc_in[i]]  # matched = pairs whose MC trade is in the window
-    partnered = {j for _, j in every}  # our trades with a partner (even one just outside the window)
+    pairs = [(i, j) for i, j in every if mc_in[i]]
+    partnered = {j for _, j in every}
     mc_scored = mc[mc_in]
     ours_scored = ours[ours_in]
     implied = bool(mc_scored["exit_price"].isna().all()) if len(mc_scored) else False
@@ -246,10 +245,10 @@ def compare_trades(
             "mc_net": a["net_pnl"], "our_net": b["net_pnl"],
             "mc_qty": int(a["qty"]), "our_qty": int(b["qty"]),
             "ambiguous": bool(b.get("ambiguous", False)),
-        })  # fmt: skip
+        })
     cols = ["mc_trade", "our_trade", "direction", "mc_entry_time", "our_entry_time", "mc_entry", "our_entry",
             "mc_exit_time", "our_exit_time", "mc_exit", "our_exit", "mc_exit_name", "our_exit_name",
-            "mc_net", "our_net", "mc_qty", "our_qty", "ambiguous"]  # fmt: skip
+            "mc_net", "our_net", "mc_qty", "our_qty", "ambiguous"]
     m = pd.DataFrame(rows, columns=cols)
     eps = 1e-9
     m["entry_ok"] = (m["our_entry"] - m["mc_entry"]).abs() <= tick + eps
@@ -272,7 +271,7 @@ def compare_trades(
         start=start, end=end, n_mc=len(mc_scored), n_ours=len(ours_scored),
         net_mc=float(mc_scored["net_pnl"].sum()), net_ours=float(ours_scored["net_pnl"].sum()),
         implied_exits=implied, tick=tick, notes=notes,
-    )  # fmt: skip
+    )
 
 
 def _check_trades(df: pd.DataFrame, who: str) -> pd.DataFrame:
@@ -354,8 +353,6 @@ def _match_cluster(ta: np.ndarray, tb: np.ndarray, tol: int, a: list[int], b: li
     return out[::-1]
 
 
-# --- diff report -------------------------------------------------------------------------------------
-
 _CSS = """
 :root { --bg:#fff; --fg:#1b1f24; --muted:#5b6570; --line:#d8dde3; --pass:#1a7f37; --fail:#cf222e; --head:#f3f5f7; }
 @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --fg:#e6e9ed; --muted:#9aa4ae; --line:#2b323a;
@@ -390,16 +387,16 @@ def write_diff_html(cmp: Comparison, path: str | Path, title: str = "Parity diff
             ("mc_entry", "MC entry"), ("our_entry", "our entry"), ("mc_exit_time", "MC exit time"), ("our_exit_time", "our exit time"),
             ("mc_exit", "MC exit"), ("our_exit", "our exit"), ("mc_exit_name", "MC exit signal"), ("our_exit_name", "our exit signal"),
             ("mc_net", "MC net"), ("our_net", "our net"), ("ambiguous", "ambiguous"),
-        ], tz, flag=True),  # fmt: skip
+        ], tz, flag=True),
         _table(f"MC trades with no match ({len(cmp.mc_only)})", cmp.mc_only, [
             ("trade_no", "MC #"), ("direction", "dir"), ("entry_time", "entry"), ("entry_price", "entry price"),
             ("exit_time", "exit"), ("exit_price", "exit price"), ("exit_name", "exit signal"), ("net_pnl", "net"),
-        ], tz),  # fmt: skip
+        ], tz),
         _table(f"Our trades with no match ({len(cmp.ours_only)})", cmp.ours_only, [
             ("trade_no", "our #"), ("direction", "dir"), ("entry_time", "entry"), ("entry_price", "entry price"),
             ("exit_time", "exit"), ("exit_price", "exit price"), ("exit_name", "exit signal"), ("net_pnl", "net"),
             ("ambiguous", "ambiguous"),
-        ], tz),  # fmt: skip
+        ], tz),
         "</body></html>",
     ]
     path.write_text("\n".join(parts), encoding="utf-8")

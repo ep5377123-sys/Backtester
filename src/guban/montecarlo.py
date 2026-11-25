@@ -39,16 +39,16 @@ import numpy as np
 
 METHODS = ("resample", "reorder", "day")
 PERCENTILES = (5, 25, 50, 75, 95)
-DEPTH_PERCENTILES = (50, 75, 90, 95, 99)  # max drawdown depth (positive USD): deeper at higher percentiles
-HORIZONS = (10, 20, 40, 100)  # trades (resample) or trading days (day)
+DEPTH_PERCENTILES = (50, 75, 90, 95, 99)
+HORIZONS = (10, 20, 40, 100)
 HORIZON_METHODS = ("resample", "day")
 UNITS = {"resample": "trade", "reorder": "trade", "day": "day"}
 SAMPLE_PATHS = 100
 CI = 0.95
 MIN_TRADES = 2
 MAX_SIMS = 1_000_000
-BAND_POINTS = 400  # equity bands are kept at this many points at most
-BATCH_CELLS = 2_000_000  # runs per batch = this // trades (at least 1)
+BAND_POINTS = 400
+BATCH_CELLS = 2_000_000
 
 
 def check_settings(sims: int, seed: int, dd_limit: float | None = None, risk: float | None = None, oos_from: str | None = None) -> None:
@@ -83,14 +83,14 @@ def _oos_timestamp(oos_from):
 
 @dataclass
 class MethodResult:
-    net: np.ndarray  # net profit per run
-    max_dd: np.ndarray  # close-to-close max drawdown per run (<= 0)
-    bands: np.ndarray  # (len(PERCENTILES), len(x)): percentiles of cumulative net after x[j] trades (or days)
-    x: np.ndarray = None  # trade counts (day: trading-day counts) the bands and paths are sampled at
-    backtest: np.ndarray = None  # the backtest's own cumulative net at x
-    paths: np.ndarray = None  # (min(sims, SAMPLE_PATHS), len(x)): the first runs' cumulative net at x
-    horizon_net: dict = field(default_factory=dict)  # {n: net after the run's first n trades/days}
-    horizon_dd: dict = field(default_factory=dict)  # {n: max drawdown within the run's first n trades/days}
+    net: np.ndarray
+    max_dd: np.ndarray
+    bands: np.ndarray
+    x: np.ndarray = None
+    backtest: np.ndarray = None
+    paths: np.ndarray = None
+    horizon_net: dict = field(default_factory=dict)
+    horizon_dd: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -99,15 +99,15 @@ class MonteCarloResult:
     seed: int
     dd_limit: float | None
     trades: int
-    net: float  # the backtest's net profit
-    max_dd: float  # the backtest's close-to-close max drawdown
-    x: np.ndarray  # trade counts the trade methods' bands are sampled at (0 .. trades)
-    path: np.ndarray  # the backtest's cumulative net at x
+    net: float
+    max_dd: float
+    x: np.ndarray
+    path: np.ndarray
     methods: dict[str, MethodResult]
     seconds: float
     ev: dict = field(default_factory=dict)
-    skipped: dict = field(default_factory=dict)  # {method: why it did not run}
-    days: int | None = None  # trading days, when trade days were given
+    skipped: dict = field(default_factory=dict)
+    days: int | None = None
 
     def method_summary(self, name: str) -> dict:
         m = self.methods[name]
@@ -135,7 +135,7 @@ class MonteCarloResult:
                     {"n": n, "net_profit": _pcts(m.horizon_net[n]), "max_drawdown_depth": _pcts(-m.horizon_dd[n], DEPTH_PERCENTILES),
                      "p_net_lt_0": float(np.mean(m.horizon_net[n] < 0))}
                     for n in sorted(m.horizon_net)
-                ]  # fmt: skip
+                ]
         return out
 
     def summary(self) -> dict:
@@ -160,7 +160,7 @@ class MonteCarloResult:
 def run_monte_carlo(
     net, sims: int = 10_000, seed: int = 42, dd_limit: float | None = None, *, days=None, contracts=None, sides=None,
     risk: float | None = None, times=None, oos_from=None, ci: float = CI, risks=None,
-) -> MonteCarloResult:  # fmt: skip
+) -> MonteCarloResult:
     """Resample, reorder and (given `days`) day-resample `net` (per-trade net P&L, in trade order) `sims` times each,
     and bootstrap its EV. Per trade, all optional: `days` = trading-day label (exit session), `contracts`, `sides`
     ("long"/"short"), `times` (exit time, for the --mc-oos-from split), `risks` (USD at risk to the initial stop, NaN
@@ -187,7 +187,7 @@ def run_monte_carlo(
     methods = {
         "resample": _simulate(lambda rng, b: _trade_draw(net[rng.integers(0, n, (b, n))]), seed, sims, batch, x, path[0, x], HORIZONS),
         "reorder": _simulate(lambda rng, b: _trade_draw(rng.permuted(np.broadcast_to(net, (b, n)), axis=1)), seed + 1, sims, batch, x, path[0, x], ()),
-    }  # fmt: skip
+    }
     skipped, n_days = {}, None
     if days is not None:
         stats = _day_stats(net, days)
@@ -197,13 +197,13 @@ def run_monte_carlo(
         else:
             xd = _sample_points(n_days)
             day_path = np.r_[0.0, np.cumsum(stats["sum"])]
-            methods["day"] = _simulate(lambda rng, b: _day_draw(rng.integers(0, n_days, (b, n_days)), stats), seed + 2, sims, batch, xd, day_path[xd], HORIZONS)  # fmt: skip
+            methods["day"] = _simulate(lambda rng, b: _day_draw(rng.integers(0, n_days, (b, n_days)), stats), seed + 2, sims, batch, xd, day_path[xd], HORIZONS)
     ev = _ev(net, contracts, sides, risk, times, oos_from, sims, seed + 3, ci, risks)
     return MonteCarloResult(
         sims=sims, seed=seed, dd_limit=None if dd_limit is None else float(dd_limit), trades=n,
         net=float(net.sum()), max_dd=float(max_dd[0]), x=x, path=path[0, x], methods=methods,
         seconds=time.perf_counter() - t0, ev=ev, skipped=skipped, days=n_days,
-    )  # fmt: skip
+    )
 
 
 def _sample_points(n: int) -> np.ndarray:
@@ -268,7 +268,7 @@ def _day_draw(d: np.ndarray, stats: dict) -> tuple[np.ndarray, np.ndarray]:
     np.cumsum(stats["sum"][d], axis=1, out=cum[:, 1:])
     start = cum[:, :-1]
     peak = np.zeros((b, n_days + 1))
-    np.maximum.accumulate(start + stats["max"][d], axis=1, out=peak[:, 1:])  # >= 0: max P >= 0 and day 0 starts at 0
+    np.maximum.accumulate(start + stats["max"][d], axis=1, out=peak[:, 1:])
     under = np.zeros((b, n_days + 1))
     under[:, 1:] = np.minimum(start - peak[:, :-1] + stats["min"][d], stats["dd"][d])
     return cum, under
@@ -303,7 +303,7 @@ def _ev(net, contracts, sides, risk, times, oos_from, sims: int, seed: int, ci: 
     if risk_pc is None:
         r = None
     elif per_trade is not None and risk is None:
-        r = net / per_trade  # NaN without a stop
+        r = net / per_trade
     else:
         r = net / ((contracts if contracts is not None else 1.0) * risk_pc)
     masks = {"all": np.ones(n, dtype=bool)}
@@ -340,7 +340,7 @@ def _ev(net, contracts, sides, risk, times, oos_from, sims: int, seed: int, ci: 
             idx = rng.integers(0, k, (min(batch, sims - s), k))
             boot[s:s + len(idx)] = vals[idx].mean(axis=1)
             if rv is not None:
-                if gaps:  # trades without a stop drop out of R; a draw of only such trades has no R mean
+                if gaps:
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", RuntimeWarning)
                         rboot[s:s + len(idx)] = np.nanmean(rv[idx], axis=1)

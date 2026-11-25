@@ -16,7 +16,7 @@ def test_contract_specs():
 
 def test_pnl_points_times_point_value_times_contracts_minus_costs():
     nq, mnq = get_contract("NQ"), get_contract("MNQ")
-    assert nq.pnl(15000, 15050, 1) == 1000.0  # "$1,000 = 50 NQ pts"
+    assert nq.pnl(15000, 15050, 1) == 1000.0
     assert mnq.pnl(15000, 15050, 5) == 500.0
     assert mnq.pnl(15000, 15050, 5, direction=-1) == -500.0
     assert nq.pnl(15000, 14990, 2, direction=-1, commission=2.25, slippage=5.0) == 400.0 - 2 * 7.25
@@ -51,7 +51,7 @@ def test_every_contract_names_a_calendar_with_its_early_closes():
 
     for spec in _contracts(None).values():
         closes = get_early_closes(spec.calendar)
-        if spec.calendar == "cme_crypto":  # BTC trades through most US holidays since 2022
+        if spec.calendar == "cme_crypto":
             assert closes[date(2024, 12, 24)] == time(13, 45) and date(2024, 7, 4) not in closes
             assert closes[date(2021, 4, 2)] == time(9, 15)
         else:
@@ -72,7 +72,6 @@ def test_calendar_rejects_bad_entries(tmp_path):
 
 
 def test_default_costs_per_contract():
-    # PLAN.md "Phase 15 plan": commission RT, slippage RT = 1 tick (half a tick per side)
     costs = {s: (get_contract(s).commission, get_contract(s).slippage) for s in ("NQ", "MNQ", "ES", "MES", "BTC")}
     assert costs == {"NQ": (2.50, 5.00), "MNQ": (2.00, 0.50), "ES": (3.78, 12.50), "MES": (1.22, 1.25), "BTC": (16.04, 25.00)}
     for s in costs:

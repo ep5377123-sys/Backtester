@@ -21,7 +21,7 @@ from guban.store.build import read_quality
 
 TZ = "America/New_York"
 BAR_COLUMNS = ["open", "high", "low", "close", "volume", "bid_vol", "ask_vol"]
-EXPIRY_CALENDARS = ("cme_equity",)  # third-Friday expirations (guban.data.importer.third_friday)
+EXPIRY_CALENDARS = ("cme_equity",)
 
 
 def store_root(root: Path | None = None) -> Path:
@@ -135,7 +135,7 @@ def import_from_store(
         raise ValueError(f"roll must be one of {ROLLS}, got {roll!r}")
     if roll == "expiry" and _calendar(symbol) not in EXPIRY_CALENDARS:
         raise ValueError(f"the expiry roll is the CME equity index rule (third Friday of the contract month); "
-                         f"{symbol} does not expire that way: use --roll volume")  # fmt: skip
+                         f"{symbol} does not expire that way: use --roll volume")
     root = store_root(root)
     contracts, switched = _contracts(root, symbol, roll, days_before)
     if contracts.empty:
@@ -145,7 +145,7 @@ def import_from_store(
         df = read_minute(root, symbol, contract, session)
         frames.append(df.assign(contract=contract, session=pd.Timestamp(session)))
     data = pd.concat(frames)
-    dupes = int(data.index.duplicated(keep="last").sum())  # sessions never overlap; kept for safety, as import_store does
+    dupes = int(data.index.duplicated(keep="last").sum())
     if dupes:
         data = data[~data.index.duplicated(keep="last")]
     data = data.sort_index()

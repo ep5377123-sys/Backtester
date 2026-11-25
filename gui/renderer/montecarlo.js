@@ -1,6 +1,3 @@
-// Monte Carlo tab: one trade source (the Backtest run, the walk-forward's out-of-sample trades, or a file) and two
-// separate simulations of it, as sub-tabs: the trade Monte Carlo (`guban run`'s) and the prop-firm evaluation
-// (`guban propfirm`). Worker side: guban/gui/tab_montecarlo.py.
 'use strict';
 
 (() => {
@@ -10,10 +7,8 @@
   const S = { sources: null, trade: null, tradeSource: null, stale: false, propfirm: null, propfirmSource: null, rules: null, report: null };
   const FIELDS = { sims: 'mc_sims', seed: 'mc_seed', ddlimit: 'mc_dd_limit', risk: 'mc_risk', oos: 'mc_oos_from' };
 
-  // report.py's HTML fragments: parsed, never run (they hold no scripts), then moved into the page
   const fragment = (html) => [...new DOMParser().parseFromString(html || '', 'text/html').body.childNodes];
 
-  // The trade Monte Carlo's settings: the Backtest tab's Run (evaluation) and Save use them too.
   const tradeSettings = () => Object.fromEntries(Object.entries(FIELDS).map(([id, key]) => [key, f(id).value]));
   const sourceParams = () => ({ source: f('source').value, file: f('file').value.trim() });
   const sourceKey = () => { const p = sourceParams(); return p.source === 'file' ? `file:${p.file}` : p.source; };
@@ -33,7 +28,6 @@
     return r;
   }
 
-  // a source that ran again since a simulation used it: its results are stale until the next Run
   function markStale(kind) {
     if (S.tradeSource === kind || S.propfirmSource === kind) {
       S.stale = true;
@@ -70,8 +64,6 @@
     return path;
   }
 
-  // --- prop-firm evaluation ---------------------------------------------------------------------------------------
-
   const fieldKey = () => `propfirm:${pf('rules').value}`;
 
   function fieldValues() {
@@ -101,7 +93,6 @@
     return r;
   }
 
-  // fields that differ from the rules file are marked
   function markEdited() {
     for (const n of pf('fields').querySelectorAll('[data-field]')) n.classList.toggle('edited', n.value !== n.dataset.file);
   }
@@ -142,7 +133,7 @@
 
   async function init() {
     const r = await refreshSources();
-    const old = settings.get('backtest'); // Monte Carlo settings lived on the Backtest tab before Phase 20
+    const old = settings.get('backtest');
     const saved = { ...r.defaults, ...Object.fromEntries(Object.values(FIELDS).filter((k) => old[k] !== undefined).map((k) => [k, old[k]])), ...settings.get('montecarlo') };
     for (const [id, key] of Object.entries(FIELDS)) f(id).value = saved[key] ?? '';
     f('file').value = saved.file || '';

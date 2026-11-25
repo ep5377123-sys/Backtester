@@ -95,13 +95,13 @@ def test_run_optimize_wfo_share_identical_flags():
     group = typer.main.get_command(app)
     params = {name: {p.name: p for p in group.commands[name].params} for name in ("run", "optimize", "wfo")}
     shared = ["strategy_file", "symbol", "contract", "tf", "session", "history_from", "data_from", "tz", "fill_mode", "data_dir",
-              "commission", "slippage", "inputs", "class_name"]  # fmt: skip
+              "commission", "slippage", "inputs", "class_name"]
     for name in shared:
         ref = params["run"][name]
         for cmd in ("optimize", "wfo"):
             p = params[cmd][name]
             assert (p.opts, p.default, getattr(p, "help", None), p.type.name) == (ref.opts, ref.default, getattr(ref, "help", None), ref.type.name), (cmd, name)
-    for cmd in ("optimize", "wfo"):  # search flags, and --out means a folder everywhere
+    for cmd in ("optimize", "wfo"):
         for name in ("grid_specs", "min_trades", "workers", "yes"):
             assert params[cmd][name].opts == params["optimize"][name].opts
         assert params[cmd]["out"].opts == ["--out"] and params[cmd]["open_report"].opts == ["--open"]
@@ -139,12 +139,12 @@ def test_no_trade_charts_then_guban_chart_draws_them(workdir):
     res = runner.invoke(app, ["chart", "r", "--trade", "999"])
     assert res.exit_code == 2 and "has no trade #999" in res.output
     res = runner.invoke(app, ["run", "flip.py", "--symbol", "NQ", "--fill-mode", "ohlc", "--mc-sims", "0", "--no-trade-charts", "--out", "r"])
-    assert not list(out.glob("trades/trade_*.png"))  # a run without images clears the earlier run's
+    assert not list(out.glob("trades/trade_*.png"))
 
 
 def test_chart_refuses_bars_that_changed(workdir, monkeypatch):
     assert runner.invoke(app, ["run", "flip.py", "--symbol", "NQ", "--fill-mode", "ohlc", "--mc-sims", "0", "--no-report", "--out", "r"]).exit_code == 0
-    longer = pd.concat([synthetic_bars(), synthetic_bars().shift(40, freq="5min")])  # sessions added since: still fine
+    longer = pd.concat([synthetic_bars(), synthetic_bars().shift(40, freq="5min")])
     monkeypatch.setattr(cli.DataSpec, "load", lambda self: (longer, None))
     assert runner.invoke(app, ["chart", "r", "--trade", "1"]).exit_code == 0
     monkeypatch.setattr(cli.DataSpec, "load", lambda self: (synthetic_bars().iloc[3:], None))
@@ -155,15 +155,15 @@ def test_chart_refuses_bars_that_changed(workdir, monkeypatch):
 def test_compare_out_is_a_folder(workdir):
     assert runner.invoke(app, ["run", "flip.py", "--symbol", "MNQ", "--fill-mode", "ohlc", "--no-report", "--out", "a"]).exit_code == 0
     res = runner.invoke(app, ["compare", "--ours", "a/trades.csv", "--mc", "a/trades.csv", "--contract", "MNQ", "--out", "cmp"])
-    assert res.exit_code in (0, 1), res.output  # 1 = parity FAIL, still a completed comparison
+    assert res.exit_code in (0, 1), res.output
     assert (workdir / "cmp" / "diff.html").exists()
 
 
 def test_strategy_exception_prints_its_line_and_writes_nothing(workdir):
     res = runner.invoke(app, ["run", "boom.py", "--symbol", "NQ", "--fill-mode", "ohlc"])
     assert res.exit_code == 2
-    assert isinstance(res.exception, SystemExit)  # no traceback
-    assert "Error: Boom.on_bar failed at bar 5 (" in res.output and "ZeroDivisionError" in res.output  # = current_bar
+    assert isinstance(res.exception, SystemExit)
+    assert "Error: Boom.on_bar failed at bar 5 (" in res.output and "ZeroDivisionError" in res.output
     assert "boom.py\", line 9, in on_bar" in res.output and "return 1 / 0" in res.output
     assert not (workdir / "reports").exists()
 
@@ -249,7 +249,6 @@ def test_guban_debug_reraises(workdir, monkeypatch):
 
 
 def test_strategy_constructor_error_is_a_friendly_strategy_error(workdir):
-    # FIX.md #15: an exception in the strategy's own __init__ used to escape as a raw traceback
     res = runner.invoke(app, ["run", "bad_init.py", "--symbol", "NQ", "--fill-mode", "ohlc"])
     assert res.exit_code == 2 and isinstance(res.exception, SystemExit), res.output
     assert "Error: BadInit() could not be created: ZeroDivisionError" in res.output
@@ -275,7 +274,7 @@ def test_run_has_a_trade_monte_carlo_by_default(workdir):
     assert "p_dd_reaches_limit" in mc["resample"]
     assert "monte carlo (10,000 runs" in res.output and "P(max DD reaches 20.00)" in res.output
     assert "<section id='monte-carlo'>" in page and "id='mc-band-resample'" in page and "id='mc-band-reorder'" in page
-    assert {"day", "ev", "horizons"} <= set(mc) or "day" in mc.get("skipped", {})  # whole days, EV and horizons reach metrics.json
+    assert {"day", "ev", "horizons"} <= set(mc) or "day" in mc.get("skipped", {})
     assert mc["ev"]["groups"]["all"]["trades"] == mc["trades"]
 
 
@@ -304,7 +303,7 @@ def test_run_records_each_trades_risk_and_the_monte_carlo_uses_it(workdir):
     res = runner.invoke(app, ["run", "flip_sl.py", "--symbol", "NQ", "--fill-mode", "ohlc", "--no-trade-charts", "--out", "sl"])
     assert res.exit_code == 0, res.output
     tr = pd.read_csv(workdir / "sl" / "trades.csv")
-    assert (tr["risk_usd"] == 200).all() and (tr["planned_rr"] == 2).all()  # 10 pts and 20 pts on 1 NQ
+    assert (tr["risk_usd"] == 200).all() and (tr["planned_rr"] == 2).all()
     assert np.allclose(tr["r_multiple"], tr["profit_usd"] / 200)
     m = json.loads((workdir / "sl" / "metrics.json").read_text(encoding="utf-8"))
     assert m["all"]["avg_planned_rr"] == 2 and m["all"]["trades_with_stop"] == len(tr)
@@ -323,7 +322,7 @@ def test_run_monte_carlo_is_deterministic_and_seeded(workdir):
 def test_run_monte_carlo_off_and_skipped(workdir):
     res, m, page = _run_json(workdir, "--mc-sims", "0", out="off")
     assert "monte_carlo" not in m and "<section id='monte-carlo'>" not in page and "monte carlo" not in res.output
-    res, m, page = _run_json(workdir, "--set", "hold=100", out="skip")  # never exits: 0 closed trades
+    res, m, page = _run_json(workdir, "--set", "hold=100", out="skip")
     assert m["monte_carlo"] == {"skipped": "needs at least 2 trades; this run has 0"}
     assert "Monte Carlo skipped: needs at least 2 trades" in page and "monte carlo: skipped" in res.output
 
@@ -332,7 +331,7 @@ def test_run_uses_the_contracts_default_costs_unless_flags_are_given(workdir):
     m = _run_json(workdir, "--mc-sims", "0", out="nq")[1]["run"]
     assert (m["commission"], m["slippage"], m["costs"]) == (2.50, 5.00, "contract default (config/contracts.toml)")
     m = _run_json(workdir, "--mc-sims", "0", "--contract", "MNQ", out="mnq")[1]["run"]
-    assert (m["commission"], m["slippage"]) == (2.00, 0.50)  # the --contract spec's costs
+    assert (m["commission"], m["slippage"]) == (2.00, 0.50)
     m = _run_json(workdir, "--mc-sims", "0", "--commission", "0.4", "--slippage", "0", out="flags")[1]["run"]
     assert (m["commission"], m["slippage"], m["costs"]) == (0.4, 0.0, "flags")
     m = _run_json(workdir, "--mc-sims", "0", "--commission", "0", out="one")[1]["run"]

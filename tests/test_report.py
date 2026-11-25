@@ -26,7 +26,7 @@ def make_bars(n: int, seed: int = 3) -> pd.DataFrame:
     return pd.DataFrame({
         "open": opens, "high": np.maximum(opens, closes) + 1, "low": np.minimum(opens, closes) - 1, "close": closes,
         "volume": 1, "session_date": idx.tz_localize(None).normalize(),
-    }, index=idx)  # fmt: skip
+    }, index=idx)
 
 
 class Flipper(Strategy):
@@ -53,7 +53,7 @@ def test_trades_csv_rejects_non_positive_capital(result, tmp_path, capital):
     _, res = result
     with pytest.raises(ValueError, match="capital must be"):
         res.write_trades_csv(tmp_path / "t" / "trades.csv", capital=capital)
-    assert not (tmp_path / "t").exists()  # checked before anything is written
+    assert not (tmp_path / "t").exists()
 
 
 def test_trades_csv_has_mc_columns_and_values(result, tmp_path):
@@ -83,7 +83,6 @@ def test_trades_csv_reads_back_for_compare(result, tmp_path):
     assert ours["entry_time"].tolist() == tr["entry_time"].dt.tz_convert("UTC").tolist()
     np.testing.assert_allclose(ours["exit_price"], tr["exit_price"])
     np.testing.assert_allclose(ours["net_pnl"], tr["net_pnl"], atol=1e-6)
-    # MC's own reader accepts the file too (entries only, as for an MC CSV export)
     mc = load_mc_trades(path, "America/Chicago")
     assert mc["entry_time"].tolist() == tr["entry_time"].tolist() and mc["qty"].tolist() == tr["qty"].tolist()
 
@@ -94,7 +93,7 @@ def test_trades_csv_ends_with_the_risk_columns_and_old_files_read_without_them(r
     _, res = result
     df = pd.read_csv(res.write_trades_csv(tmp_path / "trades.csv"))
     assert list(df.columns[-4:]) == RISK_COLUMNS == ["risk_usd", "reward_usd", "planned_rr", "r_multiple"]
-    df.drop(columns=RISK_COLUMNS).to_csv(tmp_path / "old.csv", index=False)  # a trades.csv from before Phase 17
+    df.drop(columns=RISK_COLUMNS).to_csv(tmp_path / "old.csv", index=False)
     old = load_our_trades(tmp_path / "old.csv")
     assert len(old) == len(res.trades) and old[RISK_COLUMNS].isna().all(axis=None)
 
@@ -118,11 +117,11 @@ def _report(result, path, **kw):
 def test_report_is_self_contained_with_image_charts(result, tmp_path):
     _, res = result
     text = _report(result, tmp_path / "report.html").read_text(encoding="utf-8")
-    assert "<script src" not in text and "<link" not in text  # nothing fetched: opens offline
-    assert "Plotly" not in text and "prefers-color-scheme" not in text  # matplotlib images, light only
+    assert "<script src" not in text and "<link" not in text
+    assert "Plotly" not in text and "prefers-color-scheme" not in text
     for anchor in ("id='equity'", "id='drawdown'", "id='viewer'", "id='tlist'", "Performance summary", "Net profit by month", "a note"):
         assert anchor in text
-    assert text.count("src='data:image/png;base64,") == 2  # equity and drawdown (no Monte Carlo)
+    assert text.count("src='data:image/png;base64,") == 2
     d = _data(text)
     assert len(d["trades"]) == len(res.trades) and d["img"] == "trades/"
     assert [t[0] for t in d["trades"]] == res.trades["trade_no"].tolist()
@@ -149,10 +148,10 @@ def test_trade_images_replace_old_ones_and_can_be_left_out(tmp_path):
     _report(one, tmp_path / "a" / "report.html")
     assert [p.name for p in (tmp_path / "a" / "trades").iterdir()] == ["trade_1.png"]
     text = _report(one, tmp_path / "b" / "report.html", trade_charts=False).read_text(encoding="utf-8")
-    assert not (tmp_path / "b" / "trades").exists() and _data(text)["img"] == "trades/"  # images guban chart draws later show up
+    assert not (tmp_path / "b" / "trades").exists() and _data(text)["img"] == "trades/"
     assert "id='noimg'" in text and "guban chart" in text and len(_data(text)["trades"]) == 1
     _report(one, tmp_path / "a" / "report.html", trade_charts=False)
-    assert not list((tmp_path / "a" / "trades").iterdir())  # the earlier run's images would show the wrong trades
+    assert not list((tmp_path / "a" / "trades").iterdir())
 
 
 def test_process_pool_draws_the_same_images(result, tmp_path, monkeypatch):
@@ -161,7 +160,7 @@ def test_process_pool_draws_the_same_images(result, tmp_path, monkeypatch):
     bars, res = result
     tr = res.trades.iloc[:12]
     assert tc.write_trade_charts(tr, bars, tmp_path / "one", 0.25, workers=1) == 12
-    monkeypatch.setattr(tc, "PARALLEL_MIN", 2)  # the parent decides; workers only draw
+    monkeypatch.setattr(tc, "PARALLEL_MIN", 2)
     assert tc.write_trade_charts(tr, bars, tmp_path / "pool", 0.25, workers=2) == 12
     for p in (tmp_path / "one").iterdir():
         assert (tmp_path / "pool" / p.name).read_bytes() == p.read_bytes()
@@ -177,8 +176,8 @@ def test_trade_payloads_hold_each_trade_in_its_candles(result):
         for _, ei, ep, xi, xp, _ in [p["trade"], *p["others"]]:
             assert 0 <= ei <= xi < len(p["o"])
             assert p["l"][ei] - 1e-9 <= ep <= p["h"][ei] + 1e-9 and p["l"][xi] - 1e-9 <= xp <= p["h"][xi] + 1e-9
-        assert f"@ {p['trade'][2]:,.2f}" in p["title"]  # prices to the tick (0.25: 2 decimals)
-    assert any(p["others"] for p in payloads)  # the flipper's neighbours share windows
+        assert f"@ {p['trade'][2]:,.2f}" in p["title"]
+    assert any(p["others"] for p in payloads)
 
 
 def test_long_trades_merge_candles(tmp_path, monkeypatch):
@@ -189,8 +188,26 @@ def test_long_trades_merge_candles(tmp_path, monkeypatch):
     res = run_backtest(Hold(), bars, MNQ)
     (p,) = tc.trade_payloads(res.trades, bars, 0.25)
     assert p["step"] > 1 and len(p["o"]) <= 50 and "bars per candle" in p["title"]
-    assert p["trade"][1] == 2 // p["step"] and p["trade"][3] == 390 // p["step"]  # window starts at bar 0 (entry bar 2 - 24 < 0)
+    assert p["trade"][1] == 2 // p["step"] and p["trade"][3] == 390 // p["step"]
     assert tc.render_trade(p, tmp_path / "t.png").read_bytes()[:8] == PNG
+
+
+def test_plot_lines_follow_the_candles_and_change_the_image(tmp_path, monkeypatch):
+    import guban.trade_charts as tc
+
+    monkeypatch.setattr(tc, "MAX_CANDLES", 50)
+    bars = make_bars(400)
+    res = run_backtest(Hold(), bars, MNQ)
+    mid = bars["close"].to_numpy() + 50.0
+    mid[:10] = np.nan
+    (p,) = tc.trade_payloads(res.trades, bars, 0.25, lines={"mid": mid})
+    last = np.r_[np.arange(0, 400, p["step"])[1:], 400] - 1
+    np.testing.assert_array_equal(p["lines"]["mid"], mid[last])
+    plain = tc.render_trade(tc.trade_payloads(res.trades, bars, 0.25)[0], tmp_path / "plain.png").read_bytes()
+    lined = tc.render_trade(p, tmp_path / "lined.png").read_bytes()
+    assert lined[:8] == PNG and lined != plain
+    with pytest.raises(ValueError, match="plot line 'mid' has 9 values"):
+        tc.trade_payloads(res.trades, bars, 0.25, lines={"mid": mid[:9]})
 
 
 def test_price_decimals_show_the_tick():
@@ -206,7 +223,7 @@ def test_monte_carlo_section_has_every_method_ev_and_horizons(result, tmp_path):
     tr = res.trades
     days = bars["session_date"].to_numpy()[tr["exit_bar"].to_numpy(int)]
     mc = run_monte_carlo(tr["net_pnl"].to_numpy(float), 500, 1, 200.0, days=days, contracts=tr["qty"].to_numpy(float),
-                         sides=tr["direction"].to_numpy(str))  # fmt: skip
+                         sides=tr["direction"].to_numpy(str))
     assert mc.days == 3
     text = _report(result, tmp_path / "report.html", monte_carlo=mc, trade_charts=False).read_text(encoding="utf-8")
     for name in ("resample", "reorder", "day"):

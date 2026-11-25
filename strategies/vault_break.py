@@ -27,27 +27,18 @@ from guban.engine import Strategy
 
 class VaultBreak(Strategy):
     inputs = dict(
-        # Noise boundary
         noise_mult=0.60,
         daily_atr_len=14,
-        # Entry timing (HHMM, chart time = Eastern)
         earliest_entry=1045,
         latest_entry=1530,
-        # Re-entry
         max_trades_per_day=3,
-        # VWAP exit
         vwap_exit_bars=2,
-        # Fixed stop & target (USD per position)
         take_profit_usd=1000,
         stop_loss_usd=2000,
-        # Time exit (HHMM, Eastern): the bar closing at 15:50 sends a market exit that fills at 15:50
         flatten_time=1550,
-        # Scheduled early close (not in the .el): flatten this many minutes before it
         flatten_early_close=True,
         early_close_buffer=10,
-        # Position
         num_contracts=1,
-        # Warm-up stand-ins for history before the first bar (not in the .el)
         atr_seed_sum=0.0,
         atr_seed_count=0,
         sess_count_seed=0,
@@ -55,35 +46,28 @@ class VaultBreak(Strategy):
 
     def on_start(self):
         p = self.p
-        # Session
         self.sess_open = 0.0
         self.sess_high = 0.0
         self.sess_low = 999999.0
         self.sess_count = p.sess_count_seed
-        # Daily ATR
         self.rng_sum = float(p.atr_seed_sum)
         self.rng_cnt = p.atr_seed_count
         self.daily_atr = self.rng_sum / self.rng_cnt if self.rng_cnt >= p.daily_atr_len else 0.0
-        # Noise level (long only)
         self.noise_up = 0.0
-        # VWAP
         self.c_tpv = 0.0
         self.c_vol = 0.0
         self.vwap = 0.0
         self.vw_date = None
-        # VWAP cross counter (long exit)
         self.bars_below_vw = 0
-        # Trade tracking
         self.d_trades = 0
 
     def on_bar(self):
         if self.current_bar == 1:
-            return  # MC does not calculate the first MaxBarsBack bars (Date[1] needs one bar of history)
+            return
         p = self.p
         o, h, l, c = self.open[0], self.high[0], self.low[0], self.close[0]
         date, time = self.date[0], self.time[0]
 
-        # --- Session & daily ATR ---
         if date != self.date[1]:
             if self.sess_count >= 1:
                 value1 = self.sess_high - self.sess_low
@@ -106,7 +90,6 @@ class VaultBreak(Strategy):
             if l < self.sess_low:
                 self.sess_low = l
 
-        # --- VWAP ---
         if date != self.vw_date:
             self.c_tpv = 0.0
             self.c_vol = 0.0
@@ -117,13 +100,11 @@ class VaultBreak(Strategy):
             self.c_vol += vol
         self.vwap = self.c_tpv / self.c_vol if self.c_vol > 0 else c
 
-        # --- VWAP cross tracking (for long exit) ---
         if c < self.vwap:
             self.bars_below_vw += 1
         else:
             self.bars_below_vw = 0
 
-        # --- Scheduled early close (not in the .el) ---
         latest, flatten = p.latest_entry, p.flatten_time
         close_at = self.session_close[0]
         if p.flatten_early_close and close_at is not None and close_at.date() == date:
@@ -132,7 +113,6 @@ class VaultBreak(Strategy):
                 latest = _hhmm(cut - (_minutes(flatten) - _minutes(latest)))
                 flatten = _hhmm(cut)
 
-        # --- Entry: long only ---
         if (
             c > self.noise_up
             and c > self.vwap
@@ -146,7 +126,6 @@ class VaultBreak(Strategy):
             self.buy("VB_Long", p.num_contracts)
             self.d_trades += 1
 
-        # --- Exits ---
         self.set_profit_target(p.take_profit_usd)
         self.set_stop_loss(p.stop_loss_usd)
         if self.market_position == 1 and self.bars_below_vw >= p.vwap_exit_bars:

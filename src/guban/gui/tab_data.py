@@ -25,7 +25,7 @@ TIMEZONES = ["America/New_York", "America/Chicago", "UTC"]
 DATASETS = {"is": "In sample", "oos": "Out of sample", "full": "Full"}
 DEFAULTS = {"symbol": "NQ", "tf": "15m", "session": "eth", "tz": "America/New_York", "oos_fraction": 0.3, "dataset": "is", "roll": "volume"}
 PAGE = 500
-CHART_POINTS = 4000  # the close-price chart draws at most this many points (every k-th close)
+CHART_POINTS = 4000
 
 
 @dataclass
@@ -37,9 +37,9 @@ class Loaded:
     session: str
     tz: str
     bars: pd.DataFrame
-    windows: dict[str, tuple[date, date]] = field(default_factory=dict)  # "is" / "oos"
+    windows: dict[str, tuple[date, date]] = field(default_factory=dict)
     dataset: str = "is"
-    sub: pd.DataFrame | None = None  # 1-minute bars for magnifier fills, loaded on first use
+    sub: pd.DataFrame | None = None
 
     @property
     def first(self) -> date:
@@ -144,7 +144,7 @@ def _windows_info(d: Loaded) -> dict:
 @dataclass
 class _Check:
     label: str
-    status: str  # ok / bad / warn / info
+    status: str
     value: str
 
 
@@ -155,8 +155,8 @@ def quality_report(d: Loaded) -> list[dict]:
     b = d.bars
     n = len(b)
     out: list[_Check] = []
-    add = lambda label, status, value: out.append(_Check(label, status, value))  # noqa: E731
-    fmt = lambda t: f"{t:%Y-%m-%d %H:%M}"  # noqa: E731
+    add = lambda label, status, value: out.append(_Check(label, status, value))
+    fmt = lambda t: f"{t:%Y-%m-%d %H:%M}"
     add("Period", "info", f"{fmt(b.index[0])} → {fmt(b.index[-1])} ({d.tz})")
     add("Bars", "info", f"{n:,} at {d.tf}, {d.session} session")
     per = b.groupby("session_date").size()
@@ -181,7 +181,7 @@ def quality_report(d: Loaded) -> list[dict]:
     add("Zero-volume bars", "warn" if zero_vol else "ok", f"{zero_vol:,}" if zero_vol else "none")
     gaps = data_gaps(b)
     add("Data gaps", "warn" if gaps else "ok",
-        f"{len(gaps):,}; first before {fmt(b.index[gaps[0]])}, last before {fmt(b.index[gaps[-1]])}" if gaps else "none")  # fmt: skip
+        f"{len(gaps):,}; first before {fmt(b.index[gaps[0]])}, last before {fmt(b.index[gaps[-1]])}" if gaps else "none")
     rolls = contract_rolls(b)
     add("Contract rolls", "info", f"{len(rolls)}" + (f"; last {fmt(rolls[-1][0])} {rolls[-1][1]} → {rolls[-1][2]}" if rolls else ""))
     try:
@@ -195,7 +195,7 @@ def quality_report(d: Loaded) -> list[dict]:
         add("Tick data usable", "info", f"{ok:,} of {len(q):,} sessions (tick_ok)")
         thin = q[q["thin"].astype(bool)]
         add("Thin sessions", "warn" if len(thin) else "ok",
-            f"{len(thin):,} ({', '.join(thin['trade_date'].head(5))}{' …' if len(thin) > 5 else ''})" if len(thin) else "none")  # fmt: skip
+            f"{len(thin):,} ({', '.join(thin['trade_date'].head(5))}{' …' if len(thin) > 5 else ''})" if len(thin) else "none")
     except (OSError, KeyError, ValueError) as e:
         add("Store quality.csv", "warn", f"not readable: {e}")
     return [vars(x) for x in out]
@@ -306,7 +306,7 @@ def load_data(params: dict, emit) -> Loaded:
     if d.dataset not in DATASETS:
         raise ValueError(f"dataset must be one of {', '.join(DATASETS)}, got {d.dataset!r}")
     saved = params.get("windows")
-    try:  # the windows the user had, when they still fit; else the fraction's split
+    try:
         if not saved:
             raise ValueError
         d.windows = {k: _span(saved.get(k), DATASETS[k]) for k in ("is", "oos")}
@@ -322,7 +322,7 @@ def load(state: State, params: dict, emit) -> dict:
     state.on_data_changed()
     bars = d.bars
     return {"label": d.label, "bars": len(bars), "first": d.first.isoformat(), "last": d.last.isoformat(),
-            "quality": quality_report(d), "page": page(d), **_view(d)}  # fmt: skip
+            "quality": quality_report(d), "page": page(d), **_view(d)}
 
 
 @method("data.page")

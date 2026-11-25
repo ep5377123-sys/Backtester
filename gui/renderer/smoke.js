@@ -1,5 +1,3 @@
-// Smoke steps for `guban gui --smoke` (main.js runs each step in order, then screenshots the window).
-// Each step resolves {ok, ms, detail}; a thrown error is a failed step. The worker crash steps run last.
 'use strict';
 
 (() => {
@@ -30,7 +28,6 @@
       return studio.api('ping');
     },
     async bridge_2mb() {
-      // A1: a multi-MB PNG round trip; transfer = round trip minus the worker's drawing time
       const t0 = performance.now();
       const r = await studio.api('debug.chart', { noise: true, width: 12, height: 4 });
       const transfer = Math.round(performance.now() - t0 - r.draw_ms);
@@ -43,7 +40,7 @@
     },
     async data_load() {
       studio.showTab('data');
-      studio.settings.set('windows', {}); // the smoke run starts from the fraction split
+      studio.settings.set('windows', {});
       set('symbol', 'NQ'); set('tf', '15m'); set('session', 'eth'); set('tz', 'America/New_York');
       set('start', '2019-01-01'); set('end', '2026-09-30'); set('fraction', '0.3'); set('dataset', 'is');
       const r = await studio.data.load();
@@ -87,7 +84,7 @@
       return { class: r.class, inputs: r.inputs.length };
     },
     async strategy_apply() {
-      await studio.data.split(); // in sample = the first 70%
+      await studio.data.split();
       $('#data-dataset').value = 'is';
       await studio.data.setWindows();
       const r = await studio.strategy.apply();
@@ -142,7 +139,6 @@
       return r.files;
     },
     async mc_trade() {
-      // R7: the Monte Carlo tab simulates the Backtest run's trades (the same settings the Save just used)
       studio.showTab('montecarlo');
       studio.montecarlo.showSub('trade');
       await studio.montecarlo.refreshSources();
@@ -186,7 +182,6 @@
       return r;
     },
     async optimize_stop() {
-      // R7: Stop ends the optimization process within 5 s and the main worker keeps the loaded data
       const running = studio.optimize.run().then(() => 'finished', (e) => (e.stopped ? 'stopped' : `failed: ${e.message}`));
       await until(() => /In sample: [1-9]/.test($('#op-progress-text').textContent), 'in-sample progress', 120000);
       const t0 = performance.now();
@@ -219,7 +214,6 @@
       return r.files;
     },
     async wf_preview() {
-      // R3: 4 folds of 12 + 12 months, rolling, step 12, ending at the Data tab's end
       studio.showTab('walkforward');
       for (const [id, v] of [['is', '12'], ['oos', '12'], ['step', '12'], ['folds', '4'], ['start', ''], ['mode', 'rolling'], ['mintrades', '30'], ['workers', '']]) $(`#wf-${id}`).value = v;
       $('#wf-images').checked = false;
@@ -238,7 +232,6 @@
       return { start: r.start, folds: r.rows };
     },
     async wf_stop() {
-      // R4 / R10: Stop ends it within 5 s; the Optimization tab's Run is locked meanwhile
       const running = studio.walkforward.run().then(() => 'finished', (e) => (e.stopped ? 'stopped' : `failed: ${e.message}`));
       await until(() => /Walk-forward runs: [1-9]/.test($('#wf-progress-text').textContent), 'walk-forward progress', 120000);
       check($('#op-run').disabled, 'Optimization Run not locked during the walk-forward');
@@ -281,7 +274,6 @@
       return { source: r.source, span: r.span };
     },
     async pf_backtest() {
-      // R8: the prop-firm evaluation on the Backtest run's trades, the rules file as it is
       studio.montecarlo.showSub('propfirm');
       await studio.montecarlo.resetRules();
       $('#mc-source').value = 'backtest';
@@ -309,7 +301,6 @@
       return r.files;
     },
     async worker_crash() {
-      // R1: a dead worker shows the banner with its stderr tail and a Restart button
       const reply = await window.guban.call('debug.exit', { code: 3 });
       check(!reply.ok, 'debug.exit replied instead of ending the worker');
       const banner = $('#banner');

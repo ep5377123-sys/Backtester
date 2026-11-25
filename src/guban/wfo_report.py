@@ -17,7 +17,7 @@ from guban.wfo import WalkForwardResult
 def write_wfo_report(wf: WalkForwardResult, path: str | Path, meta: dict, trade_charts: bool = True, workers: int | None = None) -> Path:
     """Write wfo.html (and the out-of-sample trades' images in trades/ next to it). meta: as guban.report.write_report."""
     return write_report(wf.oos_result(), wf.bars, path, wf.metrics, meta, sections=[wfo_section(wf)], bands=oos_bands(wf),
-                        trade_charts=trade_charts, workers=workers)  # fmt: skip
+                        trade_charts=trade_charts, workers=workers)
 
 
 def oos_bands(wf: WalkForwardResult) -> list[dict]:
@@ -44,7 +44,7 @@ def wfo_section(wf: WalkForwardResult) -> str:
     step = f"{wf.step_months} month{'s' if wf.step_months != 1 else ''}"
     if wf.anchored:
         layout = (f"Anchored: every in-sample window starts on {_d(wf.windows[0].is_start)}, the first spans {wf.is_months} months "
-                  f"and each next one {step} more; {wf.oos_months}-month out-of-sample windows")  # fmt: skip
+                  f"and each next one {step} more; {wf.oos_months}-month out-of-sample windows")
     else:
         layout = f"Rolling: {wf.is_months}-month in-sample, {wf.oos_months}-month out-of-sample windows, stepped {step}"
     cap = (
@@ -80,7 +80,7 @@ def wfo_section(wf: WalkForwardResult) -> str:
         if pd.isna(r["combo"]):
             n_cols = len(head) - 3
             rows.append("<tr>" + "".join(f"<td class=l>{html.escape(c)}</td>" for c in cells)
-                        + f"<td class='l muted' colspan='{n_cols}'>No combination with ≥ {wf.min_trades:,} in-sample trades; sat out.</td></tr>")  # fmt: skip
+                        + f"<td class='l muted' colspan='{n_cols}'>No combination with ≥ {wf.min_trades:,} in-sample trades; sat out.</td></tr>")
             continue
         vals = [html.escape(_label(r[n])) for n in names]
         vals += [_v(r["is_metric"], kind)] if show_metric else []
@@ -88,7 +88,7 @@ def wfo_section(wf: WalkForwardResult) -> str:
             _v(r["is_net_per_year"], "usd"), _v(r["oos_net_profit"], "usd"), _v(r["oos_net_per_year"], "usd"),
             _v(r["oos_trades"], "int"), _v(r["wfe"], "pct"),
             f"{int(r['oos_rank'])} / {wf.combinations:,}" if not pd.isna(r["oos_rank"]) else "n/a",
-        ]  # fmt: skip
+        ]
         rows.append("<tr>" + "".join(f"<td class=l>{html.escape(c)}</td>" for c in cells) + "".join(f"<td>{v}</td>" for v in vals) + "</tr>")
     table = f"<div class='wrap'><table class='windows'><tr>{ths}</tr>{''.join(rows)}</table></div>"
     return f"<section><h2>Walk-forward</h2><p class='cap'>{cap}</p>{tile_html}{table}</section>"

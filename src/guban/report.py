@@ -40,6 +40,7 @@ def write_report(
     trade_charts: bool = True,
     workers: int | None = None,
     evaluation: dict | None = None,
+    lines: dict | None = None,
 ) -> Path:
     """Write report.html for a BacktestResult run on `bars` (the frame passed to run_backtest), and with
     `trade_charts` one image per trade in trades/ next to it (on `workers` processes, guban.trade_charts).
@@ -50,6 +51,7 @@ def write_report(
     periods marked on the equity and drawdown charts (every other one shaded; x1 exclusive).
     monte_carlo: a guban.montecarlo.MonteCarloResult (a section after the drawdown chart), {"skipped": reason}, or None.
     evaluation: guban.evaluation.evaluate's result (a section after the summary tiles), or None.
+    lines: the strategy's plot_series() ({name: per-bar values}), drawn on the trade images.
     """
     from guban.trade_charts import FOLDER, write_trade_charts
 
@@ -63,8 +65,8 @@ def write_report(
     daily_dd = dd.groupby(session_keys(dd.index, sessions)).min()
     images = trade_charts and len(tr) > 0
     if images:
-        write_trade_charts(tr, bars, path.parent / FOLDER, tick, workers)
-    elif (path.parent / FOLDER).is_dir():  # an earlier run's images would show the wrong trades
+        write_trade_charts(tr, bars, path.parent / FOLDER, tick, workers, lines=lines)
+    elif (path.parent / FOLDER).is_dir():
         for old in (path.parent / FOLDER).glob("trade_*.png"):
             old.unlink()
     data = {"trades": _trade_rows(tr), "img": f"{FOLDER}/", "run": path.parent.as_posix()}
@@ -99,15 +101,13 @@ def write_report(
     return path
 
 
-# --- data ----------------------------------------------------------------------------------------
-
 
 def _trade_rows(tr: pd.DataFrame) -> list[list]:
     """[no, dir, qty, entry time, entry name, entry price, exit time, exit name, exit price, net, cum net, run-up,
     drawdown, ambiguous, R multiple, planned RR] per trade, for the trade list and the viewer's info line (R and RR:
     null without a stop / target)."""
-    fmt = lambda t: t.strftime("%Y-%m-%d %H:%M")  # noqa: E731
-    num = lambda v: None if v is None or not math.isfinite(v) else round(float(v), 3)  # noqa: E731
+    fmt = lambda t: t.strftime("%Y-%m-%d %H:%M")
+    num = lambda v: None if v is None or not math.isfinite(v) else round(float(v), 3)
     nan = [math.nan] * len(tr)
     r_mult = tr["r_multiple"].tolist() if "r_multiple" in tr else nan
     plan_rr = tr["planned_rr"].tolist() if "planned_rr" in tr else nan
@@ -116,14 +116,12 @@ def _trade_rows(tr: pd.DataFrame) -> list[list]:
          fmt(r.exit_time), str(r.exit_name), float(r.exit_price), round(float(r.net_pnl), 2), round(float(r.cum_net_pnl), 2),
          round(float(r.runup), 2), round(float(r.drawdown), 2), int(bool(r.ambiguous)), num(r_mult[k]), num(plan_rr[k])]
         for k, r in enumerate(tr.itertuples(index=False))
-    ]  # fmt: skip
+    ]
 
 
 def _json(obj) -> str:
     return json.dumps(obj, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
 
-
-# --- charts --------------------------------------------------------------------------------------
 
 
 def _date_axis(ax) -> None:
@@ -140,7 +138,7 @@ def _shade(ax, bands: list[dict], labels: bool) -> None:
             ax.axvspan(np.datetime64(b["x0"]), np.datetime64(b["x1"]), color=COLORS["s1"], alpha=0.08, lw=0, zorder=0)
         if labels:
             ax.text(np.datetime64(b["xm"]), 1.0, b["label"], transform=ax.get_xaxis_transform(), ha="center", va="bottom",
-                    fontsize=7, color=COLORS["muted"])  # fmt: skip
+                    fontsize=7, color=COLORS["muted"])
 
 
 @styled
@@ -168,7 +166,7 @@ def _equity_pngs(daily: pd.Series, daily_dd: pd.Series, bands: list[dict]) -> tu
 def _mc_band_png(m, unit: str) -> str:
     from matplotlib.collections import LineCollection
 
-    fig, ax = figure(9.0, 3.6)  # one method per row: the band chart spans the page
+    fig, ax = figure(9.0, 3.6)
     x, b = m.x, m.bands
     ax.fill_between(x, b[0], b[4], color=COLORS["s1"], alpha=0.14, lw=0, label="5th–95th")
     ax.fill_between(x, b[1], b[3], color=COLORS["s1"], alpha=0.28, lw=0, label="25th–75th")
@@ -185,7 +183,7 @@ def _mc_band_png(m, unit: str) -> str:
 
 @styled
 def _hist_png(values: np.ndarray, color: str, backtest: float, limit: float | None = None) -> str:
-    fig, ax = figure(4.6, 2.6)  # two per row under the band chart
+    fig, ax = figure(4.6, 2.6)
     ax.hist(values, bins=MC_BINS, color=color, alpha=0.85)
     tx = ax.get_xaxis_transform()
     ax.axvline(backtest, color=COLORS["ink"], ls="--", lw=1.2)
@@ -197,8 +195,6 @@ def _hist_png(values: np.ndarray, color: str, backtest: float, limit: float | No
     ax.set_ylabel("Runs")
     return to_data_uri(fig)
 
-
-# --- html pieces ---------------------------------------------------------------------------------
 
 
 def fmt_value(v, kind: str) -> str:
@@ -258,12 +254,12 @@ def _summary_table(m: dict) -> str:
         "<section><h2>Performance summary</h2><div class='wrap'><table class='summary'>"
         + head + "".join(rows) + "<tr class='sep'><td colspan='4'></td></tr>" + "".join(acc)
         + "</table></div></section>"
-    )  # fmt: skip
+    )
 
 
 def _table(head: list[str], rows: list[list[str]], cls: str = "mc-table") -> str:
     """A table whose first column is left-aligned labels (cells are HTML)."""
-    cell = lambda tag, i, v: f"<{tag} class='l'>{v}</{tag}>" if i == 0 else f"<{tag}>{v}</{tag}>"  # noqa: E731
+    cell = lambda tag, i, v: f"<{tag} class='l'>{v}</{tag}>" if i == 0 else f"<{tag}>{v}</{tag}>"
     th = "".join(cell("th", i, h) for i, h in enumerate(head))
     body = "".join("<tr>" + "".join(cell("td", i, v) for i, v in enumerate(r)) + "</tr>" for r in rows)
     return f"<div class='wrap'><table class='{cls}'><tr>{th}</tr>{body}</table></div>"
@@ -277,8 +273,8 @@ def _evaluation_html(ev) -> str:
     """The Evaluation section (guban.evaluation): the user's criteria as run and at equal risk, and the breakdowns."""
     if not ev:
         return ""
-    ratio = lambda v: fmt_value(v, "ratio")  # noqa: E731
-    rfmt = lambda v: "n/a" if v is None else f"{v:,.1f} R".replace("-", "−")  # noqa: E731
+    ratio = lambda v: fmt_value(v, "ratio")
+    rfmt = lambda v: "n/a" if v is None else f"{v:,.1f} R".replace("-", "−")
     eq = ev["equal_risk"]
 
     def cell(v: dict | None, key: str) -> str:
@@ -290,13 +286,13 @@ def _evaluation_html(ev) -> str:
         return val + badge
 
     rows = [[html.escape(c["label"]), f"{'&gt;' if c['op'] == '>' else '≤'} {c['threshold']:g}" + (" R" if c["key"] == "max_dd_r" else ""),
-             cell(ev["as_run"], c["key"]), cell(eq, c["key"])] for c in ev["criteria"]]  # fmt: skip
+             cell(ev["as_run"], c["key"]), cell(eq, c["key"])] for c in ev["criteria"]]
     rows.append(["<b>Criteria met</b>", "", f"<b>{ev['as_run']['passed']} of {ev['as_run']['of']}</b>",
-                 f"<b>{eq['passed']} of {eq['of']}</b>" if eq else ""])  # fmt: skip
+                 f"<b>{eq['passed']} of {eq['of']}</b>" if eq else ""])
     a = ev["as_run"]
     r_cap = (f"1 R = {fmt_value(ev['r_usd'], 'usd')} ({html.escape(ev['r_source'])}); as-run drawdown = close-to-close "
              f"{fmt_value(a['max_dd_usd'], 'usd')} (intraday {fmt_value(a['max_dd_intraday_usd'], 'usd')})." if ev["r_usd"] else
-             f"No R for the as-run drawdown: {html.escape(ev['r_source'])}.")  # fmt: skip
+             f"No R for the as-run drawdown: {html.escape(ev['r_source'])}.")
     parts = [
         "<section id='evaluation'><h2>Evaluation</h2>",
         "<p class='cap'>As run = this backtest's own figures. Equal risk = every trade rescaled to risk exactly 1 R (its R multiple), "
@@ -312,20 +308,20 @@ def _evaluation_html(ev) -> str:
             f"P(drawdown &gt; {ev['criteria'][2]['threshold']:g} R) {fmt_value(mc['p_dd_over_limit'], 'pct')}. Net {rfmt(n['p5'])} / "
             f"{rfmt(n['p50'])} / {rfmt(n['p95'])} (5th / median / 95th); P(net ≤ 0) {fmt_value(mc['p_net_le_0'], 'pct')}. "
             f"Backtest: net {rfmt(eq['net_r'])}, drawdown {rfmt(eq['max_dd_r'])}.</p>"
-        )  # fmt: skip
+        )
     def breakdown(title: str, column: str, groups: list[dict], cap: str = "") -> str:
         if not groups:
             return ""
         body = [[html.escape(g["group"]), f"{g['trades']:,}", fmt_value(g["net"], "usd"), ratio(g["profit_factor"]), fmt_value(g["win_rate"], "pct"),
-                 "n/a" if g["avg_r"] is None else f"{g['avg_r']:+.3f}".replace("-", "−"), rfmt(g["sum_r"]), rfmt(g["max_dd_r"])] for g in groups]  # fmt: skip
+                 "n/a" if g["avg_r"] is None else f"{g['avg_r']:+.3f}".replace("-", "−"), rfmt(g["sum_r"]), rfmt(g["max_dd_r"])] for g in groups]
         head = [column, "Trades", "Net", "Profit factor", "Win rate", "Avg R", "Sum R", "Max DD (R)"]
         return f"<h3 class='mc-h'>{title}</h3>" + (f"<p class='cap'>{cap}</p>" if cap else "") + _table(head, body)
 
     w = ev.get("stop_width_usd") or []
     width_cap = (f"Thirds of the trades by USD risk to the initial stop per contract: narrow {fmt_value(w[0], 'usd')}–{fmt_value(w[1], 'usd')}, "
-                 f"mid –{fmt_value(w[2], 'usd')}, wide –{fmt_value(w[3], 'usd')}." if len(w) == 4 else "")  # fmt: skip
+                 f"mid –{fmt_value(w[2], 'usd')}, wide –{fmt_value(w[3], 'usd')}." if len(w) == 4 else "")
     parts += [breakdown("By stop width", "Stop width", ev["by_stop_width"], width_cap), breakdown("By exit year", "Year", ev["by_year"]),
-              breakdown("By exit signal", "Exit", ev["by_exit"]), "</section>"]  # fmt: skip
+              breakdown("By exit signal", "Exit", ev["by_exit"]), "</section>"]
     return "".join(parts)
 
 
@@ -336,8 +332,8 @@ def _monte_carlo_html(mc) -> str:
         return f"<section id='monte-carlo'><h2>Monte Carlo</h2><p class='muted'>Monte Carlo skipped: {html.escape(mc['skipped'])}.</p></section>"
     from guban.montecarlo import DEPTH_PERCENTILES, PERCENTILES, UNITS
 
-    usd = lambda v: fmt_value(v, "usd")  # noqa: E731
-    pct = lambda v: fmt_value(v, "pct")  # noqa: E731
+    usd = lambda v: fmt_value(v, "usd")
+    pct = lambda v: fmt_value(v, "pct")
     names = [n for n in ("resample", "reorder", "day") if n in mc.methods]
     sums = {n: mc.method_summary(n) for n in names}
     caps = {
@@ -345,7 +341,7 @@ def _monte_carlo_html(mc) -> str:
         "reorder": f"Each run shuffles the same {mc.trades:,} trades: net profit is the backtest's in every run; only the path varies.",
         "day": f"Each run draws {mc.days or 0:,} trading days (the sessions in which a trade closed) at random, with replacement, keeping "
                "each day's trades together and in order: losses that cluster on one day cluster here too.",
-    }  # fmt: skip
+    }
 
     def stats(name: str) -> str:
         s = sums[name]
@@ -360,7 +356,7 @@ def _monte_carlo_html(mc) -> str:
         m = mc.methods[name]
         net_chart = ("<div><p class='cap mc-label'>Net profit per run (dashed: backtest)</p>"
                      + img_tag(_hist_png(m.net, COLORS["s1"], mc.net), f"{MC_TITLES[name]}: net profit per run", id=f"mc-net-{name}")
-                     + "</div>" if name != "reorder" else "")  # fmt: skip
+                     + "</div>" if name != "reorder" else "")
         cols.append(
             f"<div class='mc-col'><h3>{MC_TITLES[name]}</h3><p class='cap'>{caps[name]}</p>{stats(name)}"
             f"<p class='cap mc-label'>Cumulative net profit by {'trading day' if UNITS[name] == 'day' else 'trade'}: 5th–95th and 25th–75th "
@@ -401,8 +397,8 @@ EV_GROUPS = {"all": "All trades", "long": "Long", "short": "Short", "in_sample":
 def _ev_html(ev: dict) -> str:
     if not ev or not ev.get("groups"):
         return ""
-    usd = lambda v: fmt_value(v, "usd")  # noqa: E731
-    r2 = lambda v: fmt_value(v, "ratio")  # noqa: E731
+    usd = lambda v: fmt_value(v, "usd")
+    r2 = lambda v: fmt_value(v, "ratio")
     level = f"{ev['ci']:.0%}"
     rows = []
     for key, g in ev["groups"].items():
@@ -412,13 +408,13 @@ def _ev_html(ev: dict) -> str:
         r = g["r"]
         rows.append([label, f"{g['trades']:,}", fmt_value(g["win_rate"], "pct"), usd(g["usd"]["mean"]),
                      f"{usd(g['usd']['lo'])} to {usd(g['usd']['hi'])}", r2(r["mean"]) if r else "n/a",
-                     f"{r2(r['lo'])} to {r2(r['hi'])}" if r else "n/a", fmt_value(g["p_ev_le_0"], "pct")])  # fmt: skip
+                     f"{r2(r['lo'])} to {r2(r['hi'])}" if r else "n/a", fmt_value(g["p_ev_le_0"], "pct")])
     risk = ev["risk_per_contract"]
     if risk is None:
         r_cap = f"No R: {ev['risk_source']}."
     elif ev["risk_source"].startswith("per-trade stop"):
         r_cap = (f"R = net ÷ the trade's risk to its initial stop (average {usd(risk)} per contract); "
-                 f"{ev['risk_source'].removeprefix('per-trade stop').strip(' ()') or 'every trade had a stop'}.")  # fmt: skip
+                 f"{ev['risk_source'].removeprefix('per-trade stop').strip(' ()') or 'every trade had a stop'}.")
     else:
         r_cap = f"R = net / (contracts × {usd(risk)} risk per contract; {ev['risk_source']})."
     skipped = ev.get("skipped") or {}
@@ -440,7 +436,7 @@ def _horizons_html(horizons: dict) -> str:
         for h in hz:
             n, d = h["net_profit"], h["max_drawdown_depth"]
             rows.append([f"{MC_TITLES[name]} · {h['n']:,} {unit}", fmt_value(n["p5"], "usd"), fmt_value(n["p50"], "usd"), fmt_value(n["p95"], "usd"),
-                         fmt_value(h["p_net_lt_0"], "pct"), *(fmt_value(d[f"p{p}"], "usd") for p in DEPTH_PERCENTILES)])  # fmt: skip
+                         fmt_value(h["p_net_lt_0"], "pct"), *(fmt_value(d[f"p{p}"], "usd") for p in DEPTH_PERCENTILES)])
     if not rows:
         return ""
     head = ["After", "Net 5th", "Net median", "Net 95th", "P(net < 0)", *(f"DD depth {h.lower()}" for h in _pct_head(DEPTH_PERCENTILES))]
@@ -477,7 +473,7 @@ def _viewer_html(n: int) -> str:
         "<p id='noimg' class='muted' hidden></p>"
         "<p class='cap'>▲ long entry · ▼ short entry · ● exit (outlined: loss) · the selected trade is shaded, other trades in view "
         "are faded. ← / → step through trades. Gaps between sessions are closed up.</p>"
-    )  # fmt: skip
+    )
     return (
         "<section id='viewer-sec'><h2>Price chart with trades</h2>"
         "<div class='controls'><button id='prev' type='button' aria-label='Previous trade'>◀</button>"
@@ -507,7 +503,6 @@ def _notes(meta: dict) -> str:
     return "<section><h2>Notes</h2><ul class='notes'>" + "".join(f"<li>{html.escape(n)}</li>" for n in notes) + "</ul></section>"
 
 
-# light only: the chart images have fixed colours (guban.charts.COLORS)
 _CSS = """
 :root { color-scheme: light;
   --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781; --grid:#e1e0d9; --axis:#c3c2b7;

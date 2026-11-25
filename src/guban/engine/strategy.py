@@ -67,7 +67,6 @@ class Strategy:
         self._clock: Clock | None = None
         self._vars: list[VarSeries] = []
 
-    # --- hooks -------------------------------------------------------------------------------------
     def on_start(self) -> None:
         """Called once after data is attached, before the first bar. Create self.series() variables here."""
 
@@ -84,11 +83,10 @@ class Strategy:
             v = v if isinstance(v, VarSeries) else by_name.get(name)
             if v is None:
                 raise ValueError(f"{type(self).__name__}.plots names {name!r}, but no self.series() variable has that "
-                                 f"attribute or name= (create it in on_start)")  # fmt: skip
+                                 f"attribute or name= (create it in on_start)")
             out[name] = list(v._values)
         return out
 
-    # --- wiring (called by the backtest) ------------------------------------------------------------
     def _bind(self, clock: Clock, columns: dict[str, list], broker: Broker) -> None:
         if self._clock is not None:
             raise RuntimeError(
@@ -107,7 +105,6 @@ class Strategy:
         self._vars.append(v)
         return v
 
-    # --- orders (fill on the next bar, or at this bar's close with at="close") ---------------------------
     def buy(self, name: str = "Buy", qty: int = 1, at: str = "market", price: float | None = None) -> None:
         """Enter long. Reverses a short position; ignored while already long (no pyramiding)."""
         self._order(BUY, name, qty, at, price)
@@ -142,7 +139,6 @@ class Strategy:
             qty = int(qty)
         self._broker.submit(action, name, qty, at, self._clock.i, None if price is None else float(price))
 
-    # --- per-position dollar exits (MC SetStopLoss / SetProfitTarget) --------------------------------
     def set_stop_loss(self, amount: float | None) -> None:
         """Exit the whole position with a stop when its loss reaches `amount` USD (None clears it)."""
         self._broker.stop_loss_usd = _dollars(amount, "set_stop_loss")
@@ -151,7 +147,6 @@ class Strategy:
         """Exit the whole position with a limit when its profit reaches `amount` USD (None clears it)."""
         self._broker.profit_target_usd = _dollars(amount, "set_profit_target")
 
-    # --- position state (as of the current bar's close) ---------------------------------------------
     @property
     def market_position(self) -> int:
         """1 long, -1 short, 0 flat (MC MarketPosition)."""
@@ -201,7 +196,7 @@ def load_strategy_class(path: str | Path, class_name: str | None = None) -> type
     if spec is None or spec.loader is None:
         raise ValueError(f"cannot import {path}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module  # so inspect.getfile() finds the file (the optimizer re-imports from it)
+    sys.modules[spec.name] = module
     try:
         spec.loader.exec_module(module)
     except Exception as e:
@@ -209,7 +204,7 @@ def load_strategy_class(path: str | Path, class_name: str | None = None) -> type
     found = {
         name: obj for name, obj in vars(module).items()
         if inspect.isclass(obj) and issubclass(obj, Strategy) and obj is not Strategy and obj.__module__ == module.__name__
-    }  # fmt: skip
+    }
     if class_name:
         if class_name not in found:
             raise ValueError(f"{path} has no Strategy subclass {class_name!r}; found {sorted(found)}")

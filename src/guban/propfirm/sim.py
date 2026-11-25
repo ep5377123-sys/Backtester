@@ -39,12 +39,11 @@ from guban.config import CONFIG_DIR
 PASS, FAIL_DD, FAIL_DAILY, FAIL_TIME = 0, 1, 2, 3
 OUTCOMES = {PASS: "pass", FAIL_DD: "fail_dd", FAIL_DAILY: "fail_daily", FAIL_TIME: "fail_time"}
 
-# Degradation, sweep and equity paths each start their own generator at seed + offset (notebook cells 8, 9, 10).
 DEGRADE_SEED, SWEEP_SEED, PATHS_SEED = 1000, 2000, 5000
 
 VERDICTS = [(0.70, "STRONG", "High probability, strategy well-suited."), (0.50, "SOLID", "Good odds, minor tweaks may help."),
             (0.35, "MODERATE", "Coin-flip territory, consider tighter risk."), (0.20, "RISKY", "More likely to fail, reduce exposure."),
-            (0.0, "POOR", "Very low chance, major changes needed.")]  # fmt: skip
+            (0.0, "POOR", "Very low chance, major changes needed.")]
 
 
 def _num(owner: str, name: str, v, *, low: float | None = None, high: float | None = None, low_open: bool = False,
@@ -87,12 +86,12 @@ class Rules:
 @dataclass(frozen=True)
 class Scenario:
     label: str
-    win_rate_adj: float = 0.0  # e.g. -0.05: turn 5% of the pool's days (winning ones) into the mean losing day
-    pnl_shrink: float = 0.0  # e.g. 0.15: every day's P&L x 0.85
+    win_rate_adj: float = 0.0
+    pnl_shrink: float = 0.0
 
     def __post_init__(self) -> None:
         who = f"scenario {self.label!r}"
-        _num(who, "win_rate_adj", self.win_rate_adj, low=-1, high=0)  # only a cut is modeled; > 0 would do nothing
+        _num(who, "win_rate_adj", self.win_rate_adj, low=-1, high=0)
         _num(who, "pnl_shrink", self.pnl_shrink, low=0, high=1, high_open=True)
 
 
@@ -162,7 +161,7 @@ _SPEC = {
     "simulation": {"sims": _WHOLE, "sweep_sims": _WHOLE, "seed": _WHOLE, "size": _NUMBER, "sweep": [_NUMBER], "paths": _WHOLE,
                    "bootstrap_sims": _WHOLE},
     "scenarios": {"label": _TEXT, "win_rate_adj": _NUMBER, "pnl_shrink": _NUMBER},
-}  # fmt: skip
+}
 
 
 def _typed(table: dict, section: str) -> dict:
@@ -214,10 +213,8 @@ def _setup_from_toml(raw: dict, key: str) -> Setup:
         sims=s.get("sims", 20_000), sweep_sims=s.get("sweep_sims", 5_000), seed=s.get("seed", 42),
         size=s.get("size", 1.0), sweep=tuple(s.get("sweep", [])), paths=s.get("paths", 300),
         bootstrap_sims=s.get("bootstrap_sims", 10_000), scenarios=tuple(scen), notes=tuple(notes),
-    )  # fmt: skip
+    )
 
-
-# --- trades and the daily pool (cells 3-5) ----------------------------------------------------------
 
 
 def load_trades(path: str | Path) -> pd.DataFrame:
@@ -231,7 +228,7 @@ def load_trades(path: str | Path) -> pd.DataFrame:
     df = pd.DataFrame({
         "trade_id": mc["trade_no"], "contracts": mc["qty"].astype(float), "profit_usd": mc["net_pnl"].astype(float),
         "direction": mc["direction"].str.upper(), "datetime": mc["entry_time"],
-    })  # fmt: skip
+    })
     df["date"] = df["datetime"].dt.normalize()
     return df
 
@@ -245,7 +242,7 @@ def add_costs(trades: pd.DataFrame, setup: Setup) -> pd.DataFrame:
     return df
 
 
-BOOTSTRAP_BATCH = 4_000_000  # draws held in memory at once (32 MB of indices)
+BOOTSTRAP_BATCH = 4_000_000
 
 
 def bootstrap_ci(x, sims: int = 10_000, ci: float = 0.95, seed: int = 42) -> tuple[np.ndarray, float, float]:
@@ -275,7 +272,7 @@ def trade_stats(df: pd.DataFrame, setup: Setup) -> dict:
         "ev_usd_ci": (lo, hi), "ev_r_ci": (rlo, rhi),
         "p_ev_r_le_0": float(np.mean(b_r <= 0)), "p_ev_usd_le_0": float(np.mean(b_usd <= 0)),
         "costs_total": float(df["costs_usd"].sum()), "contracts": _contracts(df),
-    }  # fmt: skip
+    }
 
 
 def _mean(s: pd.Series) -> float | None:
@@ -303,8 +300,6 @@ def daily_pool(df: pd.DataFrame) -> pd.DataFrame:
     days["is_trade_day"] = days["n_trades"] > 0
     return days
 
-
-# --- simulation (cells 6-10) ------------------------------------------------------------------------
 
 
 def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -338,9 +333,9 @@ class SimResult:
 
     n_sims: int
     size: float
-    outcome: np.ndarray  # PASS / FAIL_DD / FAIL_DAILY / FAIL_TIME
-    days: np.ndarray  # simulated days until the outcome
-    max_dd: np.ndarray  # worst end-of-day drawdown seen
+    outcome: np.ndarray
+    days: np.ndarray
+    max_dd: np.ndarray
     final_equity: np.ndarray
 
     def count(self, code: int) -> int:
@@ -379,7 +374,7 @@ class SimResult:
             "worst_max_dd": float(np.max(self.max_dd)),
             "avg_final_equity": float(np.mean(self.final_equity)),
             "avg_equity_at_pass": float(np.mean(eq_pass)) if len(eq_pass) else None,
-        }  # fmt: skip
+        }
 
 
 def simulate(net: np.ndarray, rules: Rules, n_sims: int, size: float, rng: np.random.Generator, win_rate_adj: float = 0.0, pnl_shrink: float = 0.0) -> SimResult:
@@ -471,7 +466,7 @@ def assumptions(setup: Setup, stats: dict) -> list[str]:
     if c is None or any(abs(s * c - round(s * c)) > 1e-9 for s in sizes):
         out.append("Assumption: size scales daily P&L continuously, so some sizes imply fractional contracts"
                    + ("" if c is None else f" (e.g. {next(s for s in sizes if abs(s * c - round(s * c)) > 1e-9):g} x {c:g})")
-                   + "; a real account can only trade whole contracts.")  # fmt: skip
+                   + "; a real account can only trade whole contracts.")
     return out
 
 
@@ -482,13 +477,11 @@ def verdict(pass_rate: float) -> tuple[str, str]:
     return VERDICTS[-1][1:]
 
 
-# --- full run ---------------------------------------------------------------------------------------
-
 
 @dataclass
 class PropFirmResult:
     setup: Setup
-    trades: pd.DataFrame  # with costs and R-multiples
+    trades: pd.DataFrame
     stats: dict
     daily: pd.DataFrame
     main: SimResult
@@ -523,7 +516,7 @@ class PropFirmResult:
             "primary_failure": primary if fails[primary] > 0 else None,
             "primary_failure_rate": fails[primary] / m["n_sims"],
             "verdict": tag, "verdict_text": text,
-        }  # fmt: skip
+        }
 
     def sweep_table(self) -> pd.DataFrame:
         c = self.stats["contracts"]
@@ -535,7 +528,7 @@ class PropFirmResult:
                 "pass_rate": s["pass_rate"], "ci_low": s["pass_rate_ci"][0], "ci_high": s["pass_rate_ci"][1],
                 "fail_dd_rate": r.rate(FAIL_DD), "fail_daily_rate": r.rate(FAIL_DAILY), "fail_time_rate": r.rate(FAIL_TIME),
                 "avg_max_dd": s["avg_max_dd"], "avg_days_to_pass": s["avg_days_to_pass"],
-            })  # fmt: skip
+            })
         return pd.DataFrame(rows)
 
     def scenario_table(self) -> pd.DataFrame:
@@ -547,7 +540,7 @@ class PropFirmResult:
                 "pass_rate": s["pass_rate"], "ci_low": s["pass_rate_ci"][0], "ci_high": s["pass_rate_ci"][1],
                 "fail_dd_rate": r.rate(FAIL_DD), "fail_daily_rate": r.rate(FAIL_DAILY), "fail_time_rate": r.rate(FAIL_TIME),
                 "avg_max_dd": s["avg_max_dd"], "avg_days_to_pass": s["avg_days_to_pass"],
-            })  # fmt: skip
+            })
         return pd.DataFrame(rows)
 
     def to_json(self) -> dict:
@@ -568,7 +561,7 @@ class PropFirmResult:
             "best_size": None if best is None else {"size": best.size, "pass_rate": best.pass_rate},
             "notes": self.notes,
             "seconds": round(self.seconds, 2),
-        }  # fmt: skip
+        }
 
 
 def run_propfirm(trades: pd.DataFrame, setup: Setup, progress=None) -> PropFirmResult:
@@ -602,16 +595,16 @@ def run_propfirm(trades: pd.DataFrame, setup: Setup, progress=None) -> PropFirmR
     if setup.commission or setup.slippage:
         notes.append(f"Each trade pays ${setup.commission + setup.slippage:,.2f} per contract (commission ${setup.commission:g} + slippage ${setup.slippage:g}) "
                      "on top of its profit_usd, which is already net of the backtest's own costs. Use --commission 0 --slippage 0 if the backtest "
-                     "already charged realistic costs.")  # fmt: skip
+                     "already charged realistic costs.")
     c = stats["contracts"]
     notes.append("Size multiplies the trade file's daily P&L: 1.0 is the size the file traded"
                  + (f" ({c:g} contracts per trade)." if c is not None else " (trade sizes vary in this file).")
-                 + " The notebook labels size 1.0 as 1 NQ (10 MNQ), which is only true for a 1-NQ trade file.")  # fmt: skip
+                 + " The notebook labels size 1.0 as 1 NQ (10 MNQ), which is only true for a 1-NQ trade file.")
     notes.append(f"Each simulated trading day is a random weekday of the pool, including the {int((~daily['is_trade_day']).sum()):,} of "
-                 f"{len(daily):,} weekdays with no trades, so the {rules.max_trading_days}-day deadline counts weekdays, not days traded.")  # fmt: skip
+                 f"{len(daily):,} weekdays with no trades, so the {rules.max_trading_days}-day deadline counts weekdays, not days traded.")
     if weekend.any():
         notes.append(f"{int(weekend.sum()):,} trade(s) on {df.loc[weekend, 'date'].nunique():,} weekend date(s) are not in the daily pool "
-                     "(the notebook builds the pool from weekdays only).")  # fmt: skip
+                     "(the notebook builds the pool from weekdays only).")
     notes += assumptions(setup, stats)
     return PropFirmResult(setup, df, stats, daily, main, scen, sweep, paths, outcomes, int(weekend.sum()),
-                          int(df.loc[weekend, "date"].nunique()), time.perf_counter() - t0, notes)  # fmt: skip
+                          int(df.loc[weekend, "date"].nunique()), time.perf_counter() - t0, notes)

@@ -47,7 +47,7 @@ def trading_days(store: Path, symbol: str, session: str = "rth") -> pd.DataFrame
             "date": pd.Timestamp(d), "session_file": session_file, "contract": contract,
             "rth_start": pd.Timestamp.combine(d, sess.start), "rth_end": pd.Timestamp.combine(d, end_t),
             "early_close": end_t < sess.end,
-        } | ({"tick_ok": tick_ok.get((session_file, contract), False)} if tick_ok or is_market_data(store) else {}))  # fmt: skip
+        } | ({"tick_ok": tick_ok.get((session_file, contract), False)} if tick_ok or is_market_data(store) else {}))
     return pd.DataFrame(rows).set_index("date").sort_index()
 
 

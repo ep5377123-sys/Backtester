@@ -44,26 +44,26 @@ from guban.data.resample import load_bars
 from guban.research.ranges import (
     EXTEND, FADE, OUTCOME_NAMES, RANGE_PER_SIGMA, monthly_refits, norm_sf, ols, race, remaining_share, touch_prob,
     variance_shares,
-)  # fmt: skip
+)
 from guban.research.report import write_study_report
 from guban.research.stats import by_period, rate_test, verdict
 from guban.research.vx import load_vx, vx_before
 
 SYMBOL, TZ = "NQ", "America/New_York"
 VX_CSV = Path("data/VIX/XCBF-20261026-KCNSUYPJQB/xcbf-pitch-20181104-20261024.ohlcv-1d.csv")
-OPEN_MIN, SLOTS, MIN_BARS = 9 * 60 + 30, 390, 385  # RTH 09:30-16:00 ET, 1-minute slots
+OPEN_MIN, SLOTS, MIN_BARS = 9 * 60 + 30, 390, 385
 MIN_TRAIN = 250
-MODELS = {  # name: (offset column or None, regressors); a constant is always fitted
+MODELS = {
     "ATR14": ("latr14", []),
     "HAR": (None, ["lr1", "lr5", "lr22"]),
     "VX": (None, ["lvx"]),
     "HAR+VX+ON": (None, ["lr1", "lr5", "lr22", "lvx", "lon"]),
 }
-BANDS = {0.50: (0.25, 0.75), 0.80: (0.10, 0.90), 0.95: (0.025, 0.975)}  # central range bands
+BANDS = {0.50: (0.25, 0.75), 0.80: (0.10, 0.90), 0.95: (0.025, 0.975)}
 EXCURSION_Q = (0.50, 0.80, 0.95)
 TEXTBOOK_K = (0.5, 1.0, 1.5, 2.0)
 CHECKPOINTS = ("10:00", "10:30", "11:00", "12:00", "13:00", "14:00", "15:00")
-EXT_D = (0.0, 0.1, 0.25, 0.5)  # extension beyond the current high/low, x forecast
+EXT_D = (0.0, 0.1, 0.25, 0.5)
 RELIABILITY_EDGES = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0000001]
 GRID = tuple(round(q, 1) for q in np.arange(0.1, 2.01, 0.1))
 EDGES = ("q50", "q80")
@@ -71,8 +71,6 @@ RACE_Y = 0.25
 MIN_GAP, ALPHA = 0.03, 0.05
 MIN_PERIOD_OBS = 60
 
-
-# --- days -------------------------------------------------------------------------------------------------------
 
 
 def build_days(vx_csv: Path) -> tuple[pd.DataFrame, dict, dict]:
@@ -97,7 +95,7 @@ def build_days(vx_csv: Path) -> tuple[pd.DataFrame, dict, dict]:
     arr["close_ff"] = pd.DataFrame(arr["close"]).ffill(axis=1).to_numpy()
     first = np.argmax(~np.isnan(arr["open"]), axis=1)
     lo = arr["open"][np.arange(len(keep)), first]
-    ret = np.diff(np.column_stack([lo, arr["close_ff"]]), axis=1)  # slot 0: close - open of the first bar
+    ret = np.diff(np.column_stack([lo, arr["close_ff"]]), axis=1)
     ret[np.isnan(arr["close"])] = np.nan
     arr["ret"] = ret
 
@@ -109,9 +107,8 @@ def build_days(vx_csv: Path) -> tuple[pd.DataFrame, dict, dict]:
         "open": np.exp(lo), "high": np.exp(lh), "low": np.exp(ll), "close": np.exp(arr["close"][np.arange(len(keep)), last]),
         "bars": n.loc[keep].to_numpy(), "contract": rth.groupby("session_date")["contract"].first().loc[keep].to_numpy(),
         "rng": lh - ll, "up": lh - lo, "dn": lo - ll,
-    }, index=pd.DatetimeIndex(keep, name="date"))  # fmt: skip
+    }, index=pd.DatetimeIndex(keep, name="date"))
 
-    # overnight: the same session's ETH bars up to 09:30
     eth = load_bars(SYMBOL, "1m", "eth", tz=TZ)
     naive = eth.index.tz_localize(None)
     pre = eth[naive <= eth["session_date"] + pd.Timedelta(minutes=OPEN_MIN)]
@@ -136,8 +133,6 @@ def feature_matrix(days: pd.DataFrame, model: str) -> tuple[np.ndarray, np.ndarr
     o = days[off].to_numpy(float) if off else np.zeros(len(days))
     return x, o
 
-
-# --- walk-forward forecasts -------------------------------------------------------------------------------------
 
 
 def walk_forward(days: pd.DataFrame, arr: dict) -> tuple[dict[str, pd.DataFrame], np.ndarray, np.ndarray]:
@@ -178,7 +173,7 @@ def final_fit(days: pd.DataFrame) -> dict:
     y = days["y"].to_numpy(float)
     r = days["rng"]
     nxt = {"lr1": math.log(r.iloc[-1]), "lr5": math.log(r.iloc[-5:].mean()), "lr22": math.log(r.iloc[-22:].mean()),
-           "latr14": math.log(r.iloc[-14:].mean()), "lvx": math.log(days["vx_last"].iloc[-1]), "lon": np.nan}  # fmt: skip
+           "latr14": math.log(r.iloc[-14:].mean()), "lvx": math.log(days["vx_last"].iloc[-1]), "lon": np.nan}
     res = {}
     for m, (off, regs) in MODELS.items():
         x, o = feature_matrix(days, m)
@@ -193,11 +188,9 @@ def final_fit(days: pd.DataFrame) -> dict:
         res[m] = {"coef": coef, "next_pred": float(p) if np.isfinite(p) else None,
                   "res_q": {f"{q:g}": float(np.quantile(resid, q)) for lo_hi in BANDS.values() for q in lo_hi},
                   "exc_q": {f"q{int(q * 100)}": float(np.quantile(exc, q)) for q in EXCURSION_Q},
-                  "smear": float(np.mean(np.exp(resid)))}  # fmt: skip
+                  "smear": float(np.mean(np.exp(resid)))}
     return res
 
-
-# --- checks -----------------------------------------------------------------------------------------------------
 
 
 def model_metrics(days: pd.DataFrame, fc: pd.DataFrame) -> dict:
@@ -206,7 +199,7 @@ def model_metrics(days: pd.DataFrame, fc: pd.DataFrame) -> dict:
     e = y - p
     f = np.exp(p)
     out = {"n": len(fc), "mse": float(np.mean(e**2)), "r2": float(1 - np.sum(e**2) / np.sum((y - y.mean()) ** 2)),
-           "corr2": float(np.corrcoef(y, p)[0, 1] ** 2), "mae_pct": float(np.mean(np.abs(np.exp(e) - 1)))}  # fmt: skip
+           "corr2": float(np.corrcoef(y, p)[0, 1] ** 2), "mae_pct": float(np.mean(np.abs(np.exp(e) - 1)))}
     for nom, (lo, hi) in BANDS.items():
         out[f"cover_{nom:g}"] = float(np.mean((e >= fc[f"res_{lo:g}"]) & (e <= fc[f"res_{hi:g}"])))
     for q in EXCURSION_Q:
@@ -231,7 +224,7 @@ def textbook(days: pd.DataFrame, fc: pd.DataFrame) -> list[dict]:
     d = days.loc[fc.index]
     sigma = np.exp(fc["pred"]) * fc["smear"] / RANGE_PER_SIGMA
     return [{"k": k, "theory": float(2 * norm_sf(k)), "up": float(np.mean(d["up"] >= k * sigma)), "dn": float(np.mean(d["dn"] >= k * sigma))}
-            for k in TEXTBOOK_K]  # fmt: skip
+            for k in TEXTBOOK_K]
 
 
 def extension(arr: dict, fc: pd.DataFrame, rem: np.ndarray) -> pd.DataFrame:
@@ -245,7 +238,7 @@ def extension(arr: dict, fc: pd.DataFrame, rem: np.ndarray) -> pd.DataFrame:
         warnings.simplefilter("ignore", RuntimeWarning)
         for cp in CHECKPOINTS:
             h, mi = map(int, cp.split(":"))
-            s = h * 60 + mi - OPEN_MIN - 1  # the bar closing at the checkpoint
+            s = h * 60 + mi - OPEN_MIN - 1
             hs, ls, pt = np.nanmax(hi[:, : s + 1], axis=1), np.nanmin(lo[:, : s + 1], axis=1), cl[:, s]
             hf, lf = np.nanmax(hi[:, s + 1 :], axis=1), np.nanmin(lo[:, s + 1 :], axis=1)
             sig = sigma * np.sqrt(rem[:, s])
@@ -254,7 +247,7 @@ def extension(arr: dict, fc: pd.DataFrame, rem: np.ndarray) -> pd.DataFrame:
                 for side, dist, obs in (("up", hs - pt + d, hf > hs + d), ("down", pt - ls + d, lf < ls - d)):
                     ok = np.isfinite(dist) & np.isfinite(hf if side == "up" else lf)
                     rows.append(pd.DataFrame({"date": fc.index[ok], "checkpoint": cp, "side": side, "d": dm,
-                                              "pred": touch_prob(dist[ok], sig[ok]), "obs": obs[ok]}))  # fmt: skip
+                                              "pred": touch_prob(dist[ok], sig[ok]), "obs": obs[ok]}))
     return pd.concat(rows, ignore_index=True)
 
 
@@ -265,8 +258,6 @@ def reliability(ext: pd.DataFrame) -> pd.DataFrame:
     out.index = [f"{iv.left:.0%}–{min(iv.right, 1):.0%}" for iv in out.index]
     return out
 
-
-# --- races ------------------------------------------------------------------------------------------------------
 
 
 def races(days: pd.DataFrame, arr: dict, fc: pd.DataFrame) -> pd.DataFrame:
@@ -282,7 +273,7 @@ def races(days: pd.DataFrame, arr: dict, fc: pd.DataFrame) -> pd.DataFrame:
             for side in (1, -1):
                 code, ti, ri = race(lh, ll, lo + side * q * f, RACE_Y * f, side)
                 rows.append((date, "up" if side > 0 else "down", kind, q, code,
-                             int(slots[ti]) if ti >= 0 else -1, int(slots[ri]) if ri >= 0 else -1))  # fmt: skip
+                             int(slots[ti]) if ti >= 0 else -1, int(slots[ri]) if ri >= 0 else -1))
     t = pd.DataFrame(rows, columns=["date", "side", "kind", "q", "code", "touch_slot", "resolve_slot"])
     t["outcome"] = t["code"].map(OUTCOME_NAMES)
     return t
@@ -307,7 +298,7 @@ def race_tests(t: pd.DataFrame) -> dict:
             test = rate_test(hit, sig, label)
             yearly = by_period(hit, sig, periods_for(obs["date"]))
             out[f"{side}_{edge}"] = {"side": side, "edge": edge, "test": test.to_dict(), "by_year": _records(yearly),
-                                     "verdict": verdict(test, yearly, MIN_GAP, ALPHA).to_dict()}  # fmt: skip
+                                     "verdict": verdict(test, yearly, MIN_GAP, ALPHA).to_dict()}
     return out
 
 
@@ -324,8 +315,6 @@ def _records(df: pd.DataFrame) -> list[dict]:
     ints = {"n", "hits", "base_n"}
     return [{"period": str(k), **{c: (int(v) if c in ints else float(v)) for c, v in row.items()}} for k, row in df.to_dict("index").items()]
 
-
-# --- output -----------------------------------------------------------------------------------------------------
 
 
 def pct(x, nd=1) -> str:
@@ -344,15 +333,15 @@ def print_summary(res: dict) -> None:
     print(f"\nNQ RTH range bands - OOS {res['oos']['first']} -> {res['oos']['last']} ({res['oos']['days']} sessions)")
     for m, s in res["models"].items():
         print(f"  {m:10} R2 {s['r2']:.3f}  MAE {pct(s['mae_pct'])}  cover 50/80/95: {pct(s['cover_0.5'])} / {pct(s['cover_0.8'])} / {pct(s['cover_0.95'])}"
-              f"  high>=q80 {pct(s['touch_up_q80'])}, low<=q80 {pct(s['touch_dn_q80'])}")  # fmt: skip
+              f"  high>=q80 {pct(s['touch_up_q80'])}, low<=q80 {pct(s['touch_dn_q80'])}")
     print(f"  best (lowest OOS MSE): {res['best']}")
     print("  textbook touch rates (k sigma, theory vs up / down): "
-          + "; ".join(f"{t['k']:g}: {pct(t['theory'])} vs {pct(t['up'])} / {pct(t['dn'])}" for t in res["textbook"]))  # fmt: skip
+          + "; ".join(f"{t['k']:g}: {pct(t['theory'])} vs {pct(t['up'])} / {pct(t['dn'])}" for t in res["textbook"]))
     print(f"  reflection formula: mean |pred - obs| over buckets {pct(res['extension']['ece'])} ({res['extension']['n']:,} predictions)")
     for k, v in res["tests"].items():
         t = v["test"]
         print(f"  {t['label']}: {pct(t['rate'])} ({t['hits']}/{t['n']}) vs {pct(t['base_rate'])}  gap {pp(t['gap'])}  p = {t['p_value']:.4g}"
-              f"  -> {'REAL' if v['verdict']['real'] else 'NOT REAL'}")  # fmt: skip
+              f"  -> {'REAL' if v['verdict']['real'] else 'NOT REAL'}")
 
 
 def write_report(res: dict, rel: pd.DataFrame, cov_year: pd.DataFrame, path: Path) -> None:
@@ -363,7 +352,7 @@ def write_report(res: dict, rel: pd.DataFrame, cov_year: pd.DataFrame, path: Pat
         verdicts.append({"label": f"{'Upper' if v['side'] == 'up' else 'Lower'} {v['edge']} edge: fade",
                          "real": v["verdict"]["real"],
                          "headline": f"{pct(t['rate'])} fade at the edge vs {pct(t['base_rate'])} at every level ({pp(t['gap'])}, n = {t['n']})",
-                         "checks": v["verdict"]["checks"]})  # fmt: skip
+                         "checks": v["verdict"]["checks"]})
     models = list(res["models"])
     years = [str(y) for y in cov_year.index]
     fq = res["fade_by_q"]
@@ -388,37 +377,37 @@ def write_report(res: dict, rel: pd.DataFrame, cov_year: pd.DataFrame, path: Pat
          "x": [y["period"] for y in next(iter(res["tests"].values()))["by_year"]],
          "series": [{"name": f"{'upper' if v['side'] == 'up' else 'lower'} {v['edge']}", "y": [round(y["gap"] * 100, 2) for y in v["by_year"]]}
                     for v in res["tests"].values()]},
-    ]  # fmt: skip
+    ]
 
     mt = pd.DataFrame(
         [[m, f"{s['r2']:.3f}", f"{s['corr2']:.3f}", pct(s["mae_pct"]), pct(s["cover_0.5"]), pct(s["cover_0.8"]), pct(s["cover_0.95"]),
           " / ".join(pct(s[f"touch_up_q{q}"]) for q in (50, 80, 95)), " / ".join(pct(s[f"touch_dn_q{q}"]) for q in (50, 80, 95))]
          for m, s in res["models"].items()],
         columns=["model", "R²", "corr²", "MAE of range", "50% band", "80% band", "95% band", "high ≥ q50 / q80 / q95", "low ≤ q50 / q80 / q95"],
-    ).set_index("model")  # fmt: skip
+    ).set_index("model")
     tb = pd.DataFrame([[f"{t['k']:g} σ", pct(t["theory"]), pct(t["up"]), pct(t["dn"])] for t in res["textbook"]],
-                      columns=["level from open", "random walk 2(1 − Φ(k))", "high reached", "low reached"]).set_index("level from open")  # fmt: skip
+                      columns=["level from open", "random walk 2(1 − Φ(k))", "high reached", "low reached"]).set_index("level from open")
     cp = pd.DataFrame([[r["checkpoint"], r["d"], r["n"], pct(r["pred"]), pct(r["obs"]), pp(r["obs"] - r["pred"])] for r in res["extension"]["by_checkpoint"]],
-                      columns=["checkpoint", "d × forecast", "n", "predicted", "observed", "observed − predicted"]).set_index("checkpoint")  # fmt: skip
+                      columns=["checkpoint", "d × forecast", "n", "predicted", "observed", "observed − predicted"]).set_index("checkpoint")
     rl = pd.DataFrame([[i, int(r.n), pct(r.pred), pct(r.obs)] for i, r in rel.iterrows()], columns=["predicted bucket", "n", "mean predicted", "observed"]).set_index("predicted bucket")
     tests = pd.DataFrame([[v["test"]["label"], f"{v['test']['hits']}/{v['test']['n']}", pct(v["test"]["rate"]), pct(v["test"]["base_rate"]), pp(v["test"]["gap"]),
                            f"{v['test']['p_value']:.4g}"] for v in res["tests"].values()],
-                         columns=["test", "fades / n", "rate", "base rate", "gap", "p (one-sided)"]).set_index("test")  # fmt: skip
+                         columns=["test", "fades / n", "rate", "base rate", "gap", "p (one-sided)"]).set_index("test")
     yearly = pd.DataFrame([[y["period"], f"{v['side']} {v['edge']}", f"{y['hits']}/{y['n']}", pct(y["rate"]), pct(y["base_rate"]), pp(y["gap"])]
                            for v in res["tests"].values() for y in v["by_year"]],
-                          columns=["year", "edge", "fades / n", "rate", "base rate", "gap"]).set_index("year")  # fmt: skip
+                          columns=["year", "edge", "fades / n", "rate", "base rate", "gap"]).set_index("year")
     nx = res["next_session"]
     nxt = pd.DataFrame([[m, *r] for m, r in nx["rows"].items()],
-                       columns=["model", "range (pts)", "80% band (pts)", "high/low from open q50 (pts)", "q80 (pts)"]).set_index("model")  # fmt: skip
+                       columns=["model", "range (pts)", "80% band (pts)", "high/low from open q50 (pts)", "q80 (pts)"]).set_index("model")
     coef = pd.DataFrame([[m, ", ".join(f"{k} {v:+.3f}" for k, v in s["coef"].items())] for m, s in res["final_fit"].items()],
-                        columns=["model", "ln(range) = …"]).set_index("model")  # fmt: skip
+                        columns=["model", "ln(range) = …"]).set_index("model")
     rc = res["race_counts"]
     data = pd.DataFrame.from_dict(
         {**{f"session dropped: {k}": v for k, v in res["data"]["dropped"].items()},
          "full RTH sessions": res["data"]["sessions"], "sessions with every input (after warm-up)": res["data"]["usable"],
          "OOS sessions (walk-forward)": res["oos"]["days"],
          **{f"races ({k}): {o}": n for k, c in rc.items() for o, n in c.items()}},
-        orient="index", columns=["count"]).rename_axis("data")  # fmt: skip
+        orient="index", columns=["count"]).rename_axis("data")
 
     write_study_report(
         path,
@@ -445,7 +434,7 @@ def write_report(res: dict, rel: pd.DataFrame, cov_year: pd.DataFrame, path: Pat
             "Races: the touching bar counts only toward an extension (its other extreme may come first); a later bar reaching both thresholds is ambiguous; neither by the close is unresolved; both are dropped. Races on one day are correlated (one path, many levels), so p-values are optimistic.",
             "A band edge reached later in the day has less time left; time of day is not matched between the edge and the base races.",
         ],
-    )  # fmt: skip
+    )
 
 
 def main() -> int:
@@ -466,14 +455,14 @@ def main() -> int:
     ext = extension(arr, fc, rem)
     rel = reliability(ext)
     by_cp = [{"checkpoint": cp, "d": d, "n": len(g), "pred": float(g["pred"].mean()), "obs": float(g["obs"].mean())}
-             for (cp, d), g in ext.groupby(["checkpoint", "d"], sort=True)]  # fmt: skip
+             for (cp, d), g in ext.groupby(["checkpoint", "d"], sort=True)]
     ece = float(np.nansum(rel["n"] * (rel["pred"] - rel["obs"]).abs()) / rel["n"].sum())
 
     t = races(days, arr, fc)
     tests = race_tests(t)
 
     vx = load_vx(args.vx)
-    days["vx_last"] = vx_before(vx["vx"], days.index + pd.Timedelta(days=1)).to_numpy()  # last VX bar dated <= the session
+    days["vx_last"] = vx_before(vx["vx"], days.index + pd.Timedelta(days=1)).to_numpy()
     ff = final_fit(days)
     price = float(days["close"].iloc[-1])
     rows = {}
@@ -496,7 +485,7 @@ def main() -> int:
         "textbook": textbook(days, fc),
         "extension": {"n": len(ext), "ece": ece, "by_checkpoint": by_cp,
                       "reliability": [{"bucket": i, "n": int(r.n), "pred": None if pd.isna(r.pred) else float(r.pred), "obs": None if pd.isna(r.obs) else float(r.obs)}
-                                      for i, r in rel.iterrows()]},  # fmt: skip
+                                      for i, r in rel.iterrows()]},
         "tests": tests, "fade_by_q": fade_by_q(t), "race_counts": race_counts(t),
         "final_fit": ff, "next_session": {"after": str(days.index[-1].date()), "price": price, "rows": rows},
     }

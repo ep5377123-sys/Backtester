@@ -1,0 +1,58 @@
+# LucidPro $25K evaluation (support.lucidtrading.com, "LucidPro Evaluation Account" and "LucidPro Drawdown",
+# read 2026-10-29). Check them against the firm's current rules before relying on the pass rates; see `notes`.
+
+notes = [
+  "LucidPro 25K evaluation: $1,250 profit target, $1,000 end-of-day trailing max loss, no daily loss limit, no consistency rule in the evaluation, max 2 minis / 20 micros.",
+  "Lucid locks the max loss at +$100 once the closing balance exceeds +$1,100; the simulation keeps trailing (at most $150 tighter on days between +$1,100 and +$1,250), so pass rates are slightly conservative.",
+  "Deadline: 22 trading days (user, 2026-10-29). A simulated day is a weekday, with or without a trade.",
+]
+
+[rules]
+name = "LucidPro 25K"
+account_size = 25000       # informational only
+profit_target = 1250       # pass when end-of-day equity >= this
+max_drawdown = 1000        # fail when end-of-day equity is this far below its end-of-day high
+eod_trailing = true
+daily_loss_limit = 0       # none
+min_trading_days = 0
+max_trading_days = 22      # the user's evaluation deadline (2026-10-29); Lucid's site lists none
+
+[costs]
+# guban trades.csv profit is already net of the backtest's costs, so nothing is deducted on top.
+commission = 0.0
+slippage = 0.0
+risk_per_contract = 216.0  # median IVB 15m stop per MNQ contract (2021-10 → 2026-10), for R-multiples only
+
+[simulation]
+sims = 20000
+sweep_sims = 5000
+seed = 42
+size = 1.0
+sweep = []                 # the risk-per-trade runs are the sweep
+paths = 300
+bootstrap_sims = 10000
+
+[[scenarios]]
+label = "Baseline (backtest as-is)"
+win_rate_adj = 0.0
+pnl_shrink = 0.0
+
+[[scenarios]]
+label = "WR −3 pp, PnL −10%"
+win_rate_adj = -0.03
+pnl_shrink = 0.10
+
+[[scenarios]]
+label = "WR −5 pp, PnL −15%"
+win_rate_adj = -0.05
+pnl_shrink = 0.15
+
+[[scenarios]]
+label = "WR −5 pp, PnL −25% (stress)"
+win_rate_adj = -0.05
+pnl_shrink = 0.25
+
+[[scenarios]]
+label = "WR −8 pp, PnL −30% (worst)"
+win_rate_adj = -0.08
+pnl_shrink = 0.30

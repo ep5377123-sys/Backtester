@@ -56,11 +56,9 @@ TICK_RECORD = np.dtype(
 )
 assert TICK_RECORD.itemsize == 57
 
-# .NET ticks (100 ns since 0001-01-01) -> Unix epoch nanoseconds
 _DOTNET_EPOCH_TICKS = 621_355_968_000_000_000
-# Bump when the cached columns or the RTH aggregation change: the tick cache is rebuilt.
-CACHE_VERSION = 2  # 2: file paths in the fingerprint (two layouts)
-STORE_TICK = np.dtype([("ticks", "<i8"), ("price", "<f8"), ("size", "<i4")])  # the fields read from the market-data store
+CACHE_VERSION = 2
+STORE_TICK = np.dtype([("ticks", "<i8"), ("price", "<f8"), ("size", "<i4")])
 
 
 def dotnet_ticks(wall: pd.Timestamp) -> int:
@@ -177,7 +175,7 @@ def build_rth_profiles(
         raw = _read_any(path)
         tr = window_trades(raw, d.rth_start, d.rth_end) if raw.size else raw
         row = {"session_date": day, "contract": d.contract, "session_file": d.session_file, "trades": int(tr.size),
-               "volume": int(tr["size"].sum(dtype=np.int64)) if tr.size else 0}  # fmt: skip
+               "volume": int(tr["size"].sum(dtype=np.int64)) if tr.size else 0}
         if tr.size:
             times = tick_times(tr["ticks"][[0, -1]])
             p = tr["price"]

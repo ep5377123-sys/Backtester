@@ -44,8 +44,6 @@ def run(plan, bars, costs=Costs()):
     return run_backtest(Script(plan=plan), bars, NQ, costs)
 
 
-# --- series ---------------------------------------------------------------------------------------
-
 
 def test_series_lookback_and_bar_fields():
     seen = []
@@ -112,7 +110,7 @@ def test_plots_record_series_values_at_every_bar_and_change_nothing():
     strat = Plotted()
     res = run_backtest(strat, bars, NQ)
     assert strat.plot_series() == {"fast": [1, 2, 3, 4, 5], "slow_named": [0.0, 4, 4, 8, 8]}
-    assert res.equity.equals(run_backtest(Script(plan={1: [("buy", {})]}), bars, NQ).equity)  # same orders, same run
+    assert res.equity.equals(run_backtest(Script(plan={1: [("buy", {})]}), bars, NQ).equity)
 
     class Missing(Plotted):
         plots = ("nope",)
@@ -132,8 +130,6 @@ def test_series_outside_on_start_is_an_error():
     with pytest.raises(RuntimeError, match="on_start"):
         Early()
 
-
-# --- R3: market orders fill at the next bar's open ------------------------------------------------
 
 
 def test_market_order_fills_at_next_bar_open_never_signal_bar():
@@ -166,25 +162,23 @@ def test_slippage_ticks_move_fills_against_the_trade():
 
 def test_orders_last_one_bar_and_last_bar_orders_never_fill():
     bars = make_bars([100, 101, 102, 103])
-    res = run({0: [("buy", {})], 3: [("sell", {})]}, bars)  # the sell is placed on the final bar
+    res = run({0: [("buy", {})], 3: [("sell", {})]}, bars)
     assert res.trades.empty
     assert res.open_position.entry_price == 101.0 and res.open_position.qty == 1
 
-
-# --- position rules -------------------------------------------------------------------------------
 
 
 def test_close_order_fills_at_the_signal_bars_close():
     """at="close" is MC's `this bar on close`: it fills at the close of the bar that placed it, even the last one."""
     bars = make_bars([100, 101, 102, 103, 104], closes=[100.5, 101.25, 102.5, 103.75, 104.25])
     res = run({1: [("buy", dict(name="L", at="close"))], 2: [("sell", dict(name="X", at="close"))],
-               3: [("sell_short", dict(name="S", at="close"))], 4: [("buy_to_cover", dict(name="C", at="close"))]}, bars)  # fmt: skip
+               3: [("sell_short", dict(name="S", at="close"))], 4: [("buy_to_cover", dict(name="C", at="close"))]}, bars)
     long_, short = res.trades.itertuples()
     assert (long_.entry_bar, long_.entry_time, long_.entry_price) == (1, bars.index[1], 101.25)
     assert (long_.exit_bar, long_.exit_time, long_.exit_price, long_.exit_name) == (2, bars.index[2], 102.5, "X")
     assert (short.entry_bar, short.entry_price, short.exit_bar, short.exit_price) == (3, 103.75, 4, 104.25)
     assert res.open_position is None
-    assert res.equity.iloc[1] == 0.0  # entered at the close: no open P&L yet at that close
+    assert res.equity.iloc[1] == 0.0
 
 
 def test_close_order_position_is_visible_from_the_next_bar():
@@ -215,17 +209,17 @@ def test_close_orders_are_market_fills_for_costs_and_slippage():
     bars = make_bars([100, 101, 102, 103])
     res = run({0: [("buy", dict(at="close"))], 2: [("sell", dict(at="close"))]}, bars, Costs(commission=1.22, slippage=0.04, slippage_ticks=1))
     (t,) = res.trades.itertuples()
-    assert (t.entry_price, t.exit_price) == (100.75, 102.25)  # closes 100.5 / 102.5, one tick against
-    assert t.slippage == pytest.approx(0.04)  # half the USD slippage on each side
+    assert (t.entry_price, t.exit_price) == (100.75, 102.25)
+    assert t.slippage == pytest.approx(0.04)
     assert t.net_pnl == pytest.approx(1.5 * 20 - 1.22 - 0.04)
 
 
 def test_close_entry_exits_start_on_the_next_bar_and_mix_with_next_bar_orders():
-    bars = make_bars([100, 90, 100, 100], closes=[100.5, 95, 100.5, 100.5])  # bar 1 low 89 is before the entry
+    bars = make_bars([100, 90, 100, 100], closes=[100.5, 95, 100.5, 100.5])
     res = run({1: [("buy", dict(at="close")), ("set_stop_loss", dict(amount=20 * 4))],
-               2: [("sell", dict(name="next open"))]}, bars)  # fmt: skip
+               2: [("sell", dict(name="next open"))]}, bars)
     (t,) = res.trades.itertuples()
-    assert (t.entry_bar, t.entry_price) == (1, 95.0)  # the stop (91) was not live on bar 1's path
+    assert (t.entry_bar, t.entry_price) == (1, 95.0)
     assert (t.exit_bar, t.exit_price, t.exit_name) == (3, 100.0, "next open")
 
 
@@ -249,9 +243,9 @@ def test_reversal_closes_and_opens_at_the_same_fill():
 def test_no_pyramiding_and_mismatched_exits_are_ignored():
     bars = make_bars([100, 101, 102, 103, 104, 105])
     plan = {
-        0: [("buy_to_cover", {}), ("sell", {})],  # flat: both exits ignored
+        0: [("buy_to_cover", {}), ("sell", {})],
         1: [("buy", dict(qty=1))],
-        2: [("buy", dict(qty=5)), ("buy_to_cover", {})],  # already long: second entry and short exit ignored
+        2: [("buy", dict(qty=5)), ("buy_to_cover", {})],
         3: [("sell", {})],
     }
     res = run(plan, bars)
@@ -272,17 +266,14 @@ def test_orders_on_one_bar_process_in_placement_order():
     assert res.open_position.entry_name == "L2" and res.open_position.entry_price == 102.0
 
 
-# --- R5: P&L from the contract spec ---------------------------------------------------------------
-
 
 def test_pnl_uses_point_value_contracts_and_costs():
     bars = make_bars([100, 110, 120, 110, 100, 90])
     costs = Costs(commission=4.2, slippage=5.0)
     res = run({0: [("buy", dict(qty=2))], 1: [("sell", {})], 2: [("sell_short", dict(qty=3))], 4: [("buy_to_cover", {})]}, bars, costs)
     long_, short = res.trades.itertuples()
-    # long 2 from bar 1 open (110) to bar 2 open (120): 10 pts x $20 x 2 = 400, costs (4.2 + 5) x 2
     assert (long_.gross_pnl, long_.commission, long_.slippage, long_.net_pnl) == (400.0, 8.4, 10.0, 400.0 - 18.4)
-    assert short.gross_pnl == (110 - 90) * 20 * 3  # short from bar 3 open (110) to bar 5 open (90)
+    assert short.gross_pnl == (110 - 90) * 20 * 3
     assert short.net_pnl == pytest.approx(1200 - 3 * 9.2)
     assert short.cum_net_pnl == pytest.approx(long_.net_pnl + short.net_pnl)
     assert res.net_profit == pytest.approx(short.cum_net_pnl)
@@ -291,11 +282,8 @@ def test_pnl_uses_point_value_contracts_and_costs():
 def test_equity_is_closed_net_plus_open_gross_at_each_close():
     bars = make_bars([100, 101, 102, 103], closes=[100, 105, 106, 103])
     res = run({0: [("buy", {})], 1: [("sell", {})]}, bars, Costs(commission=2.0))
-    # bar1: long from 101, close 105 -> +80 open; bar2: sold at 102 open -> 20 - 2 closed.
     assert res.equity.tolist() == [0.0, 80.0, 18.0, 18.0]
 
-
-# --- inputs, errors, determinism (R11) ------------------------------------------------------------
 
 
 def test_inputs_defaults_overrides_and_unknown_names():
@@ -319,7 +307,6 @@ def test_strategy_exception_names_bar_and_position():
                 raise ZeroDivisionError("x")
 
     bars = make_bars([100, 101, 102])
-    # bar numbers match current_bar (1-based): raised on bar 3, entered at bar 2's open
     with pytest.raises(StrategyError, match=r"bar 3 \(2024-01-02 09:45:00-05:00\), position \+1 x1 @ 101.0 since bar 2:") as e:
         run_backtest(Boom(), bars, NQ)
     assert isinstance(e.value.__cause__, ZeroDivisionError)
@@ -364,24 +351,20 @@ def test_backtest_is_deterministic(tmp_path):
     assert len(pd.read_csv(a)) > 100
 
 
-# --- reward:risk at entry (Phase 17) --------------------------------------------------------------
-# risk_usd / reward_usd = distance from the entry price to the stop / target in force from the entry fill on, x point
-# value x contracts; planned_rr = reward / risk; r_multiple = net / risk.
-
-FLAT = [100.0] * 8  # highs 101, lows 99: nothing far from the entry ever fills
+FLAT = [100.0] * 8
 
 
 def test_set_stop_loss_and_profit_target_give_risk_reward_and_r():
     plan = {0: [("buy", dict(qty=2)), ("set_stop_loss", dict(amount=800)), ("set_profit_target", dict(amount=1600))],
-            3: [("sell", {})]}  # fmt: skip
+            3: [("sell", {})]}
     (t,) = run(plan, make_bars(FLAT), Costs(commission=4)).trades.itertuples()
-    assert (t.risk_usd, t.reward_usd, t.planned_rr) == (800.0, 1600.0, 2.0)  # 20 pts and 40 pts on 2 NQ
+    assert (t.risk_usd, t.reward_usd, t.planned_rr) == (800.0, 1600.0, 2.0)
     assert t.net_pnl == -8.0 and t.r_multiple == pytest.approx(-0.01)
 
 
 def test_stop_and_limit_exit_orders_placed_with_a_close_entry_give_risk_reward():
     plan = {1: [("buy", dict(at="close")), ("sell", dict(name="SL", at="stop", price=90)), ("sell", dict(name="TP", at="limit", price=120))],
-            4: [("sell", {})]}  # fmt: skip  (IVB style: the exits are placed in the entry's own on_bar)
+            4: [("sell", {})]}
     (t,) = run(plan, make_bars(FLAT)).trades.itertuples()
     assert t.entry_price == 100.5
     assert (t.risk_usd, t.reward_usd) == (210.0, 390.0) and t.planned_rr == pytest.approx(390 / 210)
@@ -403,16 +386,16 @@ def test_no_stop_or_a_stop_on_the_wrong_side_leaves_risk_empty():
 def test_the_tightest_stop_and_nearest_target_win():
     plan = {0: [("buy", dict(qty=2)), ("set_stop_loss", dict(amount=800)), ("sell", dict(at="stop", price=90)),
                 ("set_profit_target", dict(amount=1600)), ("sell", dict(at="limit", price=110))],
-            3: [("sell", {})]}  # fmt: skip
+            3: [("sell", {})]}
     (t,) = run(plan, make_bars(FLAT)).trades.itertuples()
-    assert (t.risk_usd, t.reward_usd) == (400.0, 400.0)  # 10 pts beats 20, 10 pts beats 40
+    assert (t.risk_usd, t.reward_usd) == (400.0, 400.0)
 
 
 def test_partial_exits_split_the_risk_and_a_reversal_takes_its_own():
     plan = {0: [("buy", dict(qty=3)), ("set_stop_loss", dict(amount=600))], 1: [("sell", dict(qty=1))],
-            2: [("sell_short", dict(name="S", qty=1))], 4: [("buy_to_cover", {})]}  # fmt: skip
+            2: [("sell_short", dict(name="S", qty=1))], 4: [("buy_to_cover", {})]}
     tr = run(plan, make_bars(FLAT)).trades
-    assert tr["risk_usd"].tolist() == [200.0, 400.0, 600.0]  # 10 pts x 1 and x 2 contracts; the short: $600 on 1 contract
+    assert tr["risk_usd"].tolist() == [200.0, 400.0, 600.0]
     assert tr["direction"].tolist() == ["long", "long", "short"]
 
 

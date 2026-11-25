@@ -1,6 +1,3 @@
-// Walk Forward tab: folds of in-sample optimization + out-of-sample trading (default: rolling 12 / 12 months, step 12,
-// 4 folds ending at the Data tab's end), the stitched out-of-sample result, Save = `guban wfo`'s folder. Runs in the
-// "opt" worker like the optimization (Stop ends it; one of the two at a time). Worker side: guban/gui/tab_walkforward.py.
 'use strict';
 
 (() => {
@@ -22,7 +19,6 @@
     settings.set('walkforward', { ...layout(), mode: f('mode').value, metric: f('metric').value, min_trades: f('mintrades').value, workers: f('workers').value });
   }
 
-  // the folds the form describes, checked against the loaded bars
   async function preview() {
     if (!studio.data.state.loaded) { f('windows').replaceChildren(); return null; }
     try {

@@ -34,7 +34,7 @@ class Backtested:
     capital: float
     costs_from: str
     metrics: dict
-    mc_settings: dict  # the Monte Carlo tab's trade settings at Run (tab_montecarlo.trade_settings)
+    mc_settings: dict
     evaluation: dict | None
     exposure: dict
     rolls: dict
@@ -64,7 +64,7 @@ def _stats_box(ax, values: np.ndarray) -> None:
     s = pd.Series(values)
     text = f"Mean {s.mean():,.0f}\nMedian {s.median():,.0f}\nStd {s.std():,.0f}\nSkew {s.skew():.2f}".replace("-", "−")
     ax.text(0.98, 0.95, text, transform=ax.transAxes, ha="right", va="top", fontsize=8, color=COLORS["ink"],
-            bbox={"boxstyle": "round,pad=0.4", "facecolor": COLORS["surface"], "edgecolor": COLORS["axis"]})  # fmt: skip
+            bbox={"boxstyle": "round,pad=0.4", "facecolor": COLORS["surface"], "edgecolor": COLORS["axis"]})
 
 
 def _hist(values: np.ndarray, color: str, xlabel: str) -> str | None:
@@ -255,7 +255,7 @@ def backtest_save(state: State, params: dict, emit) -> dict:
                  "commission": a.commission, "slippage": a.slippage, "costs": b.costs_from, "data_from": data_from,
                  "capital": b.capital, "inputs": a.inputs, "first_bar": first, "last_bar": last, "bars": a.hi,
                  "dataset": DATASETS[a.dataset], "window": [a.bars.index[a.lo], last], "written_by": "Guban Studio",
-                 "contract_rolls": b.rolls, "session_exposure": b.exposure}  # fmt: skip
+                 "contract_rolls": b.rolls, "session_exposure": b.exposure}
     mc_json = {} if mc is None else {"monte_carlo": mc if isinstance(mc, dict) else mc.summary()}
     ev_json = {} if b.evaluation is None else {"evaluation": b.evaluation}
     (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **b.metrics, **mc_json, **ev_json}), indent=2, default=str) + "\n", encoding="utf-8")
@@ -266,12 +266,12 @@ def backtest_save(state: State, params: dict, emit) -> dict:
                     "Bars": f"{a.hi - a.lo:,}", "First / last bar": f"{a.bars.index[a.lo]:%Y-%m-%d %H:%M} / {last:%Y-%m-%d %H:%M}"},
         "inputs": a.inputs,
         "notes": notes(b),
-    }  # fmt: skip
+    }
     if trade_charts:
         emit("progress", message=f"Drawing {len(a.result.trades):,} trade images…")
-    with theme("light"):  # the CLI's report look, whatever the window's theme
+    with theme("light"):
         report = write_report(a.result, a.bars, out / "report.html", b.metrics, meta, monte_carlo=mc, trade_charts=trade_charts,
-                              evaluation=b.evaluation)  # fmt: skip
+                              evaluation=b.evaluation, lines=a.plots)
     return {"folder": str(out), "files": [str(path), str(out / "metrics.json"), str(report)], "report": str(report.resolve())}
 
 

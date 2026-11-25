@@ -54,14 +54,12 @@ def propfirm_body(res: PropFirmResult) -> str:
         _degradation_html(res),
         _sweep_html(res),
         _stats_html(res),
-    ])  # fmt: skip
+    ])
 
 
 def _size_label(size: float, contracts: float | None) -> str:
     return f"{size:g}×" + (f" ({size * contracts:g})" if contracts is not None else "")
 
-
-# --- charts --------------------------------------------------------------------------------------
 
 
 @styled
@@ -119,7 +117,7 @@ def _mdd_png(res: PropFirmResult) -> str:
     med = m.summary()["p50_max_dd"]
     fig, ax = figure(4.8, 2.8)
     ax.hist(m.max_dd, bins=DD_BINS, color=COLORS["s1"], rwidth=0.9)
-    left = med is not None and med <= limit  # labels lean away from each other
+    left = med is not None and med <= limit
     _vline(ax, limit, COLORS["bad"], f"limit {money(limit)}", "left" if left else "right")
     if med is not None:
         _vline(ax, med, COLORS["ink2"], f"median {money(med)}", "right" if left else "left")
@@ -174,8 +172,6 @@ def _rate_png(rows: list[tuple], horizontal: bool) -> str:
     return to_data_uri(fig)
 
 
-# --- html pieces ---------------------------------------------------------------------------------
-
 
 def _pct(v) -> str:
     return fmt_value(v, "pct") if v is not None else "n/a"
@@ -209,7 +205,7 @@ def _paths_html(res: PropFirmResult) -> str:
     r = res.setup.rules
     cap = (f"{len(res.paths):,} simulated evaluations at size {res.setup.size:g} (seed + 5000), equity after each day, USD. "
            f"Dashed lines: the profit target ({fmt_value(r.profit_target, 'usd')}) and the drawdown limit measured from the start "
-           f"(−{r.max_drawdown:,.0f}); the real limit trails the end-of-day high. A failed path stops on its failure day; a passed one stays flat.")  # fmt: skip
+           f"(−{r.max_drawdown:,.0f}); the real limit trails the end-of-day high. A failed path stops on its failure day; a passed one stays flat.")
     return f"<section><h2>Equity paths</h2><p class='cap'>{html.escape(cap)}</p>{img_tag(_paths_png(res), 'Equity paths', id='paths')}</section>"
 
 
@@ -227,10 +223,10 @@ def _degradation_html(res: PropFirmResult) -> str:
         s = sr.summary()
         rows.append([html.escape(sc.label), _pct(sc.win_rate_adj), _pct(sc.pnl_shrink), _pct(s["pass_rate"]),
                      f"{_pct(s['pass_rate_ci'][0])} – {_pct(s['pass_rate_ci'][1])}", _pct(sr.rate(FAIL_DD)), _pct(sr.rate(FAIL_TIME)),
-                     fmt_value(s["avg_days_to_pass"], "num"), fmt_value(s["avg_max_dd"], "usd")])  # fmt: skip
+                     fmt_value(s["avg_days_to_pass"], "num"), fmt_value(s["avg_max_dd"], "usd")])
     st = res.setup
     cap = (f"What if live trading is worse? {st.sweep_sims:,} simulations per scenario at size {st.size:g} (seed + 1000). PnL shrink scales "
-           "every pool day; WR adjust turns that share of the pool's days (winning ones, picked at random) into the mean losing day. Bars: pass rate with its 95% CI.")  # fmt: skip
+           "every pool day; WR adjust turns that share of the pool's days (winning ones, picked at random) into the mean losing day. Bars: pass rate with its 95% CI.")
     return (
         f"<section><h2>Degradation scenarios</h2><p class='cap'>{html.escape(cap)}</p>" + img_tag(_rate_png(_degr_rows(res), True), "Degradation scenarios", id="degr")
         + _rate_table(rows, ["Scenario", "WR adjust", "PnL shrink", "Pass rate", "95% CI", "Fail: drawdown", "Fail: time", "Avg days to pass", "Avg max drawdown"])
@@ -249,9 +245,9 @@ def _sweep_html(res: PropFirmResult) -> str:
         mark = " <span class='badge'>best</span>" if sr is best else ""
         rows.append([f"{sr.size:g}×{mark}", "–" if c is None else f"{sr.size * c:g}", _pct(s["pass_rate"]),
                      f"{_pct(s['pass_rate_ci'][0])} – {_pct(s['pass_rate_ci'][1])}", _pct(sr.rate(FAIL_DD)), _pct(sr.rate(FAIL_TIME)),
-                     fmt_value(s["avg_days_to_pass"], "num"), fmt_value(s["avg_max_dd"], "usd")])  # fmt: skip
+                     fmt_value(s["avg_days_to_pass"], "num"), fmt_value(s["avg_max_dd"], "usd")])
     cap = (f"Pass rate by size: a multiplier on the trade file's daily P&L" + (f" (1× = {c:g} contracts per trade, as in the file)" if c is not None else "")
-           + f". {res.setup.sweep_sims:,} simulations per size, all from the same seed (seed + 2000). Bars: pass rate with its 95% CI.")  # fmt: skip
+           + f". {res.setup.sweep_sims:,} simulations per size, all from the same seed (seed + 2000). Bars: pass rate with its 95% CI.")
     return (
         f"<section><h2>Size sweep</h2><p class='cap'>{html.escape(cap)}</p>" + img_tag(_rate_png(_sweep_rows(res), False), "Size sweep", id="sweep")
         + _rate_table(rows, ["Size", "Contracts", "Pass rate", "95% CI", "Fail: drawdown", "Fail: time", "Avg days to pass", "Avg max drawdown"])
@@ -261,7 +257,7 @@ def _sweep_html(res: PropFirmResult) -> str:
 
 def _stats_html(res: PropFirmResult) -> str:
     t, d, m, s = res.stats, res.daily, res.main.summary(), res.summary()
-    usd = lambda v: fmt_value(v, "usd")  # noqa: E731
+    usd = lambda v: fmt_value(v, "usd")
     lo, hi = t["ev_usd_ci"]
     rlo, rhi = t["ev_r_ci"]
     trade_rows = [
@@ -285,7 +281,7 @@ def _stats_html(res: PropFirmResult) -> str:
         ("Avg equity at pass", usd(m["avg_equity_at_pass"])),
     ]
     cum = "".join(f"<tr><td class='l'>{n}</td><td>{_pct(p)}</td></tr>" for n, p in s["cumulative"].items())
-    kv = lambda rows: "".join(f"<tr><td class='l'>{html.escape(k)}</td><td>{html.escape(v)}</td></tr>" for k, v in rows)  # noqa: E731
+    kv = lambda rows: "".join(f"<tr><td class='l'>{html.escape(k)}</td><td>{html.escape(v)}</td></tr>" for k, v in rows)
     return (
         "<div class='pair'>"
         f"<section><h2>Trades</h2><p class='cap'>Notebook cell 4. Added costs: ${res.setup.commission + res.setup.slippage:,.2f} per contract per trade; "
@@ -294,7 +290,7 @@ def _stats_html(res: PropFirmResult) -> str:
         f"<div class='wrap'><table class='kv'>{kv(pool_rows)}</table></div>"
         f"<h2 class='gap'>Passing within N attempts</h2><div class='wrap'><table class='kv'><tr><th class='l'>Attempts</th><th>P(pass ≥ 1)</th></tr>{cum}</table></div></section>"
         "</div>"
-    )  # fmt: skip
+    )
 
 
 _EXTRA_CSS = """

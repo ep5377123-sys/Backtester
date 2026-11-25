@@ -23,7 +23,7 @@ from guban.gui.handlers import State, method
 
 SOURCES = {"backtest": "Backtest run", "walkforward": "Walk-forward out of sample", "file": "Trades file"}
 TMP = Path("reports") / "_gui_tmp"
-WALKFORWARD_DIR = TMP / "walkforward"  # trades.csv + days.csv of the last walk-forward, written by the opt worker
+WALKFORWARD_DIR = TMP / "walkforward"
 TRADE_DEFAULTS = {"mc_sims": 10_000, "mc_seed": 42}
 DEFAULT_TZ = "America/New_York"
 
@@ -35,9 +35,9 @@ class Source:
     kind: str
     label: str
     trades: pd.DataFrame
-    info: dict  # run_monte_carlo's per-trade inputs (cli._mc_trade_info)
+    info: dict
     tz: str
-    trades_csv: Path | None = None  # a guban trades.csv / MC export of these trades, when one exists on disk
+    trades_csv: Path | None = None
 
 
 def _num(params: dict, key: str, kind=float, default=None, low=None):
@@ -54,7 +54,7 @@ def trade_settings(params: dict) -> dict:
          "seed": _num(params, "mc_seed", int, TRADE_DEFAULTS["mc_seed"]),
          "dd_limit": _num(params, "mc_dd_limit", float, None),
          "risk": _num(params, "mc_risk", float, None),
-         "oos_from": str(params.get("mc_oos_from") or "").strip() or None}  # fmt: skip
+         "oos_from": str(params.get("mc_oos_from") or "").strip() or None}
     check_settings(s["sims"], s["seed"], s["dd_limit"], s["risk"], s["oos_from"])
     return s
 
@@ -74,7 +74,7 @@ def trade_monte_carlo(trades: pd.DataFrame, info: dict, s: dict, emit=None):
 
 def _file_info(trades: pd.DataFrame, days) -> dict:
     return {"days": np.asarray(days), "contracts": trades["qty"].to_numpy(float), "sides": trades["direction"].to_numpy(str),
-            "times": trades["exit_time"], "risks": trades["risk_usd"].to_numpy(float)}  # fmt: skip
+            "times": trades["exit_time"], "risks": trades["risk_usd"].to_numpy(float)}
 
 
 def read_trades_file(path: Path, tz: str) -> pd.DataFrame:
@@ -87,7 +87,7 @@ def read_trades_file(path: Path, tz: str) -> pd.DataFrame:
         tr["exit_time"] = tr["exit_time"].dt.tz_convert(tz)
     else:
         tr = load_mc_trades(path, tz=None)
-        exits = tr["exit_time"].where(tr["exit_time"].notna(), tr["entry_time"])  # an MC CSV has no exit times
+        exits = tr["exit_time"].where(tr["exit_time"].notna(), tr["entry_time"])
         tr["exit_time"] = exits.dt.tz_localize(tz, ambiguous="NaT", nonexistent="shift_forward")
         tr["risk_usd"] = np.nan
     if tr.empty:
@@ -117,7 +117,7 @@ def source(state: State, params: dict) -> Source:
         days = pd.read_csv(WALKFORWARD_DIR / "days.csv")["day"].to_numpy()
         info = _file_info(tr, pd.to_datetime(days).date)
         return Source(kind, f"Walk-forward: {state.walkforward.get('strategy', '')}, {len(tr):,} out-of-sample trades", tr, info,
-                      tz, path)  # fmt: skip
+                      tz, path)
     path = Path(str(params.get("file") or "").strip().strip('"'))
     if not str(path) or str(path) == "." or not path.is_file():
         raise FileNotFoundError(f"trades file {path} not found: pick a guban trades.csv or an MC export (.csv / .xlsx)")
@@ -139,7 +139,7 @@ def _span(tr: pd.DataFrame) -> str:
 def mc_sources(state: State, params: dict, emit) -> dict:
     """Which sources hold trades now, for the selector."""
     have = {"backtest": state.backtest is not None,
-            "walkforward": state.walkforward is not None and (WALKFORWARD_DIR / "trades.csv").is_file(), "file": True}  # fmt: skip
+            "walkforward": state.walkforward is not None and (WALKFORWARD_DIR / "trades.csv").is_file(), "file": True}
     return {"sources": [{"key": k, "label": label, "available": have[k]} for k, label in SOURCES.items()], "defaults": TRADE_DEFAULTS}
 
 
@@ -155,12 +155,9 @@ def mc_trade_run(state: State, params: dict, emit) -> dict:
     mc = trade_monte_carlo(src.trades, src.info, s, emit)
     state.monte_carlo = {"trade": mc, "source": src.kind, "settings": s}
     return {"source": src.label, "span": _span(src.trades), "seconds": round(time.perf_counter() - t0, 2), "html": _monte_carlo_html(mc),
-            "summary": mc if isinstance(mc, dict) else mc.summary()}  # fmt: skip
+            "summary": mc if isinstance(mc, dict) else mc.summary()}
 
 
-# --- prop-firm evaluation (guban propfirm) ------------------------------------------------------------------------
-
-# (section, key, label, kind): the rules file's values, editable on the tab; scenarios stay as the file has them
 PROPFIRM_FIELDS = [
     ("rules", "name", "Name", "text"),
     ("rules", "account_size", "Account size ($, not simulated)", "number"),
@@ -253,7 +250,7 @@ def mc_propfirm_rules(state: State, params: dict, emit) -> dict:
         "rules": names,
         "selected": name,
         "fields": [{"section": sec, "key": key, "label": label, "kind": kind, "value": _form_value(setup, sec, key, kind)}
-                   for sec, key, label, kind in PROPFIRM_FIELDS],  # fmt: skip
+                   for sec, key, label, kind in PROPFIRM_FIELDS],
         "scenarios": [f"{s.label}: win rate {s.win_rate_adj:+.0%}, P&L ×{1 - s.pnl_shrink:g}" for s in setup.scenarios],
         "notes": list(setup.notes),
     }
@@ -267,7 +264,7 @@ def _trades_csv(state: State, src: Source) -> tuple[Path, str]:
         from guban.gui.tab_backtest import run_folder
 
         b = state.backtest
-        path = b.a.result.write_trades_csv(TMP / "backtest" / "trades.csv", b.capital)  # what the Backtest tab's Save writes
+        path = b.a.result.write_trades_csv(TMP / "backtest" / "trades.csv", b.capital)
         return path, run_folder(b, state.data).name
     if src.kind == "walkforward":
         return src.trades_csv, _slug(f"{state.walkforward.get('strategy', 'walk_forward')}_wfo")
@@ -290,7 +287,7 @@ def mc_propfirm_run(state: State, params: dict, emit) -> dict:
     state.monte_carlo["propfirm"] = {"res": res, "trades": path, "stem": stem, "edited": edited}
     m, s = res.main.summary(), res.summary()
     return {"source": src.label, "span": _span(src.trades), "seconds": round(time.perf_counter() - t0, 2), "html": propfirm_body(res),
-            "pass_rate": m["pass_rate"], "verdict": s["verdict"], "edited": edited}  # fmt: skip
+            "pass_rate": m["pass_rate"], "verdict": s["verdict"], "edited": edited}
 
 
 @method("mc.propfirm_save")
@@ -305,7 +302,7 @@ def mc_propfirm_save(state: State, params: dict, emit) -> dict:
     res = pf["res"]
     out = Path(params["out"]) if params.get("out") else REPORTS / f"{pf['stem']}_{res.setup.key}"
     edited = f"edited in Guban Studio: {', '.join(pf['edited'])}" if pf["edited"] else None
-    with theme("light"):  # the CLI's report look
+    with theme("light"):
         html_path = write_propfirm_folder(res, Path(pf["trades"]), out, edited)
     files = [out / n for n in ("propfirm.json", "sweep.csv", "degradation.csv", "daily.csv")] + [html_path]
     return {"folder": str(out), "files": [str(f) for f in files], "report": str(html_path.resolve())}

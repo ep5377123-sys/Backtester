@@ -51,8 +51,6 @@ def apex(**kw) -> Rules:
     return Rules(**{**base, **kw})
 
 
-# --- the notebook's code, verbatim (cell 6), as the oracle ----------------------------------------------------
-
 
 @dataclass
 class ApexChallenge:
@@ -98,13 +96,13 @@ def nb_simulate_apex(daily_pool, challenge, n_sims, n_contracts, rng, degrade_wr
                 eod_hwm = equity
             sim_max_dd = max(sim_max_dd, current_dd)
             if current_dd >= challenge.max_drawdown:
-                outcome = "fail_dd"; break  # noqa: E702
+                outcome = "fail_dd"; break
             if challenge.daily_loss_limit > 0 and day_pnl <= -challenge.daily_loss_limit:
-                outcome = "fail_daily"; break  # noqa: E702
+                outcome = "fail_daily"; break
             if challenge.eod_trailing and equity > eod_hwm:
                 eod_hwm = equity
             if equity >= challenge.profit_target and day >= challenge.min_trading_days:
-                outcome = "pass"; days_to_pass.append(day); break  # noqa: E702
+                outcome = "pass"; days_to_pass.append(day); break
         if outcome is None:
             outcome = "fail_time"
         if outcome == "pass":
@@ -118,7 +116,7 @@ def nb_simulate_apex(daily_pool, challenge, n_sims, n_contracts, rng, degrade_wr
         max_dds_all.append(sim_max_dd)
         final_equities.append(equity)
     return {"passed": passed, "fail_dd": fail_dd, "fail_daily": fail_daily, "fail_time": fail_time,
-            "days_to_pass": np.array(days_to_pass), "max_dds_all": np.array(max_dds_all), "final_equities": np.array(final_equities)}  # fmt: skip
+            "days_to_pass": np.array(days_to_pass), "max_dds_all": np.array(max_dds_all), "final_equities": np.array(final_equities)}
 
 
 def random_pool(seed: int = 7, n: int = 300) -> np.ndarray:
@@ -127,8 +125,6 @@ def random_pool(seed: int = 7, n: int = 300) -> np.ndarray:
     v = np.where(g.random(n) < 0.6, 0.0, np.where(g.random(n) < 0.85, g.normal(150, 60, n), g.normal(-700, 200, n)))
     return np.round(v, 2)
 
-
-# --- rules file ----------------------------------------------------------------------------------------------
 
 
 def test_shipped_rules_are_the_notebooks_values():
@@ -140,7 +136,7 @@ def test_shipped_rules_are_the_notebooks_values():
     assert (s.sims, s.sweep_sims, s.seed, s.size, s.paths, s.bootstrap_sims) == (20_000, 5_000, 42, 1.0, 300, 10_000)
     assert s.sweep == (0.3, 0.5, 0.7, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0)
     assert [(x.win_rate_adj, x.pnl_shrink) for x in s.scenarios] == [(0.0, 0.0), (-0.03, 0.10), (-0.05, 0.15), (-0.05, 0.25), (-0.08, 0.30)]
-    assert any("25,000" in n for n in s.notes)  # the 50K-vs-$25k flag travels with the rules
+    assert any("25,000" in n for n in s.notes)
 
 
 def test_rules_lookup_and_overrides(tmp_path):
@@ -157,7 +153,7 @@ def test_rules_lookup_and_overrides(tmp_path):
 @pytest.mark.parametrize(
     "body, match",
     [
-        ('eod_trailing = "false"', "eod_trailing must be true or false"),  # FIX.md #10: bool("false") was True
+        ('eod_trailing = "false"', "eod_trailing must be true or false"),
         ("profit_target = -5", "profit_target must be > 0"),
         ("max_drawdown = 0", "max_drawdown must be > 0"),
         ("min_trading_days = 30", "more than max_trading_days"),
@@ -180,7 +176,7 @@ def test_rules_files_are_read_strictly(tmp_path, body, match):
 @pytest.mark.parametrize(
     "section, body, match",
     [
-        ("costs", "risk_per_contract = 0", "risk_per_contract must be > 0"),  # would make R multiples infinite
+        ("costs", "risk_per_contract = 0", "risk_per_contract must be > 0"),
         ("costs", "commission = -1", "commission must be >= 0"),
         ("simulation", "sims = 0", "sims must be >= 1"),
         ("simulation", "size = -1", "size must be > 0"),
@@ -209,14 +205,12 @@ def test_bootstrap_in_batches_equals_the_notebooks_single_draw(monkeypatch):
 
     x = np.random.default_rng(3).normal(size=37)
     want = np.random.default_rng(42).choice(x, size=(501, 37), replace=True).mean(axis=1)
-    for batch in (37, 100, 10**9):  # one row per batch, a few rows, everything at once
+    for batch in (37, 100, 10**9):
         monkeypatch.setattr(sim, "BOOTSTRAP_BATCH", batch)
         boot, lo, hi = sim.bootstrap_ci(x, 501, seed=42)
         assert np.array_equal(boot, want)
         assert (lo, hi) == (float(np.quantile(want, 0.025)), float(np.quantile(want, 0.975)))
 
-
-# --- trades and daily pool -----------------------------------------------------------------------------------
 
 
 def test_load_trades_quoted_mc_csv(tmp_path):
@@ -232,9 +226,8 @@ def test_load_trades_quoted_mc_csv(tmp_path):
 
 def test_costs_and_daily_pool_fill_weekdays_and_drop_weekends(tmp_path):
     p = tmp_path / "mc.csv"
-    # Fri 5th, Sun 7th (weekend: not in the pool), Tue 9th x2
     write_mc_csv(p, [("2024-01-05 10:00", 100.0, 1, "LONG"), ("2024-01-07 17:30", 999.0, 1, "LONG"),
-                     ("2024-01-09 10:00", 40.0, 2, "LONG"), ("2024-01-09 12:00", -60.0, 2, "SHORT")])  # fmt: skip
+                     ("2024-01-09 10:00", 40.0, 2, "LONG"), ("2024-01-09 12:00", -60.0, 2, "SHORT")])
     setup = Setup(key="t", rules=apex(), commission=2.0, slippage=3.0, risk_per_contract=500.0)
     df = add_costs(load_trades(p), setup)
     assert df["costs_usd"].tolist() == [5.0, 5.0, 10.0, 10.0]
@@ -247,11 +240,8 @@ def test_costs_and_daily_pool_fill_weekdays_and_drop_weekends(tmp_path):
     res = run_propfirm(load_trades(p), Setup(key="t", rules=apex(), sims=50, sweep_sims=10, paths=5, bootstrap_sims=100))
     assert (res.weekend_trades, res.weekend_days) == (1, 1)
     assert any("weekend" in n for n in res.notes)
-    # FIX.md #11: the method's modeling assumptions are labeled apart from the firm's rules
     assert sum(n.startswith("Assumption:") for n in res.notes) >= 3 and any("entry date" in n for n in res.notes)
 
-
-# --- simulation ----------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("rules", [
@@ -259,12 +249,12 @@ def test_costs_and_daily_pool_fill_weekdays_and_drop_weekends(tmp_path):
     apex(eod_trailing=False),
     apex(daily_loss_limit=500),
     apex(min_trading_days=8, max_trading_days=15),
-])  # fmt: skip
+])
 @pytest.mark.parametrize("size, wr, shrink", [(1.0, 0.0, 0.0), (1.7, 0.0, 0.0), (1.0, -0.05, 0.15), (0.5, -0.08, 0.0)])
 def test_simulate_equals_the_notebook(rules, size, wr, shrink):
     net = random_pool()
     ch = ApexChallenge(**{k: getattr(rules, k) for k in ("name", "account_size", "profit_target", "max_drawdown", "eod_trailing",
-                                                           "daily_loss_limit", "min_trading_days", "max_trading_days")})  # fmt: skip
+                                                           "daily_loss_limit", "min_trading_days", "max_trading_days")})
     nb = nb_simulate_apex(pd.DataFrame({"net_pnl_usd": net}), ch, 2_000, size, np.random.default_rng(42), wr, shrink)
     ours = simulate(net, rules, 2_000, size, np.random.default_rng(42), wr, shrink)
     assert (ours.passed, ours.count(FAIL_DD), ours.count(FAIL_DAILY), ours.count(FAIL_TIME)) == (nb["passed"], nb["fail_dd"], nb["fail_daily"], nb["fail_time"])
@@ -275,28 +265,26 @@ def test_simulate_equals_the_notebook(rules, size, wr, shrink):
 
 def test_hand_computed_outcomes():
     r = apex()
-    rng = lambda: np.random.default_rng(1)  # noqa: E731
-    up = simulate(np.array([500.0]), r, 10, 1.0, rng())  # 500, 1000, 1500 -> pass on day 3
+    rng = lambda: np.random.default_rng(1)
+    up = simulate(np.array([500.0]), r, 10, 1.0, rng())
     assert up.pass_rate == 1.0 and set(up.days) == {3} and set(up.final_equity) == {1500.0} and up.max_dd.max() == 0.0
-    down = simulate(np.array([-600.0]), r, 10, 1.0, rng())  # drawdown 600, then 1200 >= 1000 on day 2
+    down = simulate(np.array([-600.0]), r, 10, 1.0, rng())
     assert down.rate(FAIL_DD) == 1.0 and set(down.days) == {2} and set(down.max_dd) == {1200.0}
-    half = simulate(np.array([-600.0]), r, 10, 0.5, rng())  # size 0.5: -300/day, drawdown 1,200 on day 4
+    half = simulate(np.array([-600.0]), r, 10, 0.5, rng())
     assert half.rate(FAIL_DD) == 1.0 and set(half.days) == {4}
     flat = simulate(np.array([0.0]), r, 10, 1.0, rng())
     assert flat.rate(FAIL_TIME) == 1.0 and set(flat.days) == {21}
-    exact = simulate(np.array([-1000.0]), r, 5, 1.0, rng())  # drawdown exactly at the limit fails
+    exact = simulate(np.array([-1000.0]), r, 5, 1.0, rng())
     assert exact.rate(FAIL_DD) == 1.0 and set(exact.days) == {1}
     daily = simulate(np.array([-500.0]), apex(daily_loss_limit=500), 5, 1.0, rng())
     assert daily.rate(FAIL_DAILY) == 1.0 and set(daily.days) == {1}
-    slow = simulate(np.array([700.0]), apex(min_trading_days=4), 5, 1.0, rng())  # target reached day 2, pass needs day 4
+    slow = simulate(np.array([700.0]), apex(min_trading_days=4), 5, 1.0, rng())
     assert slow.pass_rate == 1.0 and set(slow.days) == {4}
 
 
 def test_trailing_drawdown_follows_the_end_of_day_high():
-    # Pool [+900, -950]: drawn in order +900, -950 -> equity -50 after a 900 high: drawdown 950 < 1000, no fail.
-    # A second -950 would make it 1900: fail.
     r = apex(profit_target=100_000)
-    class Seq:  # rng stand-in that draws days in a fixed order
+    class Seq:
         def __init__(self, idx):
             self.idx = iter(idx)
 
@@ -313,11 +301,11 @@ def test_degradation():
     net = np.array([100.0, 200.0, 0.0, -300.0, -500.0, 50.0, 0.0, 0.0, 0.0, 0.0])
     shrunk = degrade(net, np.random.default_rng(0), 0.0, 0.2)
     np.testing.assert_allclose(shrunk, net * 0.8)
-    out = degrade(net, np.random.default_rng(0), -0.2, 0.0)  # int(0.2 x 10) = 2 winning days -> mean loss -400
+    out = degrade(net, np.random.default_rng(0), -0.2, 0.0)
     assert (out == -400.0).sum() == 2 and (out > 0).sum() == 1 and (out == 0).sum() == 5
     nb = nb_apply_day_degradation(pd.DataFrame({"net_pnl_usd": net}), np.random.default_rng(0), -0.2, 0.1)["net_pnl_usd"].to_numpy()
     np.testing.assert_array_equal(degrade(net, np.random.default_rng(0), -0.2, 0.1), nb)
-    only_wins = degrade(np.array([10.0, 20.0, 30.0, 40.0]), np.random.default_rng(0), -0.5, 0.0)  # no losers: minus |mean|
+    only_wins = degrade(np.array([10.0, 20.0, 30.0, 40.0]), np.random.default_rng(0), -0.5, 0.0)
     assert (only_wins == -25.0).sum() == 2
 
 
@@ -332,12 +320,10 @@ def test_paths_stop_on_failure_and_flatline_after_pass():
 
 def test_wilson_and_verdict():
     lo, hi = wilson_ci(4836, 20_000)
-    assert (round(lo, 3), round(hi, 3)) == (0.236, 0.248)  # the notebook's printed CI for 24.2%
+    assert (round(lo, 3), round(hi, 3)) == (0.236, 0.248)
     assert np.isnan(wilson_ci(0, 0)[0])
     assert [verdict(p)[0] for p in (0.9, 0.7, 0.5, 0.35, 0.2, 0.0)] == ["STRONG", "STRONG", "SOLID", "MODERATE", "RISKY", "POOR"]
 
-
-# --- full run, report, CLI -----------------------------------------------------------------------------------
 
 
 def fixture_trades(tmp_path, n_days: int = 120):
@@ -358,7 +344,6 @@ def test_run_propfirm_is_deterministic_and_consistent(tmp_path):
     a, b = run_propfirm(load_trades(p), setup), run_propfirm(load_trades(p), setup)
     np.testing.assert_array_equal(a.main.outcome, b.main.outcome)
     assert a.sweep_table().equals(b.sweep_table()) and a.scenario_table().equals(b.scenario_table())
-    # the baseline scenario is the main settings with the degradation seed; size 1.0 in the sweep likewise with the sweep seed
     same = simulate(a.daily["net_pnl_usd"].to_numpy(), setup.rules, 200, 1.0, np.random.default_rng(setup.seed + 2000))
     np.testing.assert_array_equal(a.sweep[1].outcome, same.outcome)
     s = a.summary()
@@ -386,7 +371,7 @@ def test_cli_propfirm(tmp_path):
     p = fixture_trades(tmp_path)
     out = tmp_path / "pf"
     r = CliRunner().invoke(app, ["propfirm", "--trades", str(p), "--sims", "300", "--sweep-sims", "100", "--sweep", "0.5,1", "--seed", "7",
-                                 "--commission", "0", "--slippage", "0", "--out", str(out)])  # fmt: skip
+                                 "--commission", "0", "--slippage", "0", "--out", str(out)])
     assert r.exit_code == 0, r.output
     assert "PASS RATE" in r.output
     for f in ("propfirm.json", "propfirm.html", "sweep.csv", "degradation.csv", "daily.csv"):

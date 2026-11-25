@@ -1,6 +1,3 @@
-// Optimization tab: a grid over the loaded strategy's inputs, optimized on the in-sample window, the top N rerun out of
-// sample. Runs in the separate "opt" worker (Stop ends it); the main worker only counts combinations.
-// Worker side: guban/gui/tab_optimize.py.
 'use strict';
 
 (() => {

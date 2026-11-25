@@ -25,7 +25,7 @@ def walk(minutes: int, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
         "low": np.minimum(o, c) - rng.integers(0, 4, minutes) * 0.25,
         "close": c,
         "volume": 1,
-    }, index=idx)  # fmt: skip
+    }, index=idx)
     bars = m.resample("5min", label="right", closed="right").agg(
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
     )
@@ -71,9 +71,9 @@ def test_every_signal_makes_exactly_one_trade(mode):
     tr = res.trades
     entries = tr["entry_bar"].tolist() + ([res.open_position.entry_bar] if res.open_position else [])
     assert len(s.signal_bars) > 200
-    assert entries == s.signal_bars  # one trade per signal, at the signal bar, none extra
+    assert entries == s.signal_bars
     assert set(tr["exit_name"]) <= {"SL", "TP", "T"}
-    assert (tr["entry_time"].iloc[1:].to_numpy() >= tr["exit_time"].iloc[:-1].to_numpy()).all()  # no overlap
+    assert (tr["entry_time"].iloc[1:].to_numpy() >= tr["exit_time"].iloc[:-1].to_numpy()).all()
 
 
 class RandomOrders(Strategy):
@@ -84,8 +84,8 @@ class RandomOrders(Strategy):
     def on_start(self):
         self.rng = np.random.default_rng(self.p.seed)
         self.k = 0
-        self.entry_qty = {}  # entry order name -> qty
-        self.seen = set()  # entry names of the positions open at some bar's close
+        self.entry_qty = {}
+        self.seen = set()
 
     def on_bar(self):
         if self.market_position:
@@ -119,31 +119,27 @@ def test_every_fill_is_recorded_once(mode, seed):
     assert tr["trade_no"].tolist() == list(range(1, len(tr) + 1))
     assert np.allclose(tr["cum_net_pnl"], tr["net_pnl"].cumsum())
 
-    # Rows of one position are consecutive; positions follow each other without overlap.
     groups = (tr["entry_name"] != tr["entry_name"].shift()).cumsum()
     names = tr.groupby(groups, sort=False)["entry_name"].first()
-    assert names.is_unique  # an entry order fills at most once
+    assert names.is_unique
     first_entry = tr.groupby(groups, sort=False)["entry_time"].first()
     last_exit = tr.groupby(groups, sort=False)["exit_time"].last()
     assert (first_entry.iloc[1:].to_numpy() >= last_exit.iloc[:-1].to_numpy()).all()
 
-    # Contracts: the rows of a closed position add up to exactly the entry's qty (the open one: rows + what is left).
     closed_qty = tr.groupby("entry_name")["qty"].sum()
     for name, q in closed_qty.items():
         left = pos.qty if pos is not None and pos.entry_name == name else 0
         assert q + left == s.entry_qty[name], name
 
-    # Every position seen at a bar close is in the ledger or still open; exit orders fill at most once.
     recorded = set(closed_qty.index) | ({pos.entry_name} if pos else set())
     assert s.seen <= recorded
     exits = tr.loc[~tr["exit_name"].isin(list(s.entry_qty) + ["Stop Loss", "Profit Target"]), "exit_name"]
     assert exits.is_unique
-    rev = tr["exit_name"].isin(list(s.entry_qty))  # closed by a reversal: the next position starts at that fill
+    rev = tr["exit_name"].isin(list(s.entry_qty))
     nxt = tr["exit_name"][rev]
     later = {n: t for n, t in zip(tr["entry_name"], tr["entry_time"])} | ({pos.entry_name: pos.entry_time} if pos else {})
     assert all(later[n] == t for n, t in zip(nxt, tr["exit_time"][rev]))
 
-    # Equity at the last close = closed net + open gross.
     open_pnl = 0.0 if pos is None else NQ.pnl(pos.entry_price, BARS["close"].iat[-1], pos.qty, pos.direction)
     assert res.equity.iat[-1] == pytest.approx(res.net_profit + open_pnl)
 
@@ -166,5 +162,5 @@ def test_one_exit_when_stop_target_and_exit_orders_meet_in_one_bar():
                 self.sell("MKT")
 
     res = run_backtest(S(), bars, NQ)
-    assert res.trades["exit_name"].tolist() == ["MKT"]  # the market exit at the open wins; nothing closes the long again
+    assert res.trades["exit_name"].tolist() == ["MKT"]
     assert res.open_position is None

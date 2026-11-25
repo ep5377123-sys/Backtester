@@ -50,7 +50,7 @@ TRADE_STATS = [
     ("total_commission", "Total commission", "usd"),
     ("total_slippage", "Total slippage", "usd"),
     ("ambiguous_fills", "Ambiguous fills", "int"),
-]  # (key, label, format)
+]
 ACCOUNT_STATS = [
     ("max_drawdown_intraday", "Max strategy drawdown (intraday peak to valley)", "usd"),
     ("max_drawdown_intraday_time", "  reached at", "time"),
@@ -73,7 +73,7 @@ def trade_stats(trades: pd.DataFrame) -> dict:
     avg_win = float(net[win].mean()) if win.any() else 0.0
     avg_loss = float(net[loss].mean()) if loss.any() else 0.0
     nan = np.full(n, np.nan)
-    r = trades["r_multiple"].to_numpy(float) if "r_multiple" in trades else nan  # Phase 17; absent in MC exports
+    r = trades["r_multiple"].to_numpy(float) if "r_multiple" in trades else nan
     rr = trades["planned_rr"].to_numpy(float) if "planned_rr" in trades else nan
     return {
         "net_profit": float(net.sum()),
@@ -191,7 +191,7 @@ def backtest_metrics(result, bars: pd.DataFrame) -> dict:
     return compute_metrics(
         result.trades, result.equity, result.equity_low, sessions, open_pnl,
         equity_high=getattr(result, "equity_high", None), bar_drawdown=getattr(result, "bar_drawdown", None),
-    )  # fmt: skip
+    )
 
 
 def window_metrics(result, bars: pd.DataFrame, lo: int, hi: int) -> dict:
@@ -261,7 +261,7 @@ def data_gaps(bars: pd.DataFrame) -> list[int]:
     gap = same & (step > bar_len)
     if "session_close" in bars.columns:
         close = pd.DatetimeIndex(bars["session_close"]).as_unit("ns").asi8
-        gap |= ~same & (close[:-1] - t[:-1] > bar_len)  # the session's data stopped before its scheduled close
+        gap |= ~same & (close[:-1] - t[:-1] > bar_len)
     return (np.flatnonzero(gap) + 1).tolist()
 
 

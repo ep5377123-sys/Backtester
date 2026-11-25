@@ -22,4 +22,4 @@ from guban.propfirm.sim import (
 )
 
 __all__ = ["FAIL_DAILY", "FAIL_DD", "FAIL_TIME", "OUTCOMES", "PASS", "PropFirmResult", "Rules", "Scenario", "Setup", "SimResult",
-           "daily_pool", "degrade", "load_setup", "load_trades", "run_propfirm", "simulate", "simulate_paths", "wilson_ci"]  # fmt: skip
+           "daily_pool", "degrade", "load_setup", "load_trades", "run_propfirm", "simulate", "simulate_paths", "wilson_ci"]

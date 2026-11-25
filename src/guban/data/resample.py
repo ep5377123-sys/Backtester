@@ -29,7 +29,6 @@ from guban.data.parquet import read_fingerprint, write_parquet
 
 TZ = "America/New_York"
 _NS_PER_MIN = 60_000_000_000
-# Bump when resample() output changes (new columns, aggregation rules, bug fixes): every bar cache is rebuilt.
 CACHE_VERSION = 1
 _AGG = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "bid_vol": "sum", "ask_vol": "sum"}
 
@@ -58,7 +57,7 @@ def _session_minutes(index: pd.DatetimeIndex, session: Session) -> tuple[np.ndar
     if session.overnight:
         after_open = tod > s
         in_sess = after_open | (tod <= e)
-        trade_day = day + after_open  # bars after the evening open belong to the next day's session
+        trade_day = day + after_open
         open_min = (trade_day - 1) * 1440 + s
     else:
         in_sess = (tod > s) & (tod <= e)
@@ -92,18 +91,17 @@ def resample(bars: pd.DataFrame, timeframe: str, session: str | Session = "rth",
     src = bars[in_sess]
     open_min, trade_day = open_min[in_sess], trade_day[in_sess]
 
-    if n is None:  # daily: one bar per session, labeled at the session close
+    if n is None:
         label_min = trade_day * 1440 + sess.end_min
     else:
-        offset = _wall_minutes(src.index) - open_min  # 1 .. session length
-        bin_end = np.minimum(-(-offset // n) * n, sess.length_min)  # ceil to N, capped at session close
+        offset = _wall_minutes(src.index) - open_min
+        bin_end = np.minimum(-(-offset // n) * n, sess.length_min)
         label_min = open_min + bin_end
 
     agg = {k: v for k, v in _AGG.items() if k in src.columns}
     if "contract" in src.columns:
         agg["contract"] = "last"
     out = src.groupby(label_min, sort=True).agg(agg)
-    # A bin never spans two sessions, so every row of a bin shares one trading day.
     days = pd.Series(trade_day, index=label_min).groupby(level=0, sort=True).first().to_numpy()
     out["session_date"] = (days * 1440 * _NS_PER_MIN).astype("datetime64[ns]")
     if "contract" in out.columns and isinstance(bars["contract"].dtype, pd.CategoricalDtype):
@@ -162,7 +160,7 @@ def load_bars(
 def _calendar_of(symbol: str) -> str | None:
     try:
         return get_contract(symbol).calendar
-    except KeyError:  # data under a name that is not in config/contracts.toml: no early closes known
+    except KeyError:
         return None
 
 

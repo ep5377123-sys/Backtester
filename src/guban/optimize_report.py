@@ -21,10 +21,10 @@ from guban.optimize import METRICS, RESULT_METRICS, OptimizeResult, heatmap, var
 from guban.report import _CSS, _header, _notes, fmt_value
 
 TOP_ROWS = 50
-MAX_TICKS = 24  # axis labels shown per heatmap axis; longer axes label every n-th value
-ANNOTATE_CELLS = 80  # heatmaps with at most this many cells print each cell's value
-SEQ = ("#cde2fb", "#104281")  # worse -> better
-DIV = ("#e34948", "#f0efec", "#1c5cab")  # negative, 0, positive
+MAX_TICKS = 24
+ANNOTATE_CELLS = 80
+SEQ = ("#cde2fb", "#104281")
+DIV = ("#e34948", "#f0efec", "#1c5cab")
 
 
 def write_optimize_report(opt: OptimizeResult, path: str | Path, meta: dict, x: str | None = None, y: str | None = None, top: int = TOP_ROWS) -> Path:
@@ -142,7 +142,7 @@ def _heatmap_png(z: np.ndarray, xs: list[str], ys: list[str], x: str, y: str, la
     vals = z[np.isfinite(z)]
     lo, hi = (float(vals.min()), float(vals.max())) if len(vals) else (0.0, 1.0)
     if lo < 0 < hi:
-        m = max(-lo, hi)  # symmetric around 0, as plotly's zmid
+        m = max(-lo, hi)
         cmap, norm = LinearSegmentedColormap.from_list("div", DIV), Normalize(-m, m)
     else:
         cmap, norm = LinearSegmentedColormap.from_list("seq", SEQ if hib else SEQ[::-1]), Normalize(lo, hi)
@@ -161,13 +161,13 @@ def _heatmap_png(z: np.ndarray, xs: list[str], ys: list[str], x: str, y: str, la
             if math.isfinite(v):
                 r, g, b, _ = cmap(norm(v))
                 dark = 0.299 * r + 0.587 * g + 0.114 * b < 0.55
-                ax.text(ix + 0.5, iy + 0.5, _cell(v, kind), ha="center", va="center", fontsize=7, color="white" if dark else COLORS["ink"])  # fmt: skip
+                ax.text(ix + 0.5, iy + 0.5, _cell(v, kind), ha="center", va="center", fontsize=7, color="white" if dark else COLORS["ink"])
     best = _best(z, hib)
     if best is not None:
         ax.scatter([best[1] + 0.5], [best[0] + 0.5], s=320, facecolors="none", edgecolors=COLORS["ink"], linewidths=2)
     cb = fig.colorbar(mesh, ax=ax, pad=0.01, fraction=0.035, format=value_formatter(kind))
     cb.outline.set_visible(False)
-    if lo == hi:  # one value: no range to show
+    if lo == hi:
         cb.set_ticks([lo])
     cb.set_label(label)
     return to_data_uri(fig)

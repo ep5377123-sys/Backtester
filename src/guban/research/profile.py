@@ -16,8 +16,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Profile:
-    base: int  # lowest price, in ticks
-    volume: np.ndarray  # volume per tick from `base` up
+    base: int
+    volume: np.ndarray
     tick_size: float
 
     def price(self, i: int) -> float:
@@ -41,7 +41,7 @@ class Profile:
         if top.size == 1:
             return int(top[0])
         mid = (len(v) - 1) / 2
-        return int(top[np.argmin(np.abs(top - mid))])  # argmin keeps the first (lower) of two equal distances
+        return int(top[np.argmin(np.abs(top - mid))])
 
     def poc(self) -> float:
         return self.price(self.poc_index())
@@ -90,4 +90,4 @@ def from_bars(low: np.ndarray, high: np.ndarray, volume: np.ndarray, tick_size: 
     diff = np.zeros(top - base + 2)
     np.add.at(diff, lo - base, per_tick)
     np.add.at(diff, hi - base + 1, -per_tick)
-    return Profile(base, np.round(np.cumsum(diff)[:-1], 9), tick_size)  # rounding drops cumsum noise, so ties stay ties
+    return Profile(base, np.round(np.cumsum(diff)[:-1], 9), tick_size)

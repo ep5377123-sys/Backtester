@@ -22,7 +22,7 @@ import pandas as pd
 
 from guban.metrics import downside_deviation
 
-CRITERIA = [  # (key, label, op, threshold)
+CRITERIA = [
     ("sharpe", "Sharpe (daily, annualized)", ">", 1.0),
     ("profit_factor", "Profit factor", ">", 1.2),
     ("max_dd_r", "Max drawdown (R)", "<=", 25.0),
@@ -69,7 +69,7 @@ def _groups(df: pd.DataFrame, key) -> list[dict]:
             "group": str(name), "trades": len(g), "net": float(g["net"].sum()), "profit_factor": _pf(g["net"].to_numpy(float)),
             "win_rate": float((g["net"] > 0).mean()), "avg_r": float(r.mean()) if len(r) else None,
             "sum_r": float(r.sum()) if len(r) else None, "max_dd_r": -_max_dd(r) if len(r) else None,
-        })  # fmt: skip
+        })
     return rows
 
 
@@ -101,17 +101,17 @@ def evaluate(trades: pd.DataFrame, metrics: dict, days, sims: int = 10_000, seed
             "sharpe": acc["sharpe_daily"], "sortino": acc.get("sortino_daily"), "profit_factor": a["profit_factor"],
             "max_dd_usd": dd, "max_dd_intraday_usd": acc["max_drawdown_intraday"],
             "max_dd_r": -dd / r_usd if r_usd else None,
-        }),  # fmt: skip
+        }),
         "trades_with_stop": int(stop.sum()),
         "equal_risk": None,
     }
     df = pd.DataFrame({"net": net, "r": np.where(stop, r, np.nan), "year": pd.DatetimeIndex(trades["exit_time"]).year,
-                       "exit": trades["exit_name"].astype(str).to_numpy()})  # fmt: skip
+                       "exit": trades["exit_name"].astype(str).to_numpy()})
     out["by_year"] = _groups(df, "year")
     out["by_exit"] = _groups(df, "exit")
     per_contract = risk_usd / trades["qty"].to_numpy(float)
     out["by_stop_width"], out["stop_width_usd"] = [], []
-    try:  # too few distinct stop widths for three bins: no breakdown
+    try:
         width = pd.qcut(per_contract[stop], len(WIDTH_LABELS), labels=WIDTH_LABELS)
     except ValueError:
         width = None
@@ -124,12 +124,12 @@ def evaluate(trades: pd.DataFrame, metrics: dict, days, sims: int = 10_000, seed
     rs = r[stop]
     sharpe, sortino = _daily_ratios(pd.Series(rs), np.asarray(days)[stop], acc["trading_days"])
     eq = _judge({"sharpe": sharpe, "sortino": sortino, "profit_factor": _pf(rs), "max_dd_r": -_max_dd(rs),
-                 "net_r": float(rs.sum()), "avg_r": float(rs.mean())})  # fmt: skip
+                 "net_r": float(rs.sum()), "avg_r": float(rs.mean())})
     if sims:
         rng = np.random.default_rng(seed + 4)
         paths = rng.choice(rs, size=(sims, len(rs)))
         c = np.cumsum(paths, axis=1)
-        mdd = -(c - np.maximum.accumulate(np.maximum(c, 0.0), axis=1)).min(axis=1)  # depth >= 0, from a 0 start
+        mdd = -(c - np.maximum.accumulate(np.maximum(c, 0.0), axis=1)).min(axis=1)
         limit = next(thr for k, _, _, thr in CRITERIA if k == "max_dd_r")
         eq["monte_carlo"] = {
             "sims": sims, "seed": seed + 4,
@@ -137,7 +137,7 @@ def evaluate(trades: pd.DataFrame, metrics: dict, days, sims: int = 10_000, seed
             "p_dd_over_limit": float((mdd > limit).mean()),
             "net_r": {f"p{p}": float(np.percentile(c[:, -1], p)) for p in (5, 50, 95)},
             "p_net_le_0": float((c[:, -1] <= 0).mean()),
-        }  # fmt: skip
+        }
     out["equal_risk"] = eq
     return out
 

@@ -27,9 +27,6 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-# ---------------------------------------------------------------------------
-# Errors: known failures print one "Error: ..." line (plus the strategy's own frames when a strategy raised) and exit 2.
-
 _EXPECTED = (KeyError, ValueError, OSError, RuntimeError)
 
 
@@ -60,7 +57,7 @@ def _strategy_frames(e: BaseException | None) -> list[str]:
 
 
 def _message(e: BaseException) -> str:
-    return str(e.args[0]) if isinstance(e, KeyError) and e.args else str(e)  # str(KeyError) adds quotes
+    return str(e.args[0]) if isinstance(e, KeyError) and e.args else str(e)
 
 
 def _friendly(fn):
@@ -84,9 +81,6 @@ def _friendly(fn):
 
     return wrapper
 
-
-# ---------------------------------------------------------------------------
-# Shared options: run, optimize and wfo take the same data, cost and strategy flags with the same meaning.
 
 DATA, COSTS, STRAT, SEARCH, WF, MC, OUTPUT = "Data", "Costs", "Strategy", "Optimization", "Walk-forward", "Monte Carlo", "Output"
 
@@ -175,8 +169,6 @@ def _open(path: Path) -> None:
     webbrowser.open(path.resolve().as_uri())
 
 
-# ---------------------------------------------------------------------------
-
 
 def _version(value: bool) -> None:
     if value:
@@ -263,7 +255,7 @@ def _parse_inputs(pairs: list[str], defaults: dict) -> dict:
         key = key.strip()
         if not sep or key not in defaults:
             raise typer.BadParameter(f"{pair!r}: use name=value with one of {sorted(defaults)}", param_hint="--set")
-        try:  # the input's default type decides: numbers must be numbers, bools true/false, strings stay text
+        try:
             out[key] = _coerce(raw, defaults[key], pair, what="--set")
         except ValueError as e:
             raise typer.BadParameter(str(e), param_hint="--set") from None
@@ -283,7 +275,7 @@ def _mc_trade_info(trades, bars) -> dict:
     else:
         days = pd.DatetimeIndex(trades["exit_time"]).date
     return {"days": days, "contracts": trades["qty"].to_numpy(float), "sides": trades["direction"].to_numpy(str), "times": trades["exit_time"],
-            "risks": trades["risk_usd"].to_numpy(float)}  # fmt: skip
+            "risks": trades["risk_usd"].to_numpy(float)}
 
 
 def _exposure_notes(exposure: dict) -> list[str]:
@@ -299,7 +291,7 @@ def _exposure_notes(exposure: dict) -> list[str]:
 
 
 def _details(symbol: str, tf: str, session: str, history_from: str | None, spec, tz: str, fill_mode: str, commission: float, slippage: float,
-             costs_from: str = "flags", data_from: str | None = None) -> dict:  # fmt: skip
+             costs_from: str = "flags", data_from: str | None = None) -> dict:
     return {
         "Data": f"{symbol} {tf}, {session} session" + (f" (+{history_from} history)" if history_from else "")
         + (f", from {data_from}" if data_from else ""),
@@ -350,12 +342,12 @@ def run_cmd(
     from guban.report import fmt_value, write_report
 
     t0 = time.perf_counter()
-    check_settings(mc_sims, mc_seed, mc_dd_limit, mc_risk, mc_oos_from)  # before the data loads
+    check_settings(mc_sims, mc_seed, mc_dd_limit, mc_risk, mc_oos_from)
     cls = _load_strategy_class(strategy_file, class_name)
     overrides = _parse_inputs(inputs, cls.inputs)
     try:
         strategy = cls(**overrides)
-    except Exception as e:  # the strategy's own __init__ failed
+    except Exception as e:
         raise StrategyError(f"{cls.__name__}({', '.join(f'{k}={v!r}' for k, v in overrides.items())}) could not be created: {e!r}") from e
     spec = get_contract(contract or symbol)
     commission, slippage, costs_from = _costs(spec, commission, slippage)
@@ -374,11 +366,11 @@ def run_cmd(
     metrics = backtest_metrics(res, bars)
     rolls = roll_summary(tr, bars)
     exposure = session_exposure(tr, bars)
-    mc = None  # MonteCarloResult, or {"skipped": reason}
+    mc = None
     if mc_sims:
         if len(tr) >= MIN_TRADES:
             mc = run_monte_carlo(tr["net_pnl"].to_numpy(float), mc_sims, mc_seed, mc_dd_limit, risk=mc_risk, oos_from=mc_oos_from,
-                                 **_mc_trade_info(tr, bars))  # fmt: skip
+                                 **_mc_trade_info(tr, bars))
         else:
             mc = {"skipped": f"needs at least {MIN_TRADES} trades; this run has {len(tr)}"}
     evaluation = evaluate(tr, metrics, _mc_trade_info(tr, bars)["days"], mc_sims, mc_seed, mc_risk) if len(tr) else None
@@ -394,7 +386,7 @@ def run_cmd(
         notes.append(f"{res.bars_without_sub_bars:,} bars had no 1-minute data and were filled from their own OHLC.")
     if res.bars_with_partial_sub_bars:
         notes.append(f"{res.bars_with_partial_sub_bars:,} bars had 1-minute data that did not reproduce their OHLC (minutes missing) "
-                     "and were filled from their own OHLC.")  # fmt: skip
+                     "and were filled from their own OHLC.")
     if pos is not None:
         notes.append(f"A position is still open at the end ({pos.direction:+d} x{pos.qty} from {pos.entry_time:%Y-%m-%d %H:%M}); it is not in the trade statistics.")
     if len(tr) and tr["ambiguous"].any():
@@ -414,14 +406,14 @@ def run_cmd(
     meta_json = {"strategy": cls.__name__, "file": str(strategy_file), "symbol": symbol, "contract": spec.symbol, "tf": tf,
                  "session": session, "tz": tz, "fill_mode": fill_mode, "history_from": history_from,
                  "commission": commission, "slippage": slippage, "costs": costs_from, "data_from": data_from, "capital": capital, "inputs": vars(strategy.p),
-                 "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)}  # fmt: skip
+                 "first_bar": bars.index[0], "last_bar": bars.index[-1], "bars": len(bars)}
     meta_json["contract_rolls"] = rolls
     meta_json["session_exposure"] = exposure
     mc_json = {} if mc is None else {"monte_carlo": mc if isinstance(mc, dict) else mc.summary()}
     ev_json = {} if evaluation is None else {"evaluation": evaluation}
     (out / "metrics.json").write_text(json.dumps(jsonable({"run": meta_json, **metrics, **mc_json, **ev_json}), indent=2, default=str) + "\n", encoding="utf-8")
-    report_path = (write_report(res, bars, out / "report.html", metrics, meta, monte_carlo=mc, trade_charts=trade_charts, evaluation=evaluation)
-                   if report else None)  # fmt: skip
+    report_path = (write_report(res, bars, out / "report.html", metrics, meta, monte_carlo=mc, trade_charts=trade_charts, evaluation=evaluation,
+                                lines=strategy.plot_series()) if report else None)
     t3 = time.perf_counter()
     mc_seconds = mc.seconds if mc is not None and not isinstance(mc, dict) else 0.0
 
@@ -431,7 +423,7 @@ def run_cmd(
         a, acc = metrics["all"], metrics["account"]
         pf = "inf" if a["profit_factor"] == float("inf") else f"{a['profit_factor'] or 0:.2f}"
         typer.echo(f"  trades: {len(tr):,}  net profit: {res.net_profit:,.2f}  profit factor: {pf}  "
-                   f"max drawdown: {acc['max_drawdown_intraday']:,.2f}  ambiguous fills: {a['ambiguous_fills']}")  # fmt: skip
+                   f"max drawdown: {acc['max_drawdown_intraday']:,.2f}  ambiguous fills: {a['ambiguous_fills']}")
     else:
         typer.echo("  trades: 0")
     if res.bars_without_sub_bars or res.bars_with_partial_sub_bars:
@@ -440,7 +432,7 @@ def run_cmd(
         typer.echo(f"  trades held across a contract roll (unadjusted series): {rolls['trades_held_across']}")
     if exposure["trades_held_past_close"]:
         typer.echo(f"  trades held past their session's scheduled close: {exposure['trades_held_past_close']} "
-                   f"({_trade_list(exposure['past_close_trade_nos'], 10)})")  # fmt: skip
+                   f"({_trade_list(exposure['past_close_trade_nos'], 10)})")
     if exposure["trades_held_across_gap"]:
         typer.echo(f"  trades held across a data gap: {exposure['trades_held_across_gap']} ({_trade_list(exposure['gap_trade_nos'], 10)})")
     if pos is not None:
@@ -449,15 +441,15 @@ def run_cmd(
         typer.echo(f"  monte carlo: skipped ({mc['skipped']})")
     elif mc is not None:
         rs, ro = mc.method_summary("resample"), mc.method_summary("reorder")
-        u = lambda v: fmt_value(v, "usd")  # noqa: E731
+        u = lambda v: fmt_value(v, "usd")
         typer.echo(f"  monte carlo ({mc.sims:,} runs, close-to-close DD {u(mc.max_dd)}): "
                    f"resample net P5 {u(rs['net_profit']['p5'])} / P50 {u(rs['net_profit']['p50'])} / P95 {u(rs['net_profit']['p95'])}, "
                    f"max DD P5 {u(rs['max_drawdown']['p5'])}, P(net <= 0) {rs['p_net_le_0']:.1%}; "
-                   f"reorder max DD P5 {u(ro['max_drawdown']['p5'])}, P(DD worse than backtest) {ro['p_dd_worse_than_backtest']:.1%}")  # fmt: skip
+                   f"reorder max DD P5 {u(ro['max_drawdown']['p5'])}, P(DD worse than backtest) {ro['p_dd_worse_than_backtest']:.1%}")
         if "day" in mc.methods:
             dy = mc.method_summary("day")
             typer.echo(f"  whole days ({mc.days:,} trading days): net P5 {u(dy['net_profit']['p5'])} / P50 {u(dy['net_profit']['p50'])}, "
-                       f"max DD P5 {u(dy['max_drawdown']['p5'])}, P(net <= 0) {dy['p_net_le_0']:.1%}")  # fmt: skip
+                       f"max DD P5 {u(dy['max_drawdown']['p5'])}, P(net <= 0) {dy['p_net_le_0']:.1%}")
         if mc.dd_limit is not None:
             limit = ", ".join(f"{name} {mc.method_summary(name)['p_dd_reaches_limit']:.1%}" for name in mc.methods)
             typer.echo(f"  P(max DD reaches {u(mc.dd_limit)}): {limit}")
@@ -466,7 +458,7 @@ def run_cmd(
             r = ev["r"]
             typer.echo(f"  EV per trade: {u(ev['usd']['mean'])} ({mc.ev['ci']:.0%} CI {u(ev['usd']['lo'])} to {u(ev['usd']['hi'])})"
                        + (f", {r['mean']:+.3f} R ({mc.ev['risk_source']}, avg {u(mc.ev['risk_per_contract'])} per contract)" if r else "")
-                       + f", P(EV <= 0) {ev['p_ev_le_0']:.1%}")  # fmt: skip
+                       + f", P(EV <= 0) {ev['p_ev_le_0']:.1%}")
             for g in ("in_sample", "out_of_sample"):
                 e = mc.ev["groups"].get(g)
                 if e:
@@ -502,7 +494,7 @@ def compare_cmd(
     n = parse_timeframe(tf)
     bar = pd.Timedelta(minutes=n) if n else pd.Timedelta(days=1)
 
-    def when(s: str | None, flag: str) -> pd.Timestamp | None:  # naive dates/times are MC chart time
+    def when(s: str | None, flag: str) -> pd.Timestamp | None:
         if s is None:
             return None
         try:
@@ -604,7 +596,7 @@ def optimize_cmd(
     cls = _load_strategy_class(strategy_file, class_name)
     grid, fixed, n = _parse_search(grid_specs, inputs, cls.inputs, metric, yes)
     try:
-        heatmap_axes(grid, x, y)  # check --x / --y before the long run
+        heatmap_axes(grid, x, y)
     except ValueError as e:
         raise typer.BadParameter(str(e), param_hint="--x / --y") from e
     spec = get_contract(contract or symbol)
@@ -613,12 +605,12 @@ def optimize_cmd(
 
     t0 = time.perf_counter()
     data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from, tuple(cls.extra_columns))
-    bars, _ = data.load()  # also builds any missing bar caches before the workers read them
+    bars, _ = data.load()
     typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz}): "
-               f"{n:,} combinations, {len(bars):,} bars")  # fmt: skip
+               f"{n:,} combinations, {len(bars):,} bars")
     try:
         opt = optimize(strategy_file, grid, spec, class_name=cls.__name__, costs=Costs(commission=commission, slippage=slippage), data=data, fixed=fixed,
-                       metric=metric, min_trades=min_trades, workers=workers, confirm=yes, progress=_progress(t0, n))  # fmt: skip
+                       metric=metric, min_trades=min_trades, workers=workers, confirm=yes, progress=_progress(t0, n))
     except TooManyCombinations as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(2) from e
@@ -647,7 +639,7 @@ def optimize_cmd(
         "grid": grid, "metric": metric, "min_trades": min_trades, "combinations": n, "ranked": int(opt.results["rank"].notna().sum()),
         "workers": opt.workers, "seconds": round(opt.seconds, 2),
         "best": {"inputs": opt.best, **{k: best[k].iat[0] for k in METRICS}} if len(best) else None,
-    }  # fmt: skip
+    }
     (out / "optimize.json").write_text(json.dumps(jsonable(summary), indent=2, default=str) + "\n", encoding="utf-8")
 
     typer.echo(f"  {n:,} runs in {opt.seconds:,.1f} s on {opt.workers} workers; {summary['ranked']:,} with >= {min_trades:,} trades")
@@ -656,7 +648,7 @@ def optimize_cmd(
             break
         ins = ", ".join(f"{k}={row[k]}" for k in grid)
         typer.echo(f"  #{int(row['rank'])}  {ins}  {label.lower()} {fmt_value(row[metric], kind)}  trades {int(row['total_trades']):,}  "
-                   f"max drawdown {fmt_value(row['max_drawdown_intraday'], 'usd')}")  # fmt: skip
+                   f"max drawdown {fmt_value(row['max_drawdown_intraday'], 'usd')}")
     typer.echo(f"Wrote {csv_path}, {out / 'optimize.json'}, {html_path}")
     if open_report:
         _open(html_path)
@@ -709,13 +701,13 @@ def wfo_cmd(
     out = out or run_dir(strategy_file, symbol, contract, tf, session, "_wfo")
     data = DataSpec(symbol, tf, session, tz, history_from, fill_mode, str(data_dir), data_from, tuple(cls.extra_columns))
     typer.echo(f"{cls.__name__} on {symbol} {tf} {session} ({spec.symbol} spec, {fill_mode}, chart tz {tz}): "
-               f"{n:,} combinations, each run once per window start")  # fmt: skip
+               f"{n:,} combinations, each run once per window start")
     t0 = time.perf_counter()
     try:
         wf = walk_forward(strategy_file, grid, spec, Costs(commission=commission, slippage=slippage), data=data, fixed=fixed,
                           class_name=cls.__name__, is_months=is_months, oos_months=oos_months, step_months=step_months,
                           anchored=anchored, start=start, folds=folds, metric=metric, min_trades=min_trades, workers=workers, confirm=yes,
-                          progress=_progress(t0, n))  # fmt: skip
+                          progress=_progress(t0, n))
     except TooManyCombinations as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(2) from e
@@ -723,7 +715,7 @@ def wfo_cmd(
     trades_path, csv_paths, html_path = write_wfo_folder(
         wf, out, cls=cls, strategy_file=strategy_file, symbol=symbol, spec=spec, tf=tf, session=session, tz=tz, fill_mode=fill_mode,
         history_from=history_from, commission=commission, slippage=slippage, costs_from=costs_from, data_from=data_from, fixed=fixed,
-        capital=capital, combinations=n, folds=folds, trade_charts=trade_charts, workers=workers)  # fmt: skip
+        capital=capital, combinations=n, folds=folds, trade_charts=trade_charts, workers=workers)
     s, p = wf.summary, wf.pooled
 
     names = list(grid)
@@ -735,13 +727,13 @@ def wfo_cmd(
         ins = ", ".join(f"{k}={r[k]}" for k in names)
         wfe = "n/a" if pd.isna(r["wfe"]) else f"{r['wfe']:.0%}"
         typer.echo(f"{head}  {ins}  IS/yr {fmt_value(r['is_net_per_year'], 'usd')}  OOS {fmt_value(r['oos_net_profit'], 'usd')} "
-                   f"({int(r['oos_trades'])} trades)  WFE {wfe}")  # fmt: skip
+                   f"({int(r['oos_trades'])} trades)  WFE {wfe}")
     a, acc = wf.metrics["all"], wf.metrics["account"]
     typer.echo(f"  out of sample: {a['total_trades']:,} trades  net {fmt_value(a['net_profit'], 'usd')}  "
                f"max drawdown {fmt_value(acc['max_drawdown_intraday'], 'usd')}  net/yr {fmt_value(p['oos_net_per_year'], 'usd')}  "
-               f"(in sample {fmt_value(p['is_net_per_year'], 'usd')}/yr)")  # fmt: skip
+               f"(in sample {fmt_value(p['is_net_per_year'], 'usd')}/yr)")
     typer.echo(f"  walk-forward efficiency: {'n/a' if p['wfe'] is None else format(p['wfe'], '.0%')}"
-               + (f"  boundary trades: {wf.boundary_trades}" if wf.boundary_trades else ""))  # fmt: skip
+               + (f"  boundary trades: {wf.boundary_trades}" if wf.boundary_trades else ""))
     typer.echo(f"  {n:,} combinations + {int(s['combo'].notna().sum())} out-of-sample window re-runs in {wf.seconds:,.1f} s on {wf.workers} workers")
     typer.echo(f"Wrote {trades_path}, {csv_paths[0]}, {csv_paths[1]}, {out / 'wfo.json'}, {html_path}")
     if open_report:
@@ -774,7 +766,7 @@ def write_wfo_folder(wf, out: Path, *, cls, strategy_file: Path, symbol: str, sp
         notes.append(f"{history_from} bars stand in for {symbol} before {symbol}'s first bar.")
     if wf.boundary_trades:
         notes.append(f"{wf.boundary_trades} out-of-sample trade(s) were still open at their window's end and were closed at its last bar's "
-                     "close (exit “Window End”): every window starts and ends flat.")  # fmt: skip
+                     "close (exit “Window End”): every window starts and ends flat.")
     rolls = roll_summary(wf.trades, bars)
     if rolls["trades_held_across"]:
         notes.append(ROLL_NOTE.format(n=rolls["trades_held_across"], nos=_trade_list(rolls["trade_nos"])))
@@ -815,7 +807,7 @@ def write_wfo_folder(wf, out: Path, *, cls, strategy_file: Path, symbol: str, sp
         "session_exposure": exposure,
         "windows": wf.summary_records(),
         "oos": wf.metrics,
-    }  # fmt: skip
+    }
     (out / "wfo.json").write_text(json.dumps(jsonable(summary), indent=2, default=str) + "\n", encoding="utf-8")
     return trades_path, csv_paths, html_path
 
@@ -824,12 +816,12 @@ def _run_bars(run: Path, info: dict, data_dir: Path) -> pd.DataFrame:
     """The bars a run's trade bar numbers index: its data settings reloaded, cut back to the run's bar count when
     sessions were added since; anything else changed means the numbers no longer match."""
     bars, _ = DataSpec(info["symbol"], info["tf"], info["session"], info["tz"], info.get("history_from"), "ohlc", str(data_dir),
-                       info.get("data_from")).load()  # fmt: skip
+                       info.get("data_from")).load()
     n, first, last = int(info["bars"]), pd.Timestamp(info["first_bar"]), pd.Timestamp(info["last_bar"])
     if len(bars) < n or bars.index[0] != first or bars.index[n - 1] != last:
         now = f"{len(bars):,} bars {bars.index[0]} → {bars.index[-1]}" if len(bars) else "no bars"
         raise ValueError(f"the bars changed since {run} was written ({n:,} bars {first} → {last} then, {now} now), so its trade bar "
-                         "numbers no longer match; run the backtest again to draw its charts")  # fmt: skip
+                         "numbers no longer match; run the backtest again to draw its charts")
     return bars.iloc[:n]
 
 
@@ -860,7 +852,7 @@ def chart_cmd(
     if missing:
         raise ValueError(f"{run / 'trades.csv'} has no trade {_trade_list(missing)} (trades {int(tr['trade_no'].min())} to {int(tr['trade_no'].max())})")
     for col in ("entry_time", "exit_time"):
-        tr[col] = tr[col].dt.tz_convert(info["tz"])  # titles in the chart time zone, as the run drew them
+        tr[col] = tr[col].dt.tz_convert(info["tz"])
     t0 = time.perf_counter()
     bars = _run_bars(run, info, data_dir)
     nos = sorted(set(trades)) or None
@@ -895,12 +887,11 @@ def gui_cmd(
             raise RuntimeError(f"npm install failed in {gui}: fix the error above, then run guban gui again")
     if not (electron / "dist").is_dir():
         typer.echo("Downloading the Electron binary (first launch)...")
-    # require('electron') is the executable's path; it downloads the binary when it is missing (Electron >= 45)
     found = subprocess.run([node, "-e", "process.stdout.write('\\n' + require('electron'))"], cwd=gui, capture_output=True, text=True)
     exe = Path(found.stdout.strip().splitlines()[-1]) if found.returncode == 0 and found.stdout.strip() else None
     if exe is None or not exe.is_file():
         raise RuntimeError(f"Electron is not installed correctly in {electron}: delete that folder and run guban gui again\n{found.stderr.strip()}")
-    env = {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}  # set in VS Code terminals: Electron would start as plain Node
+    env = {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}
     result = REPORTS / "_gui_smoke" / "result.json"
     if smoke:
         result.unlink(missing_ok=True)
@@ -913,9 +904,6 @@ def gui_cmd(
         typer.echo(f"Screenshots: {result.parent}")
     raise typer.Exit(code)
 
-
-# ---------------------------------------------------------------------------
-# guban store: the shared market-data store (Phase 14). build and verify share these options.
 
 store_app = typer.Typer(help="Shared market-data store (config/store.toml): build it from DeepCharts, verify it.", no_args_is_help=True)
 app.add_typer(store_app, name="store")
@@ -980,7 +968,7 @@ def store_build_cmd(
     for r in reports:
         typer.echo(f"{r.symbol}: built {r.built:,} sessions ({r.tick_built:,} from ticks, {r.built - r.tick_built:,} from minute records"
                    + (f"; {r.rebuilt:,} of them rebuilt" if r.rebuilt else "") + f"), {r.already:,} already stored, {r.empty:,} empty files, "
-                   f"{r.rolls} rolls; {r.files_written:,} files written in {r.seconds:,.0f} s")  # fmt: skip
+                   f"{r.rolls} rolls; {r.files_written:,} files written in {r.seconds:,.0f} s")
         if r.folder_missing:
             typer.echo(f"  {cfg.source / cfg.symbols[r.symbol]} is gone: nothing to add; the store keeps its {r.gone:,} sessions")
         elif r.gone:
@@ -1011,7 +999,7 @@ def store_verify_cmd(
         typer.echo(f"{v.symbol}: {verdict}  {v.sessions:,} sessions: {v.minute_sessions:,} minute-built equal their source, "
                    f"{v.tick_sessions:,} tick-built (equal volume {v.volume_match:.4%} of {v.minutes:,} minutes, target {v.volume_target:.0%}; "
                    f"equal OHLC {v.ohlc_match:.4%}, target {OHLC_TARGET:.1%}), {v.not_compared:,} not compared (source gone or changed); "
-                   f"{v.sources_gone:,} source files gone")  # fmt: skip
+                   f"{v.sources_gone:,} source files gone")
         for p in v.problems[:20]:
             typer.echo(f"  problem: {p}")
         for c in v.changed[:20]:
@@ -1089,7 +1077,7 @@ def propfirm_cmd(
     except FileNotFoundError as e:
         raise typer.BadParameter(str(e), param_hint="--rules") from e
     setup = setup.with_overrides(size=size, sims=sims, sweep_sims=sweep_sims, sweep=_floats(sweep, "--sweep"), seed=seed,
-                                 commission=commission, slippage=slippage, risk_per_contract=risk)  # fmt: skip
+                                 commission=commission, slippage=slippage, risk_per_contract=risk)
     try:
         tr = load_trades(trades)
         res = run_propfirm(tr, setup, progress=lambda msg: typer.echo(f"  {msg}"))
@@ -1103,13 +1091,13 @@ def propfirm_cmd(
     lo, hi = m["pass_rate_ci"]
     typer.echo(f"{r.name} on {trades.name}: {t['trades']:,} trades, {len(res.daily):,} weekdays ({int(res.daily['is_trade_day'].sum()):,} with trades)")
     typer.echo(f"  target ${r.profit_target:,.0f}  max drawdown ${r.max_drawdown:,.0f}  deadline {r.max_trading_days} days  size {setup.size:g}x  "
-               f"added costs ${setup.commission + setup.slippage:,.2f}/contract")  # fmt: skip
+               f"added costs ${setup.commission + setup.slippage:,.2f}/contract")
     typer.echo(f"  win rate {t['win_rate_net']:.1%}  avg trade ${t['avg_trade_net']:,.2f}  EV {t['ev_r']:.4f} R  P(EV <= 0) {t['p_ev_usd_le_0']:.3f}")
     typer.echo(f"  PASS RATE {m['pass_rate']:.1%} [95% CI {lo:.1%} - {hi:.1%}]  of {m['n_sims']:,}: passed {m['passed']:,}  fail DD {m['fail_dd']:,}  "
-               f"fail daily {m['fail_daily']:,}  fail time {m['fail_time']:,}")  # fmt: skip
+               f"fail daily {m['fail_daily']:,}  fail time {m['fail_time']:,}")
     if m["avg_days_to_pass"] is not None:
         typer.echo(f"  days to pass avg {m['avg_days_to_pass']:.1f} median {m['median_days_to_pass']:.1f}  max DD avg ${m['avg_max_dd']:,.0f} "
-                   f"P95 ${m['p95_max_dd']:,.0f}  expected attempts {s['expected_attempts']:.1f}  verdict {s['verdict']}")  # fmt: skip
+                   f"P95 ${m['p95_max_dd']:,.0f}  expected attempts {s['expected_attempts']:.1f}  verdict {s['verdict']}")
     for sc, sr in res.scenarios:
         typer.echo(f"  {sc.label:<32} pass {sr.pass_rate:6.1%}  fail DD {sr.rate(FAIL_DD):6.1%}")
     if res.sweep:

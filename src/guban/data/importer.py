@@ -52,7 +52,6 @@ RECORD = np.dtype(
 )
 assert RECORD.itemsize == 60
 
-# .NET ticks (100 ns since 0001-01-01) -> Unix epoch nanoseconds
 _DOTNET_EPOCH_TICKS = 621_355_968_000_000_000
 
 
@@ -76,7 +75,7 @@ def read_records(path: Path) -> np.ndarray:
 
 
 def _check_records(raw: np.ndarray, path: Path) -> None:
-    o, h, l, c = (raw[k].astype(float) for k in ("open", "high", "low", "close"))  # noqa: E741
+    o, h, l, c = (raw[k].astype(float) for k in ("open", "high", "low", "close"))
     eps = 1e-9
     try:
         day = pd.Timestamp(path.stem)
@@ -88,7 +87,7 @@ def _check_records(raw: np.ndarray, path: Path) -> None:
         ((l > h + eps) | (o < l - eps) | (o > h + eps) | (c < l - eps) | (c > h + eps), "open/close outside low..high (or low > high)"),
         ((raw["volume"] < 0) | (raw["bid_vol"] < 0) | (raw["ask_vol"] < 0), "a negative volume"),
     ]
-    if day is not None:  # a session starts at 18:00 on its file date and ends the next afternoon
+    if day is not None:
         lo, hi = day.value, (day + pd.Timedelta(days=2)).value
         checks.append(((ns < lo) | (ns >= hi), f"a time outside {day:%Y-%m-%d} .. +2 days"))
     for bad, why in checks:
@@ -119,7 +118,6 @@ def read_session_file(path: Path) -> pd.DataFrame:
         },
         index=open_time + pd.Timedelta(minutes=1),
     )
-    # Several records can share a timestamp (opening prints at 18:00): merge them into one bar.
     df = df.groupby(level=0, sort=True).agg(
         open=("open", "first"),
         high=("high", "max"),
@@ -141,12 +139,12 @@ class ImportSummary:
     last_bar: pd.Timestamp
     bars: int
     sessions: int
-    rolls: list[tuple[str, str]]  # (session date, contract rolled into)
+    rolls: list[tuple[str, str]]
     missing_weekdays: list[str]
     duplicate_bars_merged: int
-    thin_sessions: list[str] = field(default_factory=list)  # store import: front sessions quality.csv flags thin
-    expiry_switches: list[str] = field(default_factory=list)  # store import: sessions moved off an expiring contract
-    source: str = ""  # where the bars came from
+    thin_sessions: list[str] = field(default_factory=list)
+    expiry_switches: list[str] = field(default_factory=list)
+    source: str = ""
 
     def __str__(self) -> str:
         lines = [
@@ -171,7 +169,7 @@ def missing_weekdays(sessions: pd.Index) -> list[str]:
     """Sun..Thu session starts (Mon..Fri trading days) between the first and last of `sessions` (YYYYMMDD) with no
     session."""
     starts = pd.to_datetime(sessions)
-    expected = pd.bdate_range(starts.min(), starts.max()) - pd.Timedelta(days=1)  # Mon..Fri -> Sun..Thu
+    expected = pd.bdate_range(starts.min(), starts.max()) - pd.Timedelta(days=1)
     expected = expected[(expected >= starts.min()) & (expected <= starts.max())]
     return sorted(set(expected.strftime("%Y%m%d")) - set(sessions))
 
@@ -195,16 +193,16 @@ def choose_contracts(volumes: pd.DataFrame) -> pd.Series:
     A session's own volume is not used: it is not known until the session ends."""
     chosen: dict[str, str] = {}
     current: str | None = None
-    prev: pd.Series | None = None  # volumes of the previous session with data
+    prev: pd.Series | None = None
     for session, row in volumes.iterrows():
         row = row[row > 0]
         if row.empty:
             continue
         if current is None:
-            current = min(row.index)  # front month; contract names are YYYYMM, so string order == time order
+            current = min(row.index)
         elif prev is not None and prev.idxmax() > current:
             current = prev.idxmax()
-        if current not in row.index:  # current contract has no data this session: move to the next listed one
+        if current not in row.index:
             later = sorted(c for c in row.index if c > current)
             if not later:
                 prev = row
@@ -280,7 +278,7 @@ def import_store(source: Path, symbol: str, out_dir: Path, roll: str = "volume",
     data = data.sort_index()
     data["contract"] = data["contract"].astype("category")
 
-    write_parquet(data, Path(out_dir) / symbol / "1m.parquet")  # atomic: never a partial file under the final name
+    write_parquet(data, Path(out_dir) / symbol / "1m.parquet")
 
     return ImportSummary(
         symbol=symbol,
@@ -289,7 +287,7 @@ def import_store(source: Path, symbol: str, out_dir: Path, roll: str = "volume",
         bars=len(data),
         sessions=len(contracts),
         rolls=rolls_of(contracts),
-        missing_weekdays=missing_weekdays(contracts.index),  # sessions are named by their 18:00 start date
+        missing_weekdays=missing_weekdays(contracts.index),
         duplicate_bars_merged=raw_count - len(data),
         source=str(source),
     )

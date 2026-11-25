@@ -39,14 +39,14 @@ def binom_sf(k: int, n: int, p: float) -> float:
 @dataclass(frozen=True)
 class RateTest:
     label: str
-    n: int  # observations with the signal
+    n: int
     hits: int
-    rate: float  # hits / n
-    base_n: int  # all observations
+    rate: float
+    base_n: int
     base_hits: int
     base_rate: float
-    gap: float  # rate - base_rate
-    p_value: float  # one-sided exact binomial against base_rate
+    gap: float
+    p_value: float
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -79,7 +79,7 @@ def by_period(hit, signal, period) -> pd.DataFrame:
 @dataclass(frozen=True)
 class Verdict:
     real: bool
-    checks: list[tuple[str, bool, str]]  # (rule, passed, detail)
+    checks: list[tuple[str, bool, str]]
 
     def to_dict(self) -> dict:
         return {"real": self.real, "checks": [{"rule": r, "passed": ok, "detail": d} for r, ok, d in self.checks]}

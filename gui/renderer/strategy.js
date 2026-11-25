@@ -1,6 +1,3 @@
-// Strategy tab: pick a strategy file → Load / Reload (re-import) → edit inputs → Apply on the Data tab's dataset;
-// counts, the trade list and a candlestick chart paged by Start index / Bars to plot (a trade click jumps to it).
-// Worker side: guban/gui/tab_strategy.py.
 'use strict';
 
 (() => {
@@ -125,7 +122,6 @@
   studio.on('data-changed', () => { if (S.applied) clearResults('The data or the dataset changed: Apply again.'); });
   studio.on('worker-restarted', () => { S.loaded = null; if (S.applied) clearResults('The worker restarted: Load and Apply again.'); });
   studio.ready.push(init);
-  // set input fields (e.g. an optimization result's inputs) and remember them
   function setInputs(values) {
     for (const node of f('inputs').querySelectorAll('[data-input]')) {
       if (!(node.dataset.input in values)) continue;

@@ -45,17 +45,15 @@ def _default_store() -> Path:
     from guban.store.read import store_root
 
     return store_root() / SYMBOL
-VOLUME_TOL = 0.02  # clean tick day: |RTH tick volume / RTH minute volume - 1| <= this
-END_SLACK = pd.Timedelta(minutes=2)  # the data must reach within this of the RTH close
+VOLUME_TOL = 0.02
+END_SLACK = pd.Timedelta(minutes=2)
 MIN_CLEAN_DAYS = 500
 MIN_GAP, ALPHA = 0.03, 0.05
-MIN_PERIOD_OBS = 60  # a first calendar year with fewer observations is pooled into the next
-BUCKETS = [0, 5, 20, 50, math.inf]  # |D-1 - D-2 POC shift| in points
+MIN_PERIOD_OBS = 60
+BUCKETS = [0, 5, 20, 50, math.inf]
 AGREE_PTS = 2.0
 GAP_FLAG_DAYS = 4
 
-
-# --- days -------------------------------------------------------------------------------------------------------
 
 
 def build_days(store: Path, cache_dir: Path, rebuild: bool) -> pd.DataFrame:
@@ -81,7 +79,7 @@ def build_days(store: Path, cache_dir: Path, rebuild: bool) -> pd.DataFrame:
             p = from_bars(mb["low"].to_numpy(), mb["high"].to_numpy(), mb["volume"].to_numpy(), tick)
             val, vah = p.value_area()
             r |= {"minute_volume": int(mb["volume"].sum()), "minute_last": mb.index[-1], "minute_open": mb["open"].iloc[0],
-                  "minute_close": mb["close"].iloc[-1], "minute_poc": p.poc(), "minute_val": val, "minute_vah": vah}  # fmt: skip
+                  "minute_close": mb["close"].iloc[-1], "minute_poc": p.poc(), "minute_val": val, "minute_vah": vah}
         if day in tsum.index:
             s = tsum.loc[day]
             r |= {"tick_trades": int(s.trades), "tick_volume": int(s.volume)}
@@ -129,8 +127,6 @@ def _tick_reason(r) -> str:
     return ""
 
 
-# --- triples ----------------------------------------------------------------------------------------------------
-
 
 def va_relation(val1, vah1, val2, vah2) -> str:
     """Where D-1's value area sits relative to D-2's."""
@@ -166,7 +162,7 @@ def build_triples(days: pd.DataFrame, src: str) -> tuple[pd.DataFrame, dict]:
             "signal_shift": poc[i - 1] - poc[i - 2], "outcome_shift": poc[i] - poc[i - 1],
             "va_relation": va_relation(val[i - 1], vah[i - 1], val[i - 2], vah[i - 2]),
             "open_d": op[i], "close_d": cl[i],
-        })  # fmt: skip
+        })
     t = pd.DataFrame(rows)
     if len(t):
         t["signal"] = np.sign(t["signal_shift"]).astype(int)
@@ -183,20 +179,17 @@ def periods_for(dates: pd.Series) -> np.ndarray:
     return np.array([labels[y] for y in years])
 
 
-# --- analysis ---------------------------------------------------------------------------------------------------
-
 
 def analyze(t: pd.DataFrame) -> dict:
     obs = t[t["outcome"] != 0]
     per = periods_for(obs["date"])
     out = {"triples": len(t), "flat_outcomes": int((t["outcome"] == 0).sum()), "flat_signals": int((t["signal"] == 0).sum()),
-           "observations": len(obs), "first": str(t["date"].min().date()), "last": str(t["date"].max().date())}  # fmt: skip
+           "observations": len(obs), "first": str(t["date"].min().date()), "last": str(t["date"].max().date())}
     for side, s in (("up", 1), ("down", -1)):
         hit, sig = (obs["outcome"] == s).to_numpy(), (obs["signal"] == s).to_numpy()
         test = rate_test(hit, sig, f"P(D POC {side} | D-1 shifted {side})")
         yearly = by_period(hit, sig, per)
         out[side] = {"test": test.to_dict(), "by_year": _records(yearly), "verdict": verdict(test, yearly, MIN_GAP, ALPHA).to_dict()}
-        # shift-size buckets (secondary)
         m = obs["signal"] == s
         size = obs.loc[m, "signal_shift"].abs()
         b = pd.cut(size, BUCKETS, right=True, include_lowest=False)
@@ -205,14 +198,11 @@ def analyze(t: pd.DataFrame) -> dict:
             {"bucket": _bucket_label(iv), "n": int(n), "rate": float(r) if n else None}
             for iv, n, r in zip(g.size().index, g.size().to_numpy(), g.mean().to_numpy())
         ]
-        # secondary outcome: RTH close vs open on D
         co = t[(t["close_d"] != t["open_d"])]
         hit2 = (np.sign(co["close_d"] - co["open_d"]) == s).to_numpy()
         out[side]["close_vs_open"] = rate_test(hit2, (co["signal"] == s).to_numpy(), f"P(D close {'>' if s > 0 else '<'} open | D-1 shifted {side})").to_dict()
-    # 2x2 (+ flat signal row)
     ct = pd.crosstab(t["signal"].map({1: "up", -1: "down", 0: "flat"}), t["outcome"].map({1: "up", -1: "down", 0: "flat"}))
     out["crosstab"] = {str(r): {str(c): int(ct.loc[r, c]) for c in ct.columns} for r in ct.index}
-    # value-area relationship of D-1 vs D-2 (secondary)
     va = []
     for rel, g in obs.groupby("va_relation"):
         va.append({"relation": rel, "n": len(g), "p_up": float((g["outcome"] > 0).mean()), "p_down": float((g["outcome"] < 0).mean())})
@@ -235,7 +225,6 @@ def _records(df: pd.DataFrame) -> list[dict]:
 def agreement(days: pd.DataFrame, tick_triples: pd.DataFrame) -> dict:
     both = days[days["tick_clean"] & days["minute_clean"]]
     diff = (both["minute_poc"] - both["tick_poc"]).abs()
-    # minute POCs on the same three days as each tick triple
     pos = days.index.get_indexer(tick_triples["date"])
     mp = days["minute_poc"].to_numpy(float)
     msig = np.sign(mp[pos - 1] - mp[pos - 2])
@@ -252,8 +241,6 @@ def agreement(days: pd.DataFrame, tick_triples: pd.DataFrame) -> dict:
     }
 
 
-# --- output -----------------------------------------------------------------------------------------------------
-
 
 def pct(x, nd=1) -> str:
     return "n/a" if x is None or (isinstance(x, float) and math.isnan(x)) else f"{x * 100:.{nd}f}%"
@@ -266,23 +253,23 @@ def pp(x) -> str:
 def print_summary(res: dict) -> None:
     tk = res["tick"]
     print(f"\nNQ RTH POC-shift study - tick POCs, {tk['first']} -> {tk['last']}: {tk['observations']} observations "
-          f"({tk['triples']} triples, {tk['flat_outcomes']} flat outcomes)")  # fmt: skip
+          f"({tk['triples']} triples, {tk['flat_outcomes']} flat outcomes)")
     for side in ("up", "down"):
         s = tk[side]
         t, v = s["test"], s["verdict"]
         print(f"\n  {side.upper()}: {t['label']} = {pct(t['rate'])} ({t['hits']}/{t['n']})  vs base {pct(t['base_rate'])} "
-              f"({t['base_hits']}/{t['base_n']})  gap {pp(t['gap'])}  p = {t['p_value']:.4g}")  # fmt: skip
+              f"({t['base_hits']}/{t['base_n']})  gap {pp(t['gap'])}  p = {t['p_value']:.4g}")
         for y in s["by_year"]:
             print(f"      {y['period']:>10}: {pct(y['rate'])} vs {pct(y['base_rate'])}  gap {pp(y['gap'])}  (n={y['n']})")
         print(f"    verdict: {'REAL' if v['real'] else 'NOT REAL'}  -  " + "; ".join(f"{'ok' if c['passed'] else 'FAIL'} {c['rule']} ({c['detail']})" for c in v["checks"]))
     a = res["agreement"]
     print(f"\n  minute vs tick POC: within {a['poc_within_pts']:g} pts on {pct(a['share_poc_within'])} of {a['days']} days "
           f"(median diff {a['median_abs_diff_pts']:.2f}); signal direction agrees {pct(a['share_signal_direction_agrees'])}, "
-          f"outcome {pct(a['share_outcome_direction_agrees'])}")  # fmt: skip
+          f"outcome {pct(a['share_outcome_direction_agrees'])}")
     mn = res["minute"]
     print(f"  secondary, minute POCs {mn['first']} -> {mn['last']} ({mn['observations']} obs): "
           + "; ".join(f"{s} {pct(mn[s]['test']['rate'])} vs {pct(mn[s]['test']['base_rate'])} p={mn[s]['test']['p_value']:.3g} "
-                      f"{'REAL' if mn[s]['verdict']['real'] else 'NOT REAL'}" for s in ("up", "down")))  # fmt: skip
+                      f"{'REAL' if mn[s]['verdict']['real'] else 'NOT REAL'}" for s in ("up", "down")))
 
 
 def write_report(res: dict, path: Path) -> None:
@@ -294,7 +281,7 @@ def write_report(res: dict, path: Path) -> None:
             "label": f"{side.capitalize()}-shift continues (tick, primary)", "real": tk[side]["verdict"]["real"],
             "headline": f"{pct(t['rate'])} after a {side}-shift vs {pct(t['base_rate'])} on all days ({pp(t['gap'])}, n = {t['n']})",
             "checks": tk[side]["verdict"]["checks"],
-        })  # fmt: skip
+        })
     periods = [y["period"] for y in tk["up"]["by_year"]]
     charts = [
         {"id": "years", "title": "Gap over the base rate by year (tick, primary)", "yformat": "+.1f", "ref": MIN_GAP * 100,
@@ -304,7 +291,7 @@ def write_report(res: dict, path: Path) -> None:
          "caption": "P(D's POC moves the same way as D-1's) by |POC(D-1) − POC(D-2)|. Dashed line: 50%.", "ref": 50,
          "x": [b["bucket"] for b in tk["up"]["by_shift_size"]],
          "series": [{"name": f"{s.capitalize()} after {s}", "y": [None if b["rate"] is None else round(b["rate"] * 100, 2) for b in tk[s]["by_shift_size"]]} for s in ("up", "down")]},
-    ]  # fmt: skip
+    ]
 
     def test_rows(study, name):
         rows = {}
@@ -315,28 +302,28 @@ def write_report(res: dict, path: Path) -> None:
         return rows
 
     tests = pd.DataFrame.from_dict({**test_rows(tk, "Tick"), **test_rows(mn, "Minute")}, orient="index",
-                                   columns=["hits / n", "rate", "base rate", "gap", "p (one-sided)"]).rename_axis("test")  # fmt: skip
+                                   columns=["hits / n", "rate", "base rate", "gap", "p (one-sided)"]).rename_axis("test")
     yearly = pd.DataFrame(
         [[f"{y['period']}", s, f"{y['hits']}/{y['n']}", pct(y["rate"]), pct(y["base_rate"]), pp(y["gap"]), f"{y['p_value']:.3g}"]
          for s in ("up", "down") for y in tk[s]["by_year"]],
-        columns=["year", "side", "hits / n", "rate", "base rate", "gap", "p"]).set_index("year")  # fmt: skip
+        columns=["year", "side", "hits / n", "rate", "base rate", "gap", "p"]).set_index("year")
     ct = pd.DataFrame(tk["crosstab"]).T.fillna(0).astype(int).rename_axis("D-1 shift \\ D shift")
     va = pd.DataFrame([[r["relation"], r["n"], pct(r["p_up"]), pct(r["p_down"])] for r in tk["by_va_relation"]],
-                      columns=["D-1 value area vs D-2", "n", "P(D POC up)", "P(D POC down)"]).set_index("D-1 value area vs D-2")  # fmt: skip
+                      columns=["D-1 value area vs D-2", "n", "P(D POC up)", "P(D POC down)"]).set_index("D-1 value area vs D-2")
     a = res["agreement"]
     agree = pd.DataFrame.from_dict({
         "clean days compared": a["days"], f"POC within {a['poc_within_pts']:g} pts": pct(a["share_poc_within"]),
         "median |minute − tick| POC": f"{a['median_abs_diff_pts']:.2f} pts", "90th pct |minute − tick| POC": f"{a['p90_abs_diff_pts']:.2f} pts",
         "tick triples": a["triples"], "signal direction agrees": pct(a["share_signal_direction_agrees"]),
         "outcome direction agrees": pct(a["share_outcome_direction_agrees"]),
-    }, orient="index", columns=["value"]).rename_axis("minute vs tick")  # fmt: skip
+    }, orient="index", columns=["value"]).rename_axis("minute vs tick")
     data = res["data"]
     drops = pd.DataFrame.from_dict(
         {**{f"tick day: {k}": v for k, v in data["tick_day_reasons"].items()},
          **{f"tick triple dropped: {k}": v for k, v in data["tick_triple_drops"].items()},
          **{f"minute day: {k}": v for k, v in data["minute_day_reasons"].items()},
          **{f"minute triple dropped: {k}": v for k, v in data["minute_triple_drops"].items()}},
-        orient="index", columns=["count"]).rename_axis("data")  # fmt: skip
+        orient="index", columns=["count"]).rename_axis("data")
     write_study_report(
         path,
         {"title": "NQ RTH POC-shift study",
@@ -359,7 +346,7 @@ def write_report(res: dict, path: Path) -> None:
             "The p-value asks how likely a conditional rate at least this high would be if the signal carried no information (Binomial(n, base rate)). Tests on overlapping triples are not fully independent, so treat p-values near 0.05 with care.",
             "POC ties go to the price nearest the middle of the day's range. Value area: grown one tick at a time from the POC toward the side with more volume until it holds 70%.",
         ],
-    )  # fmt: skip
+    )
 
 
 def main() -> int:
@@ -381,14 +368,14 @@ def main() -> int:
     res = {
         "question": "P(D RTH POC up | POC(D-1) > POC(D-2)) vs P(D RTH POC up), and the mirror for down",
         "rule": {"min_gap": MIN_GAP, "alpha": ALPHA, "test": "one-sided exact binomial vs base rate", "every_year_positive": True,
-                 "min_period_obs": MIN_PERIOD_OBS},  # fmt: skip
+                 "min_period_obs": MIN_PERIOD_OBS},
         "data": {
             "trading_days": len(days), "tick_clean_days": n_clean, "minute_clean_days": int(days["minute_clean"].sum()),
             "tick_day_reasons": {k: int(v) for k, v in days.loc[~days["tick_clean"], "tick_reason"].value_counts().items()},
             "minute_day_reasons": {k: int(v) for k, v in days.loc[~days["minute_clean"], "minute_reason"].value_counts().items()},
             "tick_triple_drops": tick_drops, "minute_triple_drops": minute_drops,
             "volume_tolerance": VOLUME_TOL, "end_slack_min": END_SLACK.total_seconds() / 60,
-        },  # fmt: skip
+        },
         "tick": analyze(tick_t),
         "minute": analyze(minute_t),
         "agreement": agreement(days, tick_t),

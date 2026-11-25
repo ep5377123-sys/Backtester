@@ -24,29 +24,35 @@ from guban.charts import COLORS
 CONTEXT_BARS = 24
 MAX_CANDLES = 240
 WIDTH, HEIGHT, DPI = 10.0, 4.2, 120
-PARALLEL_MIN = 64  # fewer trades render in this process
+PARALLEL_MIN = 64
 CHUNKS_PER_WORKER = 4
 FOLDER = "trades"
+LINE_COLORS = ("s2", "s3", "s4", "muted")
 
 
 def image_name(trade_no: int) -> str:
     return f"trade_{int(trade_no)}.png"
 
 
-def trade_payloads(tr: pd.DataFrame, bars: pd.DataFrame, tick: float, nos=None) -> list[dict]:
+def trade_payloads(tr: pd.DataFrame, bars: pd.DataFrame, tick: float, nos=None, lines: dict | None = None) -> list[dict]:
     """Per trade (only trade numbers in `nos`, when given): its window's candles (o, h, l, c, close time as wall-clock
     minutes), the step (bars per candle), the trade itself and the other trades that start and end inside the window
-    (candle positions, prices)."""
+    (candle positions, prices). lines: {name: per-bar values aligned with `bars`} (a strategy's plot_series()), drawn
+    over the candles; a merged candle takes its last bar's value, NaN leaves a gap."""
     n = len(bars)
     if not len(tr):
         return []
+    lines = {name: np.asarray(v, float) for name, v in (lines or {}).items()}
+    for name, v in lines.items():
+        if len(v) < n:
+            raise ValueError(f"plot line {name!r} has {len(v):,} values for {n:,} bars")
     wall = bars.index.tz_localize(None) if bars.index.tz is not None else bars.index
     minutes = wall.as_unit("s").asi8 // 60
     o, h, lo, c = (bars[k].to_numpy(float) for k in ("open", "high", "low", "close"))
     eb, xb = tr["entry_bar"].to_numpy(int), tr["exit_bar"].to_numpy(int)
     side = np.where(tr["direction"].to_numpy(str) == "long", 1, -1)
     ep, xp, net = tr["entry_price"].to_numpy(float), tr["exit_price"].to_numpy(float), tr["net_pnl"].to_numpy(float)
-    fmt = lambda t: t.strftime("%Y-%m-%d %H:%M")  # noqa: E731
+    fmt = lambda t: t.strftime("%Y-%m-%d %H:%M")
     out = []
     keep = None if nos is None else {int(no) for no in nos}
     for k, r in enumerate(tr.itertuples(index=False)):
@@ -57,19 +63,20 @@ def trade_payloads(tr: pd.DataFrame, bars: pd.DataFrame, tick: float, nos=None) 
         cuts = np.arange(0, e - s + 1, step)
         last = np.r_[cuts[1:], e - s + 1] - 1
         sl = slice(s, e + 1)
-        j0, j1 = np.searchsorted(eb, s), np.searchsorted(xb, e, side="right")  # trades inside [s, e]
+        j0, j1 = np.searchsorted(eb, s), np.searchsorted(xb, e, side="right")
         others = [(int(side[j]), int((eb[j] - s) // step), float(ep[j]), int((xb[j] - s) // step), float(xp[j]), float(net[j]))
-                  for j in range(j0, j1) if j != k and eb[j] >= s and xb[j] <= e]  # fmt: skip
+                  for j in range(j0, j1) if j != k and eb[j] >= s and xb[j] <= e]
         out.append({
             "no": int(r.trade_no), "tick": tick, "step": step,
             "o": o[sl][cuts], "h": np.maximum.reduceat(h[sl], cuts), "l": np.minimum.reduceat(lo[sl], cuts),
             "c": c[sl][last], "t": minutes[sl][last],
+            "lines": {name: v[sl][last] for name, v in lines.items()},
             "trade": (int(side[k]), int((eb[k] - s) // step), float(ep[k]), int((xb[k] - s) // step), float(xp[k]), float(net[k])),
             "others": others,
             "title": f"Trade #{int(r.trade_no)} · {'Long' if side[k] > 0 else 'Short'} {int(r.qty)} · {fmt(r.entry_time)} {r.entry_name} @ "
                      f"{ep[k]:,.{_decimals(tick)}f} → {fmt(r.exit_time)} {r.exit_name} @ {xp[k]:,.{_decimals(tick)}f} · net {money_2(net[k])}"
                      + (f" · {step} bars per candle" if step > 1 else ""),
-        })  # fmt: skip
+        })
     return out
 
 
@@ -84,7 +91,7 @@ def _decimals(tick: float) -> int:
     return max(0, -Decimal(repr(float(tick))).normalize().as_tuple().exponent) if tick > 0 else 2
 
 
-_CANVAS = None  # per process: (rc, fig, ax, wicks, bodies, span, font); figure set-up costs more than a trade's drawing
+_CANVAS = None
 
 
 def _canvas():
@@ -126,7 +133,7 @@ def render_trade(p: dict, path: str | Path) -> Path:
     rc, fig, ax, wicks, bodies, span, font = _canvas()
     with matplotlib.rc_context(rc):
         for a in ax.lines[:] + [c for c in ax.collections if c is not wicks and c is not bodies]:
-            a.remove()  # the previous trade's markers
+            a.remove()
         o, h, lo, c = p["o"], p["h"], p["l"], p["c"]
         m = len(o)
         x = np.arange(m)
@@ -141,15 +148,22 @@ def render_trade(p: dict, path: str | Path) -> Path:
         bodies.set_verts(np.stack([np.c_[x - w, b0], np.c_[x + w, b0], np.c_[x + w, b1], np.c_[x - w, b1]], axis=1))
         bodies.set_facecolor(col)
         bodies.set_edgecolor(col)
+        lines = p.get("lines", {})
+        for k, v in enumerate(lines.values()):
+            ax.plot(x, v, color=COLORS[LINE_COLORS[k % len(LINE_COLORS)]], lw=1.3, zorder=2.5)
         for t, sel in [(t, False) for t in p["others"]] + [(p["trade"], True)]:
             sd, a, pa, b, pb, nt = t
             alpha, win = (1.0 if sel else 0.45), nt >= 0
             ax.plot([a, b], [pa, pb], color=COLORS["ink2"], lw=1.6 if sel else 0.9, ls="--", alpha=alpha, zorder=3)
             ax.scatter([a], [pa], marker="^" if sd > 0 else "v", s=90 if sel else 40, color=COLORS["ink"], edgecolors=COLORS["surface"],
-                       linewidths=1.2, alpha=alpha, zorder=4)  # fmt: skip
+                       linewidths=1.2, alpha=alpha, zorder=4)
             ax.scatter([b], [pb], marker="o", s=70 if sel else 30, facecolors=COLORS["good"] if win else "none",
-                       edgecolors=COLORS["surface"] if win else COLORS["bad"], linewidths=1.5, alpha=alpha, zorder=4)  # fmt: skip
+                       edgecolors=COLORS["surface"] if win else COLORS["bad"], linewidths=1.5, alpha=alpha, zorder=4)
         ymin, ymax = min(lo.min(), epx, xpx), max(h.max(), epx, xpx)
+        drawn = [v[np.isfinite(v)] for v in lines.values()]
+        drawn = np.concatenate(drawn) if drawn else np.empty(0)
+        if drawn.size:
+            ymin, ymax = min(ymin, drawn.min()), max(ymax, drawn.max())
         pad = (ymax - ymin) * 0.05 or p["tick"] * 4
         y0, y1 = ymin - pad, ymax + pad
         ax.set_ylim(y0, y1)
@@ -161,7 +175,6 @@ def render_trade(p: dict, path: str | Path) -> Path:
         ax.set_xticks(xt)
         fig.canvas.draw()
         img = Image.fromarray(np.asarray(fig.canvas.buffer_rgba())[..., :3].copy())
-    # text: matplotlib display coordinates are from the bottom left, Pillow's from the top left
     height, box = img.height, ax.bbox
     draw = ImageDraw.Draw(img)
     ink, ink2 = COLORS["ink"], COLORS["ink2"]
@@ -177,6 +190,13 @@ def render_trade(p: dict, path: str | Path) -> Path:
         if i == 0 or days[i] != days[i - 1]:
             draw.text((px, top + line), f"{tt:%Y-%m-%d}", fill=ink2, font=font, anchor="ma")
     draw.text((box.x0, (height - box.y1) / 2), p["title"], fill=ink, font=font, anchor="lm")
+    right = box.x1
+    for k in reversed(range(len(lines))):
+        color = COLORS[LINE_COLORS[k % len(LINE_COLORS)]]
+        draw.text((right, (height - box.y1) / 2), list(lines)[k], fill=color, font=font, anchor="rm")
+        right -= draw.textlength(list(lines)[k], font=font) + 4
+        draw.line((right - 14, (height - box.y1) / 2, right, (height - box.y1) / 2), fill=color, width=2)
+        right -= 14 + 12
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path, format="PNG")
@@ -189,15 +209,16 @@ def _render_chunk(folder: str, payloads: list[dict]) -> int:
     return len(payloads)
 
 
-def write_trade_charts(tr: pd.DataFrame, bars: pd.DataFrame, folder: str | Path, tick: float, workers: int | None = None, nos=None) -> int:
+def write_trade_charts(tr: pd.DataFrame, bars: pd.DataFrame, folder: str | Path, tick: float, workers: int | None = None, nos=None,
+                       lines: dict | None = None) -> int:
     """Render every trade's image into `folder` (old trade_*.png there are removed first), or with `nos` only those
-    trades' (other images are kept); returns the image count."""
+    trades' (other images are kept); returns the image count. lines: as trade_payloads."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     if nos is None:
         for old in folder.glob("trade_*.png"):
             old.unlink()
-    payloads = trade_payloads(tr, bars, tick, nos)
+    payloads = trade_payloads(tr, bars, tick, nos, lines)
     workers = workers or max(1, (os.cpu_count() or 2) - 1)
     if len(payloads) < PARALLEL_MIN or workers == 1:
         return _render_chunk(str(folder), payloads)

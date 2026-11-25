@@ -28,17 +28,13 @@ from guban.engine import Strategy
 
 class IVB(Strategy):
     inputs = dict(
-        # Opening range (HHMM, Central): bars with ivb_start < time <= ivb_end
         ivb_start=830,
         ivb_end=900,
-        # Entry
         latest_entry=1200,
         max_trades_per_day=1,
         risk_usd=1000.0,
-        # Exits
         reward_risk=1.0,
         time_exit=1400,
-        # Scheduled early close (not in MC)
         flatten_early_close=True,
         early_close_buffer=10,
     )
@@ -52,7 +48,7 @@ class IVB(Strategy):
 
     def on_bar(self):
         if self.current_bar == 1:
-            return  # Date[1] needs one bar of history
+            return
         p = self.p
         h, l, c = self.high[0], self.low[0], self.close[0]
         date, time = self.date[0], self.time[0]
@@ -61,19 +57,16 @@ class IVB(Strategy):
             self.ivb_high = self.ivb_low = None
             self.d_trades = 0
 
-        # --- Opening range ---
         if p.ivb_start < time <= p.ivb_end:
             self.ivb_high = h if self.ivb_high is None else max(self.ivb_high, h)
             self.ivb_low = l if self.ivb_low is None else min(self.ivb_low, l)
 
-        # --- Scheduled early close (not in MC) ---
         flatten = p.time_exit
         close_at = self.session_close[0]
         if p.flatten_early_close and close_at is not None and close_at.date() == date:
             cut = close_at.hour * 60 + close_at.minute - p.early_close_buffer
             flatten = min(flatten, cut // 60 * 100 + cut % 60)
 
-        # --- Entry: long only, at this bar's close ---
         entered = False
         if (
             self.ivb_high is not None
@@ -91,7 +84,6 @@ class IVB(Strategy):
             self.target = c + p.reward_risk * risk_pts
             entered = True
 
-        # --- Exits (for the next bar; an entry filled at this close is covered from the next bar on) ---
         if self.market_position == 1 or entered:
             if time >= flatten and not entered:
                 self.sell("ORB-L TimeX", at="close")

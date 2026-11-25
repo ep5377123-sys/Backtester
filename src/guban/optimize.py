@@ -41,8 +41,6 @@ from guban.metrics import backtest_metrics, empty_metrics, window_metrics
 
 MAX_COMBINATIONS = 5000
 
-# Per-run columns of the results table: (key, label, format, higher is better). Keys are guban.metrics keys
-# from the "all" trade stats or the "account" figures. Drawdowns and losses are <= 0, so higher is better.
 RESULT_METRICS = [
     ("net_profit", "Net profit", "usd", True),
     ("profit_factor", "Profit factor", "ratio", True),
@@ -62,8 +60,6 @@ METRICS = {key: (label, kind, hib) for key, label, kind, hib in RESULT_METRICS}
 class TooManyCombinations(ValueError):
     """The grid is larger than MAX_COMBINATIONS and the caller did not confirm it."""
 
-
-# --- grid spec -----------------------------------------------------------------------------------
 
 
 def parse_grid(specs: list[str], defaults: dict) -> dict[str, list]:
@@ -153,8 +149,6 @@ def combinations(grid: dict[str, list]) -> list[dict]:
     return [dict(zip(grid, values)) for values in itertools.product(*grid.values())]
 
 
-# --- data and workers ----------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class DataSpec:
@@ -168,8 +162,8 @@ class DataSpec:
     history_from: str | None = None
     fill_mode: str = "magnifier"
     data_dir: str = "data"
-    data_from: str | None = None  # drop bars before this date (chart time zone): the warm-up starts there
-    extra_columns: tuple[str, ...] = ()  # Strategy.extra_columns, added to the strategy bars (guban.data.features)
+    data_from: str | None = None
+    extra_columns: tuple[str, ...] = ()
 
     def load(self) -> tuple[pd.DataFrame, pd.DataFrame | None]:
         from guban.data.resample import load_bars, splice_history
@@ -202,8 +196,8 @@ class _Job:
     costs: Costs
     fill_mode: str | None
     fixed: dict
-    data: DataSpec | None  # workers load bars from here, or get `frames` passed in
-    windows: tuple[tuple[int, int], ...] | None = None  # walk-forward: score these [lo, hi) bar ranges, not the whole run
+    data: DataSpec | None
+    windows: tuple[tuple[int, int], ...] | None = None
 
 
 _WORKER: dict = {}
@@ -249,7 +243,7 @@ def _run_window(item: tuple[dict, int, int]) -> BacktestResult:
     params, lo, hi = item
     res = _backtest(params, hi, trade_from=lo, window_ends={hi})
     out = res.window(lo, hi)
-    out.strategy = None  # workers send results back by pickling; the strategy instance is not needed
+    out.strategy = None
     return out
 
 
@@ -288,13 +282,11 @@ def flatten_metrics(m: dict) -> dict:
     return out
 
 
-# --- optimize ------------------------------------------------------------------------------------
-
 
 @dataclass
 class OptimizeResult:
     grid: dict[str, list]
-    results: pd.DataFrame  # one row per combination in grid order: combo, inputs, RESULT_METRICS, rank
+    results: pd.DataFrame
     metric: str
     min_trades: int
     workers: int
@@ -365,7 +357,7 @@ def optimize(
     guban.metrics.window_metrics, the walk-forward windows' rule); bars before lo are warm-up.
     """
     job, frames, combos = _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, class_name, metric, confirm,
-                                 min_trades, workers)  # fmt: skip
+                                 min_trades, workers)
     if window is not None:
         lo, hi = window
         n = len(bars) if bars is not None else None
@@ -491,8 +483,6 @@ def _setup(strategy, grid, spec, costs, data, bars, sub_bars, fill_mode, fixed, 
     return job, None if data is not None else (bars, sub_bars), combos
 
 
-# --- heatmap data --------------------------------------------------------------------------------
-
 
 def varying(grid: dict[str, list]) -> list[str]:
     """Grid inputs with more than one value."""
@@ -518,6 +508,6 @@ def heatmap(opt: OptimizeResult, x: str, y: str | None, metric: str) -> dict:
         if not cell.any():
             continue
         vals = r.loc[cell, metric]
-        k = vals.idxmax() if hib else vals.idxmin()  # first of equal values = earliest in grid order
+        k = vals.idxmax() if hib else vals.idxmin()
         z[iy, ix], trades[iy, ix], combo[iy, ix] = r.at[k, metric], r.at[k, "total_trades"], r.at[k, "combo"]
     return {"x": xs, "y": None if y is None else ys, "z": z, "trades": trades, "combo": combo}
